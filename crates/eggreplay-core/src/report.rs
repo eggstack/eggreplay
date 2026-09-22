@@ -1,6 +1,6 @@
 //! Versioned semantic regression report authority.
 
-use crate::{Flow, FlowOutcome, HeaderEntry, SCHEMA_VERSION};
+use crate::{Flow, FlowOutcome, HeaderEntry, REPORT_SCHEMA_VERSION};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -178,7 +178,7 @@ pub fn compare_flows_with_timing(
         (format!("{:?}", left.kind), &left.field).cmp(&(format!("{:?}", right.kind), &right.field))
     });
     RegressionReport {
-        schema_version: SCHEMA_VERSION,
+        schema_version: REPORT_SCHEMA_VERSION,
         scheduler,
         baseline_flow_ids: vec![baseline.id.clone()],
         findings,

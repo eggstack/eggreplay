@@ -2,6 +2,81 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Explicit replay/upstream recording policy. It is independent of flow
+/// consumption (`Once`, `RepeatLast`, or `Unlimited`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RecordMode {
+    /// Replay only; a miss is offline and never reaches the network.
+    Sealed,
+    /// Record only when creating a new fixture; an existing fixture is sealed.
+    Once,
+    /// Replay first and append newly observed misses.
+    AppendNew,
+    /// Always execute upstream and atomically replace the fixture at shutdown.
+    ReRecord,
+}
+
+/// Effective decision for a requested [`RecordMode`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RecordPolicy {
+    /// Effective record mode after considering fixture existence.
+    pub mode: RecordMode,
+    /// Whether this process may make upstream requests.
+    pub upstream_enabled: bool,
+}
+
+impl RecordMode {
+    /// Resolve and validate the network policy. Network-capable modes require
+    /// an explicit upstream; `once` seals an already-existing fixture.
+    pub fn resolve(
+        self,
+        fixture_exists: bool,
+        upstream_configured: bool,
+    ) -> Result<RecordPolicy, String> {
+        let existing_once = self == Self::Once && fixture_exists;
+        let mode = if existing_once { Self::Sealed } else { self };
+        let requires_upstream = matches!(mode, Self::Once | Self::AppendNew | Self::ReRecord);
+        if requires_upstream && !upstream_configured {
+            return Err(format!("record mode {mode} requires an explicit upstream"));
+        }
+        if !requires_upstream && upstream_configured && !existing_once {
+            return Err("sealed mode does not accept an upstream".into());
+        }
+        Ok(RecordPolicy {
+            mode,
+            upstream_enabled: requires_upstream,
+        })
+    }
+}
+
+impl std::fmt::Display for RecordMode {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Sealed => "sealed",
+            Self::Once => "once",
+            Self::AppendNew => "append-new",
+            Self::ReRecord => "re-record",
+        })
+    }
+}
+
+#[cfg(test)]
+mod record_mode_tests {
+    use super::*;
+
+    #[test]
+    fn network_access_is_explicit_and_once_seals_existing_fixture() {
+        assert!(RecordMode::Sealed.resolve(false, true).is_err());
+        assert!(RecordMode::AppendNew.resolve(false, false).is_err());
+        let once = RecordMode::Once.resolve(false, true).unwrap();
+        assert!(once.upstream_enabled);
+        let existing = RecordMode::Once.resolve(true, true).unwrap();
+        assert_eq!(existing.mode, RecordMode::Sealed);
+        assert!(!existing.upstream_enabled);
+    }
+}
+
 /// Output presentation format.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]

@@ -1,6 +1,6 @@
 # M009 — Stateful and Dynamic Replay
 
-Status: ready
+Status: implemented
 Depends on: C006
 Roadmap stage: 5
 

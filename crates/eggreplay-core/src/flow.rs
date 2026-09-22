@@ -1,6 +1,8 @@
-//! Schema-1 semantic HTTP flow and session values.
+//! Schema-1 semantic HTTP flow and versioned session values.
 
-use crate::{ErrorCategory, ErrorPhase, FlowError, SCHEMA_VERSION, TOOL_VERSION};
+use crate::{
+    ErrorCategory, ErrorPhase, FLOW_SCHEMA_VERSION, FlowError, SESSION_SCHEMA_V1, TOOL_VERSION,
+};
 use serde::{Deserialize, Serialize};
 
 /// A stable flow identifier.
@@ -195,7 +197,7 @@ impl Flow {
     /// valid.
     pub fn new(request: HttpRequest, outcome: FlowOutcome, started_at_ms: u64) -> Self {
         Self {
-            schema_version: SCHEMA_VERSION,
+            schema_version: FLOW_SCHEMA_VERSION,
             id: format!("flow-{started_at_ms}-{}", uuid::Uuid::new_v4().simple()),
             started_at_ms,
             completed_at_ms: None,
@@ -213,7 +215,7 @@ impl Flow {
 
     /// Validate schema and cheap semantic invariants before persistence.
     pub fn validate(&self) -> Result<(), FlowError> {
-        if self.schema_version != SCHEMA_VERSION {
+        if self.schema_version != FLOW_SCHEMA_VERSION {
             return Err(FlowError::new(
                 ErrorCategory::Policy,
                 ErrorPhase::Policy,
@@ -266,7 +268,7 @@ impl Flow {
 /// Session-level metadata stored in `manifest.json`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionMetadata {
-    /// Schema version of the session.
+    /// Session manifest schema version (1 or 2).
     pub schema_version: u16,
     /// Tool version that wrote the session.
     pub tool_version: String,
@@ -287,7 +289,7 @@ pub struct SessionMetadata {
 impl Default for SessionMetadata {
     fn default() -> Self {
         Self {
-            schema_version: SCHEMA_VERSION,
+            schema_version: SESSION_SCHEMA_V1,
             tool_version: TOOL_VERSION.into(),
             session_id: "session-0".into(),
             capture_mode: "semantic".into(),

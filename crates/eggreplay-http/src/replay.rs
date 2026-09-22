@@ -2,7 +2,7 @@
 
 use eggreplay_core::{
     BodyRef, ConsumptionMode, FlowOutcome, HeaderEntry, HttpRequest, MatchCandidate, MatchResult,
-    Matcher, MatcherSession, QueryPair,
+    Matcher, MatcherSession, QueryPair, ScenarioRules, ScenarioRuntime,
 };
 use eggreplay_store::{Session, StoreError};
 use std::net::SocketAddr;
@@ -32,9 +32,50 @@ pub enum ReplayError {
 #[derive(Clone)]
 struct ReplayState {
     candidates: Vec<MatchCandidate>,
+    candidate_in_append: Vec<bool>,
     matcher: Matcher,
     session: MatcherSession,
     store: Session,
+    scenario: Option<ScenarioRuntime>,
+}
+
+#[cfg(feature = "eggserve")]
+#[derive(Clone)]
+struct AppendContext {
+    upstream_base: http::Uri,
+    client: eggfetch_core::Client,
+    recording: eggreplay_store::RecordingSession,
+    redaction: eggreplay_core::RedactionConfig,
+    profile_id: String,
+    max_structured_bytes: u64,
+    physical_route: eggreplay_core::PhysicalRoute,
+    miss_locks: Arc<MissLocks>,
+}
+
+#[cfg(feature = "eggserve")]
+#[derive(Default)]
+struct MissLocks {
+    locks: Mutex<std::collections::HashMap<String, std::sync::Weak<tokio::sync::Mutex<()>>>>,
+}
+
+#[cfg(feature = "eggserve")]
+impl MissLocks {
+    fn lock_for(&self, key: String) -> Result<Arc<tokio::sync::Mutex<()>>, ServiceError> {
+        let mut locks = self
+            .locks
+            .lock()
+            .map_err(|_| ServiceError::internal("miss lock registry poisoned"))?;
+        locks.retain(|_, lock| lock.strong_count() != 0);
+        if let Some(lock) = locks.get(&key).and_then(std::sync::Weak::upgrade) {
+            return Ok(lock);
+        }
+        if locks.len() >= 2048 {
+            return Err(ServiceError::rejected(503, "too many concurrent miss keys"));
+        }
+        let lock = Arc::new(tokio::sync::Mutex::new(()));
+        locks.insert(key, Arc::downgrade(&lock));
+        Ok(lock)
+    }
 }
 
 /// A loaded replay session with isolated per-server consumption state.
@@ -60,6 +101,22 @@ impl ReplayFixture {
 
     /// Load with an explicit matcher (for semantic-mode tests).
     pub fn load_with_matcher(session: &Session, matcher: Matcher) -> Result<Self, ReplayError> {
+        Self::load_inner(session, matcher, None)
+    }
+
+    fn load_inner(
+        session: &Session,
+        matcher: Matcher,
+        scenario: Option<ScenarioRuntime>,
+    ) -> Result<Self, ReplayError> {
+        for extension in &session.manifest().extensions {
+            if extension.required_for_replay && !(extension.name == "rules" && scenario.is_some()) {
+                return Err(ReplayError::State(format!(
+                    "required extension {:?} is not enabled",
+                    extension.name
+                )));
+            }
+        }
         let mut candidates = Vec::new();
         for item in session.iter_flows()? {
             let flow = item?;
@@ -68,11 +125,46 @@ impl ReplayFixture {
         Ok(Self {
             state: Arc::new(Mutex::new(ReplayState {
                 candidates,
+                candidate_in_append: vec![false; session.manifest().flow_count],
                 matcher,
                 session: MatcherSession::new(),
                 store: session.clone(),
+                scenario,
             })),
         })
+    }
+
+    /// Load a fixture and select one authored scenario. Scenario state belongs
+    /// to this replay fixture instance and is never shared across servers.
+    pub fn load_with_scenario(
+        session: &Session,
+        matcher: Matcher,
+        scenario_id: &str,
+    ) -> Result<Self, ReplayError> {
+        Self::load_with_scenario_and_redaction(
+            session,
+            matcher,
+            scenario_id,
+            eggreplay_core::RedactionConfig::default_secure(),
+        )
+    }
+
+    /// Load a named scenario with an explicit protected-field redaction policy.
+    pub fn load_with_scenario_and_redaction(
+        session: &Session,
+        matcher: Matcher,
+        scenario_id: &str,
+        redaction: eggreplay_core::RedactionConfig,
+    ) -> Result<Self, ReplayError> {
+        let bytes = session
+            .read_extension("rules")?
+            .ok_or_else(|| ReplayError::State("fixture has no rules extension".into()))?;
+        let rules: ScenarioRules = serde_json::from_slice(&bytes)
+            .map_err(|error| ReplayError::State(format!("invalid rules extension: {error}")))?;
+        let scenario = rules
+            .runtime_with_redaction(scenario_id, redaction)
+            .map_err(ReplayError::State)?;
+        Self::load_inner(session, matcher, Some(scenario))
     }
 
     /// Return the number of loaded candidates (metadata only).
@@ -90,11 +182,55 @@ impl ReplayFixture {
         bind: SocketAddr,
         max_body_bytes: u64,
     ) -> Result<ServerHandle, ReplayError> {
+        self.start_inner(bind, max_body_bytes, None).await
+    }
+
+    /// Start replay with explicit upstream append-on-miss behavior. Existing
+    /// candidates replay first; only exact no-match results reach EggFetch.
+    #[cfg(feature = "eggserve")]
+    #[allow(clippy::too_many_arguments)]
+    pub async fn start_append_new(
+        self,
+        bind: SocketAddr,
+        max_body_bytes: u64,
+        upstream_base: http::Uri,
+        client: eggfetch_core::Client,
+        recording: eggreplay_store::RecordingSession,
+        redaction: eggreplay_core::RedactionConfig,
+        profile_id: String,
+        max_structured_bytes: u64,
+        physical_route: eggreplay_core::PhysicalRoute,
+    ) -> Result<ServerHandle, ReplayError> {
+        self.start_inner(
+            bind,
+            max_body_bytes,
+            Some(AppendContext {
+                upstream_base,
+                client,
+                recording,
+                redaction,
+                profile_id,
+                max_structured_bytes,
+                physical_route,
+                miss_locks: Arc::new(MissLocks::default()),
+            }),
+        )
+        .await
+    }
+
+    #[cfg(feature = "eggserve")]
+    async fn start_inner(
+        self,
+        bind: SocketAddr,
+        max_body_bytes: u64,
+        append: Option<AppendContext>,
+    ) -> Result<ServerHandle, ReplayError> {
         let state = self.state.clone();
         let service = service_fn_with_policy(
             move |request| {
                 let state = state.clone();
-                async move { handle_request(state, request).await }
+                let append = append.clone();
+                async move { handle_request(state, request, append).await }
             },
             RequestBodyPolicy::Stream {
                 max_bytes: max_body_bytes,
@@ -119,6 +255,7 @@ impl ReplayFixture {
 async fn handle_request(
     state: Arc<Mutex<ReplayState>>,
     request: eggserve_primitives::Request,
+    append: Option<AppendContext>,
 ) -> Result<Response, ServiceError> {
     use eggserve_primitives::{ResponseStream, ResponseStreamError};
     use sha2::{Digest, Sha256};
@@ -130,7 +267,24 @@ async fn handle_request(
         .map_err(|error| ServiceError::internal(error.to_string()))?;
     let actual = request_from_eggserve(&head, &connection, &body, trailers.as_ref())
         .map_err(ServiceError::internal)?;
-    let (index, response_headers, response_status, response_body_ref, response_trailers, store) = {
+    {
+        let mut guard = state
+            .lock()
+            .map_err(|_| ServiceError::internal("replay state poisoned"))?;
+        if let Some(scenario) = guard.scenario.as_mut() {
+            let step = scenario
+                .advance(&actual, &body)
+                .map_err(ServiceError::internal)?;
+            if let Some(step) = step {
+                return response_bytes(
+                    step.response.status,
+                    &step.response.headers,
+                    step.response.body,
+                );
+            }
+        }
+    }
+    let selection = {
         let mut guard = state
             .lock()
             .map_err(|_| ServiceError::internal("replay state poisoned"))?;
@@ -138,8 +292,16 @@ async fn handle_request(
         let matcher = guard.matcher.clone();
         let store = guard.store.clone();
         let store_for_loader = store.clone();
-        let mut loader = |_idx: usize, candidate: &MatchCandidate| -> Option<Vec<u8>> {
+        let append_store = append.as_ref().map(|context| context.recording.clone());
+        let candidate_in_append = guard.candidate_in_append.clone();
+        let mut loader = |idx: usize, candidate: &MatchCandidate| -> Option<Vec<u8>> {
             match &candidate.flow.request.body {
+                BodyRef::Blob(blob) if candidate_in_append.get(idx).copied().unwrap_or(false) => {
+                    append_store
+                        .as_ref()?
+                        .read_body(&BodyRef::Blob(blob.clone()))
+                        .ok()
+                }
                 BodyRef::Blob(blob) => store_for_loader.read_blob(blob).ok(),
                 BodyRef::Absent | BodyRef::Empty => {
                     if candidate.request_body.is_empty() {
@@ -154,39 +316,99 @@ async fn handle_request(
             &actual,
             &body,
             &candidates,
-            ConsumptionMode::Once,
+            if append.is_some() {
+                ConsumptionMode::Unlimited
+            } else {
+                ConsumptionMode::Once
+            },
             &mut guard.session,
             &mut loader,
         );
-        let index = match result {
-            MatchResult::Matched(index) => index,
+        match result {
+            MatchResult::Matched(index) => {
+                let in_append = guard.candidate_in_append[index];
+                let flow = guard.candidates[index].flow.clone();
+                match flow.outcome {
+                    FlowOutcome::Response(response) => Ok((
+                        index,
+                        response.headers.clone(),
+                        response.status,
+                        response.body.clone(),
+                        response.trailers.clone(),
+                        store,
+                        in_append,
+                    )),
+                    FlowOutcome::Error(error) => {
+                        return response_bytes(
+                            502,
+                            &[],
+                            format!("recorded upstream error: {:?}\n", error.category),
+                        );
+                    }
+                }
+            }
             MatchResult::Exhausted { .. } => {
                 return response_bytes(409, &[], "eggreplay replay fixture exhausted\n");
             }
-            MatchResult::NoMatch { .. } => {
-                return response_bytes(404, &[], "eggreplay replay no match\n");
-            }
-        };
-        let flow = guard.candidates[index].flow.clone();
-        match flow.outcome {
-            FlowOutcome::Response(response) => (
-                index,
-                response.headers.clone(),
-                response.status,
-                response.body.clone(),
-                response.trailers.clone(),
-                store,
-            ),
-            FlowOutcome::Error(error) => {
-                return response_bytes(
-                    502,
-                    &[],
-                    format!("recorded upstream error: {:?}\n", error.category),
-                );
-            }
+            MatchResult::NoMatch { .. } => match append.clone() {
+                Some(context) => Err(context),
+                None => return response_bytes(404, &[], "eggreplay replay no match\n"),
+            },
         }
     };
+    let (
+        index,
+        response_headers,
+        response_status,
+        response_body_ref,
+        response_trailers,
+        store,
+        in_append,
+    ) = match selection {
+        Ok(selection) => selection,
+        Err(context) => return append_miss(state, context, actual, body.to_vec()).await,
+    };
     let _ = index;
+    if in_append {
+        let Some(context) = append else {
+            return Err(ServiceError::internal(
+                "append candidate has no recording session",
+            ));
+        };
+        if response_body_ref == BodyRef::Empty || response_body_ref == BodyRef::Absent {
+            let status = StatusCode::new(response_status)
+                .map_err(|error| ServiceError::internal(error.to_string()))?;
+            let mut builder = Response::builder().status(status);
+            for header in response_headers {
+                builder = builder
+                    .header(header.name, header.value)
+                    .map_err(|error| ServiceError::internal(error.to_string()))?;
+            }
+            return builder
+                .body(ResponseBody::Empty)
+                .map_err(|error| ServiceError::internal(error.to_string()));
+        }
+        let path = context
+            .recording
+            .body_path(&response_body_ref)
+            .map_err(|error| ServiceError::internal(error.to_string()))?;
+        let stream = crate::recording::response_stream(
+            path,
+            response_body_ref.len().unwrap_or(0),
+            response_trailers,
+        );
+        let status = StatusCode::new(response_status)
+            .map_err(|error| ServiceError::internal(error.to_string()))?;
+        let mut builder = Response::builder().status(status);
+        for header in response_headers {
+            builder = builder
+                .header(header.name, header.value)
+                .map_err(|error| ServiceError::internal(error.to_string()))?;
+        }
+        return builder
+            .body(ResponseBody::Stream(stream))
+            .map_err(|error| ServiceError::internal(error.to_string()));
+    }
     match response_body_ref {
         BodyRef::Absent | BodyRef::Empty => {
             let status = StatusCode::new(response_status)
@@ -318,6 +540,172 @@ fn response_bytes(
 }
 
 #[cfg(feature = "eggserve")]
+async fn append_miss(
+    state: Arc<Mutex<ReplayState>>,
+    context: AppendContext,
+    actual: eggreplay_core::HttpRequest,
+    body: Vec<u8>,
+) -> Result<Response, ServiceError> {
+    use sha2::{Digest, Sha256};
+
+    let mut key_hash = Sha256::new();
+    key_hash.update(
+        serde_json::to_vec(&actual).map_err(|error| ServiceError::internal(error.to_string()))?,
+    );
+    key_hash.update(&body);
+    let lock = context
+        .miss_locks
+        .lock_for(format!("{:x}", key_hash.finalize()))?;
+    let _miss_guard = lock.lock().await;
+
+    // Another request with the same key may have filled this miss while we
+    // waited. Re-run selection under the ordinary replay-state lock before
+    // opening another upstream transaction.
+    let replayed = {
+        let mut guard = state
+            .lock()
+            .map_err(|_| ServiceError::internal("replay state poisoned"))?;
+        let candidates = guard.candidates.clone();
+        let matcher = guard.matcher.clone();
+        let store = guard.store.clone();
+        let store_for_loader = store.clone();
+        let append_store = context.recording.clone();
+        let sources = guard.candidate_in_append.clone();
+        let mut loader = |index: usize, candidate: &MatchCandidate| -> Option<Vec<u8>> {
+            match &candidate.flow.request.body {
+                BodyRef::Blob(blob) if sources.get(index).copied().unwrap_or(false) => {
+                    append_store.read_body(&BodyRef::Blob(blob.clone())).ok()
+                }
+                BodyRef::Blob(blob) => store_for_loader.read_blob(blob).ok(),
+                BodyRef::Absent | BodyRef::Empty => Some(Vec::new()),
+            }
+        };
+        match matcher.select_with_loader(
+            &actual,
+            &body,
+            &candidates,
+            ConsumptionMode::Unlimited,
+            &mut guard.session,
+            &mut loader,
+        ) {
+            MatchResult::Matched(index) if sources.get(index).copied().unwrap_or(false) => {
+                Some(guard.candidates[index].flow.clone())
+            }
+            MatchResult::Matched(_) => None,
+            MatchResult::Exhausted { .. } => {
+                return response_bytes(409, &[], "eggreplay replay fixture exhausted\n");
+            }
+            MatchResult::NoMatch { .. } => None,
+        }
+    };
+    if let Some(flow) = replayed {
+        return response_from_append_flow(&flow, &context.recording);
+    }
+
+    let Some(scheme) = context.upstream_base.scheme_str() else {
+        return Err(ServiceError::internal("upstream URI has no scheme"));
+    };
+    let Some(authority) = context.upstream_base.authority() else {
+        return Err(ServiceError::internal("upstream URI has no authority"));
+    };
+    let query = {
+        let mut query = url::form_urlencoded::Serializer::new(String::new());
+        for pair in &actual.query {
+            query.append_pair(&pair.key, &pair.value);
+        }
+        query.finish()
+    };
+    let target = if query.is_empty() {
+        actual.path.clone()
+    } else {
+        format!("{}?{query}", actual.path)
+    };
+    let uri: http::Uri = format!("{scheme}://{authority}{target}")
+        .parse()
+        .map_err(|error: http::uri::InvalidUri| ServiceError::internal(error.to_string()))?;
+    let mut request = http::Request::builder()
+        .method(actual.method.as_str())
+        .uri(uri)
+        .body(http_body_util::Full::new(bytes::Bytes::from(body.clone())))
+        .map_err(|error| ServiceError::internal(error.to_string()))?;
+    for header in actual.headers {
+        if header.name.eq_ignore_ascii_case("host") {
+            continue;
+        }
+        let name = http::header::HeaderName::from_bytes(header.name.as_bytes())
+            .map_err(|error| ServiceError::internal(error.to_string()))?;
+        let value = http::header::HeaderValue::from_bytes(header.value.as_bytes())
+            .map_err(|error| ServiceError::internal(error.to_string()))?;
+        request.headers_mut().append(name, value);
+    }
+    let flow = crate::recording::record_request_with_session(
+        &context.client,
+        &context.recording,
+        request,
+        &context.redaction,
+        &context.profile_id,
+        context.max_structured_bytes,
+        Some(context.physical_route.clone()),
+    )
+    .await
+    .map_err(|error| ServiceError::rejected(502, format!("upstream recording failed: {error}")))?;
+    {
+        let mut guard = state
+            .lock()
+            .map_err(|_| ServiceError::internal("replay state poisoned"))?;
+        guard
+            .candidates
+            .push(MatchCandidate::from_flow(flow.clone()));
+        guard.candidate_in_append.push(true);
+    }
+    response_from_append_flow(&flow, &context.recording)
+}
+
+#[cfg(feature = "eggserve")]
+fn response_from_append_flow(
+    flow: &eggreplay_core::Flow,
+    recording: &eggreplay_store::RecordingSession,
+) -> Result<Response, ServiceError> {
+    use eggserve_primitives::{ResponseBody, StatusCode};
+    let response = match &flow.outcome {
+        FlowOutcome::Response(response) => response,
+        FlowOutcome::Error(error) => {
+            return response_bytes(
+                502,
+                &[],
+                format!("upstream failure: {:?}\n", error.category),
+            );
+        }
+    };
+    let status = StatusCode::new(response.status)
+        .map_err(|error| ServiceError::internal(error.to_string()))?;
+    let mut builder = Response::builder().status(status);
+    for header in &response.headers {
+        builder = builder
+            .header(header.name.clone(), header.value.clone())
+            .map_err(|error| ServiceError::internal(error.to_string()))?;
+    }
+    match &response.body {
+        BodyRef::Absent | BodyRef::Empty => builder
+            .body(ResponseBody::Empty)
+            .map_err(|error| ServiceError::internal(error.to_string())),
+        body => {
+            let path = recording
+                .body_path(body)
+                .map_err(|error| ServiceError::internal(error.to_string()))?;
+            let stream = crate::recording::response_stream(
+                path,
+                body.len().unwrap_or(0),
+                response.trailers.clone(),
+            );
+            builder
+                .body(ResponseBody::Stream(stream))
+                .map_err(|error| ServiceError::internal(error.to_string()))
+        }
+    }
+}
+
+#[cfg(feature = "eggserve")]
 fn request_from_eggserve(
     head: &eggserve_primitives::RequestHead,
     connection: &eggserve_primitives::ConnectionInfo,
@@ -332,21 +720,22 @@ fn request_from_eggserve(
             })
             .collect()
     });
+    let authority = head
+        .authority()
+        .map(|value| value.as_str().to_owned())
+        .or_else(|| {
+            head.headers()
+                .iter()
+                .find(|field| field.name.as_str().eq_ignore_ascii_case("host"))
+                .map(|field| String::from_utf8_lossy(field.value.as_bytes()).into_owned())
+        })
+        .unwrap_or_default();
     let headers = eggserve_headers(head.headers());
     let trailers = trailers.map(eggserve_trailers).unwrap_or_default();
     Ok(HttpRequest {
         method: head.method().as_str().into(),
         scheme: connection.scheme.as_str().into(),
-        authority: head
-            .authority()
-            .map(|value| value.as_str().to_owned())
-            .or_else(|| {
-                headers
-                    .iter()
-                    .find(|header| header.name.eq_ignore_ascii_case("host"))
-                    .map(|header| header.value.clone())
-            })
-            .unwrap_or_default(),
+        authority,
         path: head.target().path().into(),
         query,
         headers,
@@ -363,6 +752,7 @@ fn request_from_eggserve(
 fn eggserve_headers(headers: &HeaderBlock) -> Vec<HeaderEntry> {
     headers
         .iter()
+        .filter(|field| !field.name.as_str().eq_ignore_ascii_case("host"))
         .map(|field| HeaderEntry {
             name: field.name.as_str().to_ascii_lowercase(),
             value: String::from_utf8_lossy(field.value.as_bytes()).into_owned(),
@@ -424,7 +814,7 @@ mod tests {
         resp_trailers: Vec<HeaderEntry>,
     ) -> Flow {
         Flow {
-            schema_version: eggreplay_core::SCHEMA_VERSION,
+            schema_version: eggreplay_core::FLOW_SCHEMA_VERSION,
             id: id.into(),
             started_at_ms: 1,
             completed_at_ms: Some(2),
@@ -891,5 +1281,298 @@ mod tests {
         server.shutdown();
         server.wait().await;
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn selected_scenario_precedes_recorded_matching_and_renders_request_values() {
+        use eggfetch_core::Client;
+
+        let dir = temp_path("scenario-server");
+        let mut writer =
+            SessionWriter::create(&dir, SessionMetadata::default(), test_limits()).unwrap();
+        let rules = ScenarioRules {
+            schema_version: eggreplay_core::RULES_SCHEMA_VERSION,
+            scenarios: vec![eggreplay_core::Scenario {
+                id: "users".into(),
+                initial_state: "start".into(),
+                states: vec!["start".into(), "done".into()],
+                transitions: vec![eggreplay_core::ScenarioTransition {
+                    from: "start".into(),
+                    when: vec![eggreplay_core::RequestPredicate::Path {
+                        value: "/users/alice".into(),
+                    }],
+                    extract: vec![eggreplay_core::VariableExtraction {
+                        name: "user".into(),
+                        source: eggreplay_core::VariableSource::PathSegment { index: 1 },
+                    }],
+                    extraction_failure: eggreplay_core::ExtractionFailureBehavior::Abort,
+                    response: eggreplay_core::ScenarioResponse {
+                        status: 201,
+                        headers: vec![HeaderEntry {
+                            name: "content-type".into(),
+                            value: "text/plain".into(),
+                        }],
+                        body_template: "created {{user}}".into(),
+                        json_pointer_replacements: vec![],
+                    },
+                    next_state: "done".into(),
+                }],
+            }],
+        };
+        writer
+            .write_extension(
+                "rules",
+                eggreplay_core::RULES_SCHEMA_VERSION,
+                "rules.json",
+                true,
+                &serde_json::to_vec(&rules).unwrap(),
+            )
+            .unwrap();
+        let session = writer.finish().unwrap();
+        let fixture = ReplayFixture::load_with_scenario(
+            &session,
+            eggreplay_core::Matcher::strict(8),
+            "users",
+        )
+        .unwrap();
+        let server = fixture
+            .start("127.0.0.1:0".parse().unwrap(), test_limits().max_blob_bytes)
+            .await
+            .unwrap();
+        let client = Client::builder().retry_canceled_requests(false).build();
+        let uri: http::Uri = format!("http://{}/users/alice", server.local_addr())
+            .parse()
+            .unwrap();
+        let request = http::Request::builder()
+            .uri(uri)
+            .body(http_body_util::Full::new(bytes::Bytes::new()))
+            .unwrap();
+        let response = client.execute_http_body_default(request).await.unwrap();
+        assert_eq!(response.status().as_u16(), 201);
+        use http_body_util::BodyExt;
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(&body[..], b"created alice");
+        server.shutdown();
+        server.wait().await;
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn append_new_records_one_miss_and_replays_it_without_second_upstream_call() {
+        use eggfetch_core::Client;
+        use http_body_util::BodyExt;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let source_dir = temp_path("append-source");
+        let source_writer =
+            SessionWriter::create(&source_dir, SessionMetadata::default(), test_limits()).unwrap();
+        let source = source_writer.finish().unwrap();
+        let append_dir = temp_path("append-recording");
+        let recording = eggreplay_store::RecordingSession::create(
+            &append_dir,
+            SessionMetadata::default(),
+            test_limits(),
+        )
+        .unwrap();
+        let upstream_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let upstream_addr = upstream_listener.local_addr().unwrap();
+        let upstream_authority = upstream_addr.to_string();
+        let secret = "M009-APPEND-SECRET-SENTINEL";
+        let upstream_hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let upstream_hits_task = upstream_hits.clone();
+        let upstream_task = tokio::spawn(async move {
+            let (mut stream, _) = upstream_listener.accept().await.unwrap();
+            upstream_hits_task.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let mut request = Vec::new();
+            loop {
+                let mut chunk = [0; 1024];
+                let read = stream.read(&mut chunk).await.unwrap();
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&chunk[..read]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nfresh",
+                )
+                .await
+                .unwrap();
+        });
+        let fixture = ReplayFixture::load(&source).unwrap();
+        let server = fixture
+            .start_append_new(
+                "127.0.0.1:0".parse().unwrap(),
+                test_limits().max_blob_bytes,
+                format!("http://{upstream_authority}").parse().unwrap(),
+                Client::builder().retry_canceled_requests(false).build(),
+                recording.clone(),
+                eggreplay_core::RedactionConfig::default_secure(),
+                "default-v1".into(),
+                eggreplay_core::DEFAULT_MAX_STRUCTURED_REDACTION_BYTES,
+                eggreplay_core::PhysicalRoute {
+                    kind: "direct".into(),
+                    description: Some("direct".into()),
+                },
+            )
+            .await
+            .unwrap();
+        let client = Client::builder().retry_canceled_requests(false).build();
+        let fetch = |client: Client, server_addr: SocketAddr, host: String, secret: String| async move {
+            let uri: http::Uri = format!("http://{server_addr}/new").parse().unwrap();
+            let request = http::Request::builder()
+                .uri(uri)
+                .header("host", host)
+                .header("authorization", secret)
+                .body(http_body_util::Full::new(bytes::Bytes::new()))
+                .unwrap();
+            let response = client.execute_http_body_default(request).await.unwrap();
+            let status = response.status();
+            let bytes = response.into_body().collect().await.unwrap().to_bytes();
+            assert_eq!(status.as_u16(), 200, "response body: {:?}", bytes);
+            bytes
+        };
+        let first = fetch(
+            client.clone(),
+            server.local_addr(),
+            upstream_authority.clone(),
+            secret.to_owned(),
+        );
+        let second = fetch(
+            client,
+            server.local_addr(),
+            upstream_authority,
+            secret.to_owned(),
+        );
+        let (first_body, second_body) = tokio::join!(first, second);
+        assert_eq!(first_body, "fresh");
+        assert_eq!(second_body, "fresh");
+        assert_eq!(upstream_hits.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(recording.flow_count(), 1);
+        upstream_task.await.unwrap();
+        server.shutdown();
+        server.wait().await;
+        recording.shutdown();
+        let appended = recording.finish().unwrap();
+        assert_eq!(appended.manifest().flow_count, 1);
+        let recorded_flows = appended
+            .iter_flows()
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert!(
+            !serde_json::to_string(&recorded_flows[0])
+                .unwrap()
+                .contains(secret)
+        );
+        std::fs::remove_dir_all(&append_dir).ok();
+        std::fs::remove_dir_all(&source_dir).ok();
+    }
+
+    #[tokio::test]
+    async fn unrelated_append_new_misses_overlap_upstream_work() {
+        use eggfetch_core::Client;
+        use http_body_util::BodyExt;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let source_dir = temp_path("append-overlap-source");
+        let source_writer =
+            SessionWriter::create(&source_dir, SessionMetadata::default(), test_limits()).unwrap();
+        let source = source_writer.finish().unwrap();
+        let append_dir = temp_path("append-overlap-recording");
+        let recording = eggreplay_store::RecordingSession::create(
+            &append_dir,
+            SessionMetadata::default(),
+            test_limits(),
+        )
+        .unwrap();
+        let upstream_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let upstream_addr = upstream_listener.local_addr().unwrap();
+        let upstream_authority = upstream_addr.to_string();
+        let active = std::sync::Arc::new(AtomicUsize::new(0));
+        let max_active = std::sync::Arc::new(AtomicUsize::new(0));
+        let active_task = active.clone();
+        let max_task = max_active.clone();
+        let upstream_task = tokio::spawn(async move {
+            for _ in 0..2 {
+                let (mut stream, _) = upstream_listener.accept().await.unwrap();
+                let active = active_task.clone();
+                let max_active = max_task.clone();
+                tokio::spawn(async move {
+                    let now = active.fetch_add(1, Ordering::SeqCst) + 1;
+                    max_active.fetch_max(now, Ordering::SeqCst);
+                    let mut request = Vec::new();
+                    loop {
+                        let mut chunk = [0; 1024];
+                        let read = stream.read(&mut chunk).await.unwrap();
+                        if read == 0 {
+                            break;
+                        }
+                        request.extend_from_slice(&chunk[..read]);
+                        if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                            break;
+                        }
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                    stream
+                        .write_all(
+                            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
+                        )
+                        .await
+                        .unwrap();
+                    active.fetch_sub(1, Ordering::SeqCst);
+                });
+            }
+        });
+        let fixture = ReplayFixture::load(&source).unwrap();
+        let server = fixture
+            .start_append_new(
+                "127.0.0.1:0".parse().unwrap(),
+                test_limits().max_blob_bytes,
+                format!("http://{upstream_authority}").parse().unwrap(),
+                Client::builder().retry_canceled_requests(false).build(),
+                recording.clone(),
+                eggreplay_core::RedactionConfig::default_secure(),
+                "default-v1".into(),
+                eggreplay_core::DEFAULT_MAX_STRUCTURED_REDACTION_BYTES,
+                eggreplay_core::PhysicalRoute {
+                    kind: "direct".into(),
+                    description: Some("direct".into()),
+                },
+            )
+            .await
+            .unwrap();
+        let client = Client::builder().retry_canceled_requests(false).build();
+        let server_addr = server.local_addr();
+        let fetch = |path: &'static str| {
+            let client = client.clone();
+            let host = upstream_authority.clone();
+            async move {
+                let uri: http::Uri = format!("http://{server_addr}{path}").parse().unwrap();
+                let request = http::Request::builder()
+                    .uri(uri)
+                    .header("host", host)
+                    .body(http_body_util::Full::new(bytes::Bytes::new()))
+                    .unwrap();
+                let response = client.execute_http_body_default(request).await.unwrap();
+                assert_eq!(response.status().as_u16(), 200);
+                let bytes = response.into_body().collect().await.unwrap().to_bytes();
+                assert_eq!(&bytes[..], b"ok");
+            }
+        };
+        tokio::join!(fetch("/a"), fetch("/b"));
+        upstream_task.await.unwrap();
+        assert_eq!(max_active.load(Ordering::SeqCst), 2);
+        assert_eq!(recording.flow_count(), 2);
+        server.shutdown();
+        server.wait().await;
+        recording.shutdown();
+        recording.finish().unwrap();
+        std::fs::remove_dir_all(&append_dir).ok();
+        std::fs::remove_dir_all(&source_dir).ok();
     }
 }

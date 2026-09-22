@@ -1,5 +1,7 @@
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use eggreplay_core::{FlowOutcome, PhysicalRoute, ReportScheduler, SessionMetadata, compare_flows};
+use eggreplay_core::{
+    FlowOutcome, Matcher, PhysicalRoute, ReportScheduler, SessionMetadata, compare_flows,
+};
 use eggreplay_http::{EggressDialer, ReplayFixture, execute_candidate};
 use eggreplay_store::{RecordingSession, Session, StoreLimits};
 use serde::Serialize;
@@ -78,8 +80,77 @@ struct ServeArgs {
     fixture: PathBuf,
     #[arg(long, default_value = "127.0.0.1:0")]
     listen: std::net::SocketAddr,
+    /// Record behavior; defaults to sealed offline replay.
+    #[arg(long, value_enum, default_value_t = ServeRecordMode::Sealed)]
+    record_mode: ServeRecordMode,
+    /// Required for network-capable record modes.
+    #[arg(long)]
+    upstream: Option<String>,
+    /// Outbound route for explicit upstream execution.
+    #[arg(long, default_value = "direct")]
+    route: String,
+    /// Additional sensitive headers, queries, and JSON Pointer paths.
+    #[arg(long = "redact-header")]
+    redact_headers: Vec<String>,
+    #[arg(long = "redact-query")]
+    redact_queries: Vec<String>,
+    #[arg(long = "redact-json-path")]
+    redact_json_paths: Vec<String>,
+    /// Persisted redaction policy identifier.
+    #[arg(long = "redaction-profile", default_value = "default-v1")]
+    redaction_profile: String,
+    /// Replace secure redaction defaults; unsafe and explicit.
+    #[arg(long = "unsafe-replace-default-redaction", default_value_t = false)]
+    unsafe_replace: bool,
+    /// Request matching profile used by this replay server.
+    #[arg(long, value_enum, default_value_t = ServeMatcherProfile::Strict)]
+    matcher_profile: ServeMatcherProfile,
+    /// Explicitly select a named authored scenario from the `rules` extension.
+    #[arg(long)]
+    scenario: Option<String>,
     #[command(flatten)]
     output: OutputArgs,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum ServeMatcherProfile {
+    Strict,
+    Practical,
+}
+
+impl ServeMatcherProfile {
+    fn matcher(self) -> Matcher {
+        match self {
+            Self::Strict => Matcher::strict(8),
+            Self::Practical => Matcher::practical(8),
+        }
+    }
+
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Strict => "strict",
+            Self::Practical => "practical",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum ServeRecordMode {
+    Sealed,
+    Once,
+    AppendNew,
+    ReRecord,
+}
+
+impl From<ServeRecordMode> for eggreplay_core::RecordMode {
+    fn from(value: ServeRecordMode) -> Self {
+        match value {
+            ServeRecordMode::Sealed => Self::Sealed,
+            ServeRecordMode::Once => Self::Once,
+            ServeRecordMode::AppendNew => Self::AppendNew,
+            ServeRecordMode::ReRecord => Self::ReRecord,
+        }
+    }
 }
 #[derive(Debug, Args)]
 struct ReplayArgs {
@@ -304,10 +375,50 @@ async fn record(args: RecordArgs) -> Result<(), (String, String)> {
 }
 
 async fn serve(args: ServeArgs) -> Result<(), (String, String)> {
+    recover_fixture_transactionally(&args.fixture).map_err(|error| ("fixture".into(), error))?;
+    let policy = eggreplay_core::RecordMode::from(args.record_mode)
+        .resolve(args.fixture.exists(), args.upstream.is_some())
+        .map_err(|message| ("configuration".into(), message))?;
+    if !policy.upstream_enabled && args.route != "direct" {
+        return Err((
+            "configuration".into(),
+            "--route requires a network-capable record mode and explicit --upstream".into(),
+        ));
+    }
+    if policy.mode == eggreplay_core::RecordMode::Once {
+        if args.scenario.is_some() {
+            return Err((
+                "configuration".into(),
+                "--scenario is only valid with sealed replay".into(),
+            ));
+        }
+        return record_once_from_serve(args).await;
+    }
+    if policy.mode == eggreplay_core::RecordMode::AppendNew {
+        if !args.fixture.exists() {
+            return Err((
+                "configuration".into(),
+                "append-new requires an existing fixture".into(),
+            ));
+        }
+        return serve_append_new(args).await;
+    }
+    if policy.mode == eggreplay_core::RecordMode::ReRecord {
+        return serve_re_record(args).await;
+    }
     let session = Session::open(&args.fixture, StoreLimits::default())
         .map_err(|error| ("fixture".into(), error.to_string()))?;
-    let fixture =
-        ReplayFixture::load(&session).map_err(|error| ("fixture".into(), error.to_string()))?;
+    let (serve_redaction, _) = effective_serve_redaction_policy(&args);
+    let fixture = match args.scenario.as_deref() {
+        Some(scenario_id) => ReplayFixture::load_with_scenario_and_redaction(
+            &session,
+            args.matcher_profile.matcher(),
+            scenario_id,
+            serve_redaction,
+        ),
+        None => ReplayFixture::load_with_matcher(&session, args.matcher_profile.matcher()),
+    }
+    .map_err(|error| ("fixture".into(), error.to_string()))?;
     let server = fixture
         .start(args.listen, StoreLimits::default().max_blob_bytes)
         .await
@@ -327,8 +438,278 @@ async fn serve(args: ServeArgs) -> Result<(), (String, String)> {
         args.output.output,
         true,
         None,
-        json!({"fixture": args.fixture, "status": "stopped"}),
+        json!({"fixture": args.fixture, "scenario": args.scenario, "record_mode": "sealed", "upstream_enabled": false, "matcher_profile": args.matcher_profile.as_str(), "status": "stopped"}),
     );
+    Ok(())
+}
+
+async fn record_once_from_serve(args: ServeArgs) -> Result<(), (String, String)> {
+    let upstream = args
+        .upstream
+        .as_deref()
+        .ok_or_else(|| ("configuration".into(), "--upstream is required".into()))?
+        .parse()
+        .map_err(|error: http::uri::InvalidUri| ("configuration".into(), error.to_string()))?;
+    let (client, physical_route) = build_client(&args.route)?;
+    let (redaction, profile_id) = effective_serve_redaction_policy(&args);
+    let session = RecordingSession::create(
+        &args.fixture,
+        SessionMetadata {
+            capture_mode: "gateway-once".into(),
+            target: Some(redact_url(&args.upstream.clone().unwrap_or_default())),
+            redaction_profile: profile_id.clone(),
+            ..SessionMetadata::default()
+        },
+        StoreLimits::default(),
+    )
+    .map_err(|error| ("fixture".into(), error.to_string()))?;
+    let server = eggreplay_http::recording::start_recording_gateway(
+        args.listen,
+        upstream,
+        client,
+        session.clone(),
+        StoreLimits::default().max_blob_bytes,
+        redaction,
+        profile_id,
+        eggreplay_core::DEFAULT_MAX_STRUCTURED_REDACTION_BYTES,
+        physical_route,
+    )
+    .await
+    .map_err(|error| ("runtime".into(), error.to_string()))?;
+    eprintln!("recording once on {}", server.local_addr());
+    tokio::signal::ctrl_c()
+        .await
+        .map_err(|error| ("runtime".into(), error.to_string()))?;
+    server.shutdown();
+    server.wait().await;
+    session.shutdown();
+    session
+        .finish()
+        .map_err(|error| ("fixture".into(), error.to_string()))?;
+    emit(
+        "serve",
+        args.output.output,
+        true,
+        None,
+        json!({"fixture": args.fixture, "record_mode": "once", "upstream_enabled": true, "matcher_profile": args.matcher_profile.as_str(), "redaction_profile": args.redaction_profile, "status": "finalized"}),
+    );
+    Ok(())
+}
+
+async fn serve_append_new(args: ServeArgs) -> Result<(), (String, String)> {
+    let source = Session::open(&args.fixture, StoreLimits::default())
+        .map_err(|error| ("fixture".into(), error.to_string()))?;
+    let (client, physical_route) = build_client(&args.route)?;
+    let (redaction, profile_id) = effective_serve_redaction_policy(&args);
+    if profile_id != source.manifest().metadata.redaction_profile {
+        return Err((
+            "configuration".into(),
+            "append-new redaction profile must match the source fixture; select its --redaction-profile explicitly".into(),
+        ));
+    }
+    let upstream = args
+        .upstream
+        .as_deref()
+        .ok_or_else(|| ("configuration".into(), "--upstream is required".into()))?
+        .parse()
+        .map_err(|error: http::uri::InvalidUri| ("configuration".into(), error.to_string()))?;
+    let temporary = sibling_transaction_path(&args.fixture, "misses");
+    let combined = sibling_transaction_path(&args.fixture, "combined");
+    let recording = RecordingSession::create(
+        &temporary,
+        SessionMetadata {
+            capture_mode: "append-new".into(),
+            target: Some(redact_url(&args.upstream.clone().unwrap_or_default())),
+            redaction_profile: profile_id.clone(),
+            ..SessionMetadata::default()
+        },
+        StoreLimits::default(),
+    )
+    .map_err(|error| ("fixture".into(), error.to_string()))?;
+    let fixture = match args.scenario.as_deref() {
+        Some(id) => ReplayFixture::load_with_scenario_and_redaction(
+            &source,
+            args.matcher_profile.matcher(),
+            id,
+            redaction.clone(),
+        ),
+        None => ReplayFixture::load_with_matcher(&source, args.matcher_profile.matcher()),
+    }
+    .map_err(|error| ("fixture".into(), error.to_string()))?;
+    let server = fixture
+        .start_append_new(
+            args.listen,
+            StoreLimits::default().max_blob_bytes,
+            upstream,
+            client,
+            recording.clone(),
+            redaction,
+            profile_id.clone(),
+            eggreplay_core::DEFAULT_MAX_STRUCTURED_REDACTION_BYTES,
+            physical_route,
+        )
+        .await
+        .map_err(|error| ("runtime".into(), error.to_string()))?;
+    eprintln!("append-new replay on {}", server.local_addr());
+    tokio::signal::ctrl_c()
+        .await
+        .map_err(|error| ("runtime".into(), error.to_string()))?;
+    server.shutdown();
+    server.wait().await;
+    recording.shutdown();
+    let additional = recording
+        .finish()
+        .map_err(|error| ("fixture".into(), error.to_string()))?;
+    let added_flows = additional.manifest().flow_count;
+    let merged = source
+        .merge_to(
+            &additional,
+            &combined,
+            eggreplay_core::SESSION_SCHEMA_VERSION,
+        )
+        .map_err(|error| ("fixture".into(), error.to_string()))?;
+    drop(merged);
+    replace_fixture_transactionally(&combined, &args.fixture)
+        .map_err(|error| ("runtime".into(), error))?;
+    let _ = std::fs::remove_dir_all(&temporary);
+    emit(
+        "serve",
+        args.output.output,
+        true,
+        None,
+        json!({"fixture": args.fixture, "record_mode": "append-new", "upstream_enabled": true, "matcher_profile": args.matcher_profile.as_str(), "redaction_profile": profile_id, "new_flows": added_flows, "status": "finalized"}),
+    );
+    Ok(())
+}
+
+async fn serve_re_record(args: ServeArgs) -> Result<(), (String, String)> {
+    if args.scenario.is_some() {
+        return Err((
+            "configuration".into(),
+            "re-record cannot select an authored offline scenario".into(),
+        ));
+    }
+    let upstream = args
+        .upstream
+        .as_deref()
+        .ok_or_else(|| ("configuration".into(), "--upstream is required".into()))?
+        .parse()
+        .map_err(|error: http::uri::InvalidUri| ("configuration".into(), error.to_string()))?;
+    let (client, physical_route) = build_client(&args.route)?;
+    let (redaction, profile_id) = effective_serve_redaction_policy(&args);
+    let temporary = sibling_transaction_path(&args.fixture, "rerecord");
+    let session = RecordingSession::create(
+        &temporary,
+        SessionMetadata {
+            capture_mode: "re-record".into(),
+            target: Some(redact_url(&args.upstream.clone().unwrap_or_default())),
+            redaction_profile: profile_id.clone(),
+            ..SessionMetadata::default()
+        },
+        StoreLimits::default(),
+    )
+    .map_err(|error| ("fixture".into(), error.to_string()))?;
+    let server = eggreplay_http::recording::start_recording_gateway(
+        args.listen,
+        upstream,
+        client,
+        session.clone(),
+        StoreLimits::default().max_blob_bytes,
+        redaction,
+        profile_id,
+        eggreplay_core::DEFAULT_MAX_STRUCTURED_REDACTION_BYTES,
+        physical_route,
+    )
+    .await
+    .map_err(|error| ("runtime".into(), error.to_string()))?;
+    eprintln!("re-record gateway on {}", server.local_addr());
+    tokio::signal::ctrl_c()
+        .await
+        .map_err(|error| ("runtime".into(), error.to_string()))?;
+    server.shutdown();
+    server.wait().await;
+    session.shutdown();
+    let recorded = session
+        .finish()
+        .map_err(|error| ("fixture".into(), error.to_string()))?;
+    let recorded_flows = recorded.manifest().flow_count;
+    drop(recorded);
+    replace_fixture_transactionally(&temporary, &args.fixture)
+        .map_err(|error| ("runtime".into(), error))?;
+    emit(
+        "serve",
+        args.output.output,
+        true,
+        None,
+        json!({"fixture": args.fixture, "record_mode": "re-record", "upstream_enabled": true, "matcher_profile": args.matcher_profile.as_str(), "redaction_profile": args.redaction_profile, "new_flows": recorded_flows, "status": "finalized"}),
+    );
+    Ok(())
+}
+
+fn sibling_transaction_path(fixture: &std::path::Path, label: &str) -> PathBuf {
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let name = fixture
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("fixture.eggr");
+    fixture.with_file_name(format!(".{name}.{label}-{}-{nonce}", std::process::id()))
+}
+
+fn replace_fixture_transactionally(
+    staged: &std::path::Path,
+    target: &std::path::Path,
+) -> Result<(), String> {
+    if !target.exists() {
+        return std::fs::rename(staged, target).map_err(|error| error.to_string());
+    }
+    let backup = sibling_transaction_path(target, "backup");
+    std::fs::rename(target, &backup)
+        .map_err(|error| format!("cannot stage old fixture: {error}"))?;
+    if let Err(error) = std::fs::rename(staged, target) {
+        let restore = std::fs::rename(&backup, target);
+        return Err(match restore {
+            Ok(()) => format!("cannot publish new fixture; old fixture restored: {error}"),
+            Err(restore_error) => format!(
+                "cannot publish new fixture ({error}); restore old fixture at {} failed ({restore_error})",
+                backup.display()
+            ),
+        });
+    }
+    std::fs::remove_dir_all(backup).map_err(|error| {
+        format!("new fixture published but old backup could not be removed: {error}")
+    })
+}
+
+fn recover_fixture_transactionally(target: &std::path::Path) -> Result<(), String> {
+    if target.exists() {
+        return Ok(());
+    }
+    let parent = target
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let name = target
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "fixture path has no filename".to_owned())?;
+    let prefix = format!(".{name}.backup-");
+    let mut backups = std::fs::read_dir(parent)
+        .map_err(|error| error.to_string())?
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_name().to_string_lossy().starts_with(&prefix))
+        .map(|entry| entry.path())
+        .collect::<Vec<_>>();
+    backups.sort();
+    for backup in backups.into_iter().rev() {
+        if Session::open(&backup, StoreLimits::default()).is_ok() {
+            std::fs::rename(&backup, target)
+                .map_err(|error| format!("cannot restore last valid fixture backup: {error}"))?;
+            return Ok(());
+        }
+    }
     Ok(())
 }
 
@@ -659,36 +1040,51 @@ fn inspect_body(
 }
 
 fn effective_redaction_policy(args: &RecordArgs) -> (eggreplay_core::RedactionConfig, String) {
+    redaction_policy(
+        &args.redact_headers,
+        &args.redact_queries,
+        &args.redact_json_paths,
+        &args.redaction_profile,
+        args.unsafe_replace,
+    )
+}
+
+fn effective_serve_redaction_policy(args: &ServeArgs) -> (eggreplay_core::RedactionConfig, String) {
+    redaction_policy(
+        &args.redact_headers,
+        &args.redact_queries,
+        &args.redact_json_paths,
+        &args.redaction_profile,
+        args.unsafe_replace,
+    )
+}
+
+fn redaction_policy(
+    redact_headers: &[String],
+    redact_queries: &[String],
+    redact_json_paths: &[String],
+    profile: &str,
+    unsafe_replace: bool,
+) -> (eggreplay_core::RedactionConfig, String) {
     use std::collections::BTreeSet;
-    if args.unsafe_replace {
+    if unsafe_replace {
         let config = eggreplay_core::RedactionConfig {
-            headers: args
-                .redact_headers
+            headers: redact_headers
                 .iter()
                 .map(|name| name.to_ascii_lowercase())
                 .collect(),
-            query_keys: args.redact_queries.iter().cloned().collect::<BTreeSet<_>>(),
-            json_paths: args
-                .redact_json_paths
-                .iter()
-                .cloned()
-                .collect::<BTreeSet<_>>(),
+            query_keys: redact_queries.iter().cloned().collect::<BTreeSet<_>>(),
+            json_paths: redact_json_paths.iter().cloned().collect::<BTreeSet<_>>(),
         };
-        (config, args.redaction_profile.clone())
+        (config, profile.to_owned())
     } else {
         let mut config = eggreplay_core::RedactionConfig::default_secure();
-        config.headers.extend(
-            args.redact_headers
-                .iter()
-                .map(|name| name.to_ascii_lowercase()),
-        );
         config
-            .query_keys
-            .extend(args.redact_queries.iter().cloned());
-        config
-            .json_paths
-            .extend(args.redact_json_paths.iter().cloned());
-        (config, args.redaction_profile.clone())
+            .headers
+            .extend(redact_headers.iter().map(|name| name.to_ascii_lowercase()));
+        config.query_keys.extend(redact_queries.iter().cloned());
+        config.json_paths.extend(redact_json_paths.iter().cloned());
+        (config, profile.to_owned())
     }
 }
 
@@ -886,5 +1282,63 @@ fn emit(
                 println!("{command}: failed ({})", failure.unwrap_or("error"));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod transaction_tests {
+    use super::*;
+
+    fn temp_path(label: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "eggreplay-cli-transaction-{label}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
+    }
+
+    #[test]
+    fn replacement_publishes_complete_stage_and_rolls_back_failed_publish() {
+        let target = temp_path("target");
+        let staged = temp_path("staged");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::create_dir_all(&staged).unwrap();
+        std::fs::write(target.join("value"), "old").unwrap();
+        std::fs::write(staged.join("value"), "new").unwrap();
+        replace_fixture_transactionally(&staged, &target).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(target.join("value")).unwrap(),
+            "new"
+        );
+        assert!(!staged.exists());
+
+        let missing_stage = temp_path("missing-stage");
+        let result = replace_fixture_transactionally(&missing_stage, &target);
+        assert!(result.is_err());
+        assert_eq!(
+            std::fs::read_to_string(target.join("value")).unwrap(),
+            "new"
+        );
+        std::fs::remove_dir_all(target).unwrap();
+    }
+
+    #[test]
+    fn interrupted_replacement_restores_the_last_valid_backup() {
+        let target = temp_path("recover-target");
+        let staging = temp_path("recover-stage");
+        let writer =
+            RecordingSession::create(&staging, SessionMetadata::default(), StoreLimits::default())
+                .unwrap();
+        writer.shutdown();
+        writer.finish().unwrap();
+        let backup = sibling_transaction_path(&target, "backup");
+        std::fs::rename(&staging, &backup).unwrap();
+        recover_fixture_transactionally(&target).unwrap();
+        Session::open(&target, StoreLimits::default()).unwrap();
+        assert!(!backup.exists());
+        std::fs::remove_dir_all(target).unwrap();
     }
 }

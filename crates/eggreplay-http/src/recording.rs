@@ -712,7 +712,7 @@ fn file_stream(
 }
 
 #[cfg(feature = "eggserve")]
-fn response_stream(
+pub(crate) fn response_stream(
     path: Option<std::path::PathBuf>,
     length: u64,
     trailers: Vec<HeaderEntry>,

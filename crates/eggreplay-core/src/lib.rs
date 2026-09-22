@@ -8,9 +8,12 @@ pub mod error;
 pub mod flow;
 pub mod matching;
 pub mod report;
+pub mod scenario;
 pub mod security;
 
-pub use config::{Config, Limits, MatcherProfile, OutputFormat, RedactionProfile};
+pub use config::{
+    Config, Limits, MatcherProfile, OutputFormat, RecordMode, RecordPolicy, RedactionProfile,
+};
 pub use error::{ErrorCategory, ErrorPhase, FlowError};
 pub use flow::{
     BlobRef, BodyRef, Flow, FlowId, FlowOutcome, HeaderEntry, HttpRequest, HttpResponse,
@@ -24,6 +27,11 @@ pub use report::{
     DiffFinding, DiffKind, RegressionReport, ReportScheduler, TimingAssertion, compare_flows,
     compare_flows_with_timing,
 };
+pub use scenario::{
+    ExtractionFailureBehavior, JsonPointerReplacement, RULES_SCHEMA_VERSION,
+    RenderedScenarioResponse, RequestPredicate, Scenario, ScenarioResponse, ScenarioRules,
+    ScenarioRuntime, ScenarioStep, ScenarioTransition, VariableExtraction, VariableSource,
+};
 pub use security::{
     BODY_JSON_MARKER_PREFIX, DEFAULT_MAX_STRUCTURED_REDACTION_BYTES,
     RESPONSE_BODY_JSON_MARKER_PREFIX, RedactionConfig, apply_form_redaction, apply_json_redaction,
@@ -31,8 +39,20 @@ pub use security::{
     redact_url,
 };
 
-/// The current persisted schema version.
-pub const SCHEMA_VERSION: u16 = 1;
+/// Legacy flow-schema constant retained for downstream source compatibility.
+pub const SCHEMA_VERSION: u16 = FLOW_SCHEMA_VERSION;
+
+/// Current flow record schema. Kept at v1 while session metadata evolves.
+pub const FLOW_SCHEMA_VERSION: u16 = 1;
+
+/// Original session manifest schema version.
+pub const SESSION_SCHEMA_V1: u16 = 1;
+
+/// Latest session manifest schema understood by this version.
+pub const SESSION_SCHEMA_VERSION: u16 = 2;
+
+/// Current JSON report schema version.
+pub const REPORT_SCHEMA_VERSION: u16 = 1;
 
 /// Tool version embedded in fixtures and reports.
 pub const TOOL_VERSION: &str = env!("CARGO_PKG_VERSION");

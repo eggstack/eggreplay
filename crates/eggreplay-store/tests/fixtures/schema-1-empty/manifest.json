@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "tool_version": "0.1.0",
+  "session_id": "schema-1-empty",
+  "capture_mode": "semantic",
+  "source": null,
+  "target": null,
+  "matcher_profile": "strict",
+  "redaction_profile": "default-v1",
+  "complete": true,
+  "flow_count": 0,
+  "blob_count": 0
+}

@@ -27,3 +27,18 @@ recorded in flows. `inspect --bodies` performs an explicit bounded body read
 (`--max-body-bytes`, default 64 KiB, truncates with counts): UTF-8 text when
 valid, otherwise length + digest (bounded base64 only with `--bodies-base64`).
 Stored bodies are already redacted, so inspection never bypasses markers.
+
+`serve --scenario <ID>` explicitly enables one authored scenario from the
+fixture's `rules` extension. Without the flag, a required scenario extension
+fails closed instead of being silently ignored. Scenario state is isolated to
+that server process.
+
+`serve --record-mode sealed` is the default and never opens an upstream.
+`once` records only when the destination fixture is new; if it already exists,
+the policy resolves to sealed replay. `append-new` and `re-record` require an
+explicit `--upstream`; append-new uses EggFetch on exact misses and transactionally
+publishes the merged fixture when the server stops, while re-record stages a
+replacement and preserves the old fixture until the new recording validates.
+`--route` is only accepted with a network-capable mode. `--matcher-profile`
+selects `strict` or `practical`, and serve's JSON result reports the effective
+record, matcher, upstream, and redaction policies.

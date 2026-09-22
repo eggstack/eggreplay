@@ -1,0 +1,16 @@
+{
+  "schema_version": 2,
+  "tool_version": "0.1.0",
+  "session_id": "schema-2-rules",
+  "capture_mode": "semantic",
+  "source": null,
+  "target": null,
+  "matcher_profile": "strict",
+  "redaction_profile": "default-v1",
+  "complete": true,
+  "flow_count": 0,
+  "blob_count": 0,
+  "extensions": [
+    {"name": "rules", "schema_version": 1, "path": "rules.json", "required_for_replay": true}
+  ]
+}

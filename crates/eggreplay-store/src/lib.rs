@@ -3,7 +3,7 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
-use eggreplay_core::{BlobRef, Flow, FlowError, SCHEMA_VERSION, SessionMetadata};
+use eggreplay_core::{BlobRef, Flow, FlowError, SessionMetadata};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs::{self, File, OpenOptions};
@@ -13,6 +13,10 @@ use std::sync::{
     Arc,
     atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
 };
+
+const MAX_EXTENSIONS: usize = 64;
+const MAX_EXTENSION_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_TOTAL_EXTENSION_BYTES: u64 = 32 * 1024 * 1024;
 use thiserror::Error;
 
 /// Default validation bounds for untrusted fixtures.
@@ -71,8 +75,10 @@ pub struct SchemaOneMigration;
 
 impl Migration for SchemaOneMigration {
     fn migrate(&self, schema_version: u16) -> Result<u16, StoreError> {
-        if schema_version == SCHEMA_VERSION {
-            Ok(SCHEMA_VERSION)
+        if (eggreplay_core::SESSION_SCHEMA_V1..=eggreplay_core::SESSION_SCHEMA_VERSION)
+            .contains(&schema_version)
+        {
+            Ok(schema_version)
         } else {
             Err(StoreError::UnsupportedSchema(schema_version))
         }
@@ -97,6 +103,22 @@ pub struct Manifest {
     pub flow_count: usize,
     /// Number of unique blobs.
     pub blob_count: usize,
+    /// Bounded session-level extension registry (empty for schema 1).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extensions: Vec<ExtensionDescriptor>,
+}
+
+/// A confined, versioned session extension file.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExtensionDescriptor {
+    /// Stable extension name.
+    pub name: String,
+    /// Extension payload schema version.
+    pub schema_version: u16,
+    /// Relative path, currently restricted to one filename under the fixture root.
+    pub path: String,
+    /// Whether replay semantics require understanding this extension.
+    pub required_for_replay: bool,
 }
 
 /// A streaming body sink owned by a session writer.
@@ -233,6 +255,8 @@ pub struct SessionWriter {
     metadata: SessionMetadata,
     limits: StoreLimits,
     flow_count: usize,
+    total_bytes: u64,
+    extensions: Vec<ExtensionDescriptor>,
 }
 
 impl SessionWriter {
@@ -248,7 +272,9 @@ impl SessionWriter {
                 "fixture destination already exists".into(),
             ));
         }
-        if metadata.schema_version != SCHEMA_VERSION {
+        if !(eggreplay_core::SESSION_SCHEMA_V1..=eggreplay_core::SESSION_SCHEMA_VERSION)
+            .contains(&metadata.schema_version)
+        {
             return Err(StoreError::UnsupportedSchema(metadata.schema_version));
         }
         let parent = destination.parent().unwrap_or_else(|| Path::new("."));
@@ -274,7 +300,31 @@ impl SessionWriter {
             metadata,
             limits,
             flow_count: 0,
+            total_bytes: 0,
+            extensions: Vec::new(),
         })
+    }
+
+    /// Write a bounded extension payload into the staging session.
+    pub fn write_extension(
+        &mut self,
+        name: &str,
+        schema_version: u16,
+        path: &str,
+        required_for_replay: bool,
+        bytes: &[u8],
+    ) -> Result<(), StoreError> {
+        write_extension_file(
+            &self.staging,
+            &mut self.extensions,
+            name,
+            schema_version,
+            path,
+            required_for_replay,
+            bytes,
+        )?;
+        self.metadata.schema_version = eggreplay_core::SESSION_SCHEMA_VERSION;
+        Ok(())
     }
 
     /// Start a bounded, streaming blob write.
@@ -334,9 +384,19 @@ impl SessionWriter {
                 "flow JSONL line exceeds configured limit".into(),
             ));
         }
+        let next_total = self
+            .total_bytes
+            .checked_add(flow_body_bytes(flow))
+            .ok_or_else(|| StoreError::Invalid("total body length overflow".into()))?;
+        if next_total > self.limits.max_total_bytes {
+            return Err(StoreError::Invalid(
+                "total body length exceeds configured limit".into(),
+            ));
+        }
         self.flows.write_all(&encoded)?;
         self.flows.write_all(b"\n")?;
         self.flow_count += 1;
+        self.total_bytes = next_total;
         Ok(())
     }
 
@@ -353,6 +413,7 @@ impl SessionWriter {
             complete: true,
             flow_count: self.flow_count,
             blob_count: count_blobs(&self.staging.join("blobs"))?,
+            extensions: self.extensions.clone(),
         };
         let manifest_bytes = serde_json::to_vec_pretty(&manifest)?;
         {
@@ -372,6 +433,8 @@ impl SessionWriter {
             metadata: _,
             limits,
             flow_count: _,
+            total_bytes: _,
+            extensions: _,
         } = self;
         drop(flows);
         fs::rename(&staging, &destination)?;
@@ -399,6 +462,7 @@ struct RecordingInner {
     total_bytes: AtomicU64,
     active_blobs: AtomicUsize,
     shutdown: AtomicBool,
+    extensions: std::sync::Mutex<Vec<ExtensionDescriptor>>,
 }
 
 /// Cloneable concurrent recording session.
@@ -569,7 +633,9 @@ impl RecordingSession {
                 "fixture destination already exists".into(),
             ));
         }
-        if metadata.schema_version != SCHEMA_VERSION {
+        if !(eggreplay_core::SESSION_SCHEMA_V1..=eggreplay_core::SESSION_SCHEMA_VERSION)
+            .contains(&metadata.schema_version)
+        {
             return Err(StoreError::UnsupportedSchema(metadata.schema_version));
         }
         let parent = destination.parent().unwrap_or_else(|| Path::new("."));
@@ -599,8 +665,41 @@ impl RecordingSession {
                 total_bytes: AtomicU64::new(0),
                 active_blobs: AtomicUsize::new(0),
                 shutdown: AtomicBool::new(false),
+                extensions: std::sync::Mutex::new(Vec::new()),
             }),
         })
+    }
+
+    /// Write a bounded extension before finalization. Extension publication is
+    /// serialized and must finish before `finish` writes the manifest.
+    pub fn write_extension(
+        &self,
+        name: &str,
+        schema_version: u16,
+        path: &str,
+        required_for_replay: bool,
+        bytes: &[u8],
+    ) -> Result<(), StoreError> {
+        if self.inner.shutdown.load(Ordering::SeqCst) {
+            return Err(StoreError::Invalid("session is shutting down".into()));
+        }
+        let mut extensions = self
+            .inner
+            .extensions
+            .lock()
+            .map_err(|_| StoreError::Invalid("extension registry poisoned".into()))?;
+        if self.inner.shutdown.load(Ordering::SeqCst) {
+            return Err(StoreError::Invalid("session is shutting down".into()));
+        }
+        write_extension_file(
+            &self.inner.staging,
+            &mut extensions,
+            name,
+            schema_version,
+            path,
+            required_for_replay,
+            bytes,
+        )
     }
 
     /// Stop admission of new blobs/flows; in-flight bodies may still finish.
@@ -755,10 +854,28 @@ impl RecordingSession {
         drop(flows_file);
         let flow_count = self.inner.flow_count.load(Ordering::SeqCst);
         let manifest = Manifest {
-            metadata: self.inner.metadata.clone(),
+            metadata: {
+                let mut metadata = self.inner.metadata.clone();
+                if !self
+                    .inner
+                    .extensions
+                    .lock()
+                    .map_err(|_| StoreError::Invalid("extension registry poisoned".into()))?
+                    .is_empty()
+                {
+                    metadata.schema_version = eggreplay_core::SESSION_SCHEMA_VERSION;
+                }
+                metadata
+            },
             complete: true,
             flow_count,
             blob_count: count_blobs(&self.inner.staging.join("blobs"))?,
+            extensions: self
+                .inner
+                .extensions
+                .lock()
+                .map_err(|_| StoreError::Invalid("extension registry poisoned".into()))?
+                .clone(),
         };
         let manifest_bytes = serde_json::to_vec_pretty(&manifest)?;
         {
@@ -861,7 +978,9 @@ impl Session {
         let root = root.as_ref().to_path_buf();
         let manifest: Manifest =
             serde_json::from_reader(BufReader::new(File::open(root.join("manifest.json"))?))?;
-        if manifest.metadata.schema_version != SCHEMA_VERSION {
+        if !(eggreplay_core::SESSION_SCHEMA_V1..=eggreplay_core::SESSION_SCHEMA_VERSION)
+            .contains(&manifest.metadata.schema_version)
+        {
             return Err(StoreError::UnsupportedSchema(
                 manifest.metadata.schema_version,
             ));
@@ -874,6 +993,7 @@ impl Session {
             manifest,
             limits,
         };
+        validate_extensions(&session.root, &session.manifest.extensions)?;
         let mut count = 0usize;
         let mut total = 0u64;
         for item in session.iter_flows()? {
@@ -901,6 +1021,175 @@ impl Session {
     /// Return validated manifest metadata.
     pub fn manifest(&self) -> &Manifest {
         &self.manifest
+    }
+
+    /// Copy a validated session into a new transactional destination. Blob
+    /// bytes stream through bounded writers, and every digest is rechecked.
+    /// Passing schema 2 performs a schema-1 to current-session-schema upgrade;
+    /// flow records remain schema 1.
+    pub fn copy_to(
+        &self,
+        destination: impl AsRef<Path>,
+        target_schema: u16,
+    ) -> Result<Session, StoreError> {
+        if !(eggreplay_core::SESSION_SCHEMA_V1..=eggreplay_core::SESSION_SCHEMA_VERSION)
+            .contains(&target_schema)
+        {
+            return Err(StoreError::UnsupportedSchema(target_schema));
+        }
+        if target_schema == 1 && !self.manifest.extensions.is_empty() {
+            return Err(StoreError::Invalid(
+                "cannot downgrade a session with extensions".into(),
+            ));
+        }
+        let mut metadata = self.manifest.metadata.clone();
+        metadata.schema_version = target_schema;
+        let mut writer = SessionWriter::create(destination, metadata, self.limits)?;
+
+        // Copy the complete blob namespace, including blobs referenced by
+        // extensions rather than flow bodies. Invalid/orphan content is not
+        // silently carried into the new publication.
+        for entry in fs::read_dir(self.root.join("blobs"))? {
+            let entry = entry?;
+            let file_type = entry.file_type()?;
+            if file_type.is_symlink() || !file_type.is_file() {
+                return Err(StoreError::Invalid(
+                    "blob directory may contain only regular files".into(),
+                ));
+            }
+            let digest = entry
+                .file_name()
+                .into_string()
+                .map_err(|_| StoreError::Invalid("blob name is not UTF-8".into()))?;
+            validate_digest(&digest)?;
+            let length = entry.metadata()?.len();
+            let reference = BlobRef::new(digest.clone(), length)
+                .map_err(|error| StoreError::Invalid(error.to_string()))?;
+            let handle = self.open_blob(&reference)?;
+            let mut source = handle.into_file();
+            let mut sink = writer.begin_blob()?;
+            io::copy(&mut source, &mut sink)?;
+            match sink.finish()? {
+                eggreplay_core::BodyRef::Blob(copied) if copied.sha256 == digest => {}
+                _ => return Err(StoreError::Integrity(digest)),
+            }
+        }
+        for flow in self.iter_flows()? {
+            writer.append_flow(&flow?)?;
+        }
+        for extension in &self.manifest.extensions {
+            let bytes = self
+                .read_extension(&extension.name)?
+                .ok_or_else(|| StoreError::Invalid("extension disappeared during copy".into()))?;
+            writer.write_extension(
+                &extension.name,
+                extension.schema_version,
+                &extension.path,
+                extension.required_for_replay,
+                &bytes,
+            )?;
+        }
+        writer.finish()
+    }
+
+    /// Merge this fixture with a second completed recording into a new
+    /// transaction. The first fixture owns session metadata and extension
+    /// authority; conflicting extension names fail closed.
+    pub fn merge_to(
+        &self,
+        additional: &Session,
+        destination: impl AsRef<Path>,
+        target_schema: u16,
+    ) -> Result<Session, StoreError> {
+        if !(eggreplay_core::SESSION_SCHEMA_V1..=eggreplay_core::SESSION_SCHEMA_VERSION)
+            .contains(&target_schema)
+        {
+            return Err(StoreError::UnsupportedSchema(target_schema));
+        }
+        let limits = StoreLimits {
+            max_line_bytes: self
+                .limits
+                .max_line_bytes
+                .min(additional.limits.max_line_bytes),
+            max_blob_bytes: self
+                .limits
+                .max_blob_bytes
+                .min(additional.limits.max_blob_bytes),
+            max_flows: self.limits.max_flows.min(additional.limits.max_flows),
+            max_total_bytes: self
+                .limits
+                .max_total_bytes
+                .min(additional.limits.max_total_bytes),
+        };
+        let mut metadata = self.manifest.metadata.clone();
+        metadata.schema_version = target_schema;
+        let mut writer = SessionWriter::create(destination, metadata, limits)?;
+        copy_blob_namespace(&mut writer, self)?;
+        copy_blob_namespace(&mut writer, additional)?;
+        for flow in self.iter_flows()?.chain(additional.iter_flows()?) {
+            writer.append_flow(&flow?)?;
+        }
+        let mut extensions = std::collections::BTreeMap::new();
+        for source in [self, additional] {
+            for extension in &source.manifest.extensions {
+                let bytes = source.read_extension(&extension.name)?.ok_or_else(|| {
+                    StoreError::Invalid("extension disappeared during merge".into())
+                })?;
+                if let Some((prior, prior_bytes)) = extensions.get(&extension.name) {
+                    if prior != extension || prior_bytes != &bytes {
+                        return Err(StoreError::Invalid(format!(
+                            "conflicting extension {:?} during merge",
+                            extension.name
+                        )));
+                    }
+                } else {
+                    extensions.insert(extension.name.clone(), (extension.clone(), bytes));
+                }
+            }
+        }
+        for (extension, bytes) in extensions.into_values() {
+            writer.write_extension(
+                &extension.name,
+                extension.schema_version,
+                &extension.path,
+                extension.required_for_replay,
+                &bytes,
+            )?;
+        }
+        writer.finish()
+    }
+
+    /// Read and validate one extension payload, bounded by the extension caps.
+    pub fn read_extension(&self, name: &str) -> Result<Option<Vec<u8>>, StoreError> {
+        let Some(extension) = self
+            .manifest
+            .extensions
+            .iter()
+            .find(|item| item.name == name)
+        else {
+            return Ok(None);
+        };
+        let path = self.root.join(&extension.path);
+        let metadata = fs::symlink_metadata(&path)?;
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            return Err(StoreError::Invalid(
+                "extension must be a regular non-symlink file".into(),
+            ));
+        }
+        if metadata.len() > MAX_EXTENSION_BYTES {
+            return Err(StoreError::Invalid(
+                "extension exceeds configured limit".into(),
+            ));
+        }
+        let file = File::open(path)?;
+        let mut bytes = Vec::with_capacity(metadata.len() as usize);
+        file.take(MAX_EXTENSION_BYTES + 1).read_to_end(&mut bytes)?;
+        if bytes.len() as u64 > MAX_EXTENSION_BYTES {
+            return Err(StoreError::Invalid(
+                "extension exceeds configured limit".into(),
+            ));
+        }
+        Ok(Some(bytes))
     }
 
     /// Stream flow records one JSONL line at a time.
@@ -979,6 +1268,35 @@ impl Session {
     pub fn limits(&self) -> StoreLimits {
         self.limits
     }
+}
+
+fn copy_blob_namespace(writer: &mut SessionWriter, source: &Session) -> Result<(), StoreError> {
+    for entry in fs::read_dir(source.root.join("blobs"))? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        if file_type.is_symlink() || !file_type.is_file() {
+            return Err(StoreError::Invalid(
+                "blob directory may contain only regular files".into(),
+            ));
+        }
+        let digest = entry
+            .file_name()
+            .into_string()
+            .map_err(|_| StoreError::Invalid("blob name is not UTF-8".into()))?;
+        validate_digest(&digest)?;
+        let length = entry.metadata()?.len();
+        let reference = BlobRef::new(digest.clone(), length)
+            .map_err(|error| StoreError::Invalid(error.to_string()))?;
+        let handle = source.open_blob(&reference)?;
+        let mut from = handle.into_file();
+        let mut to = writer.begin_blob()?;
+        io::copy(&mut from, &mut to)?;
+        match to.finish()? {
+            eggreplay_core::BodyRef::Blob(copied) if copied.sha256 == digest => {}
+            _ => return Err(StoreError::Integrity(digest)),
+        }
+    }
+    Ok(())
 }
 
 /// Bounded flow iterator.
@@ -1073,6 +1391,158 @@ fn validate_body_files(root: &Path, flow: &Flow, limits: StoreLimits) -> Result<
     Ok(())
 }
 
+fn write_extension_file(
+    root: &Path,
+    extensions: &mut Vec<ExtensionDescriptor>,
+    name: &str,
+    schema_version: u16,
+    path: &str,
+    required_for_replay: bool,
+    bytes: &[u8],
+) -> Result<(), StoreError> {
+    validate_extension_name(name)?;
+    validate_extension_path(path)?;
+    if schema_version == 0 {
+        return Err(StoreError::Invalid(
+            "extension schema version must be positive".into(),
+        ));
+    }
+    if extensions.len() >= MAX_EXTENSIONS {
+        return Err(StoreError::Invalid(
+            "extension count exceeds configured limit".into(),
+        ));
+    }
+    if bytes.len() as u64 > MAX_EXTENSION_BYTES {
+        return Err(StoreError::Invalid(
+            "extension exceeds configured limit".into(),
+        ));
+    }
+    if extensions
+        .iter()
+        .any(|entry| entry.name == name || entry.path == path)
+    {
+        return Err(StoreError::Invalid(
+            "duplicate extension name or path".into(),
+        ));
+    }
+    let current_total: u64 = extensions
+        .iter()
+        .filter_map(|entry| fs::metadata(root.join(&entry.path)).ok().map(|m| m.len()))
+        .sum();
+    if current_total.saturating_add(bytes.len() as u64) > MAX_TOTAL_EXTENSION_BYTES {
+        return Err(StoreError::Invalid(
+            "aggregate extensions exceed configured limit".into(),
+        ));
+    }
+    let destination = root.join(path);
+    let mut file = OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&destination)?;
+    set_private_permissions(&destination)?;
+    file.write_all(bytes)?;
+    file.sync_all()?;
+    extensions.push(ExtensionDescriptor {
+        name: name.to_owned(),
+        schema_version,
+        path: path.to_owned(),
+        required_for_replay,
+    });
+    Ok(())
+}
+
+fn validate_extension_name(name: &str) -> Result<(), StoreError> {
+    if name.is_empty()
+        || name.len() > 64
+        || !name
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+    {
+        return Err(StoreError::Invalid("invalid extension name".into()));
+    }
+    Ok(())
+}
+
+fn validate_extension_path(path: &str) -> Result<(), StoreError> {
+    let candidate = Path::new(path);
+    if path.is_empty()
+        || path.len() > 128
+        || candidate.components().count() != 1
+        || candidate.file_name().and_then(|name| name.to_str()) != Some(path)
+        || path.starts_with('.')
+    {
+        return Err(StoreError::Invalid(
+            "extension path must be a confined filename".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_extensions(root: &Path, extensions: &[ExtensionDescriptor]) -> Result<(), StoreError> {
+    if extensions.len() > MAX_EXTENSIONS {
+        return Err(StoreError::Invalid(
+            "extension count exceeds configured limit".into(),
+        ));
+    }
+    let mut names = std::collections::BTreeSet::new();
+    let mut paths = std::collections::BTreeSet::new();
+    let mut total = 0u64;
+    for extension in extensions {
+        validate_extension_name(&extension.name)?;
+        validate_extension_path(&extension.path)?;
+        if extension.schema_version == 0
+            || !names.insert(&extension.name)
+            || !paths.insert(&extension.path)
+        {
+            return Err(StoreError::Invalid(
+                "invalid or duplicate extension descriptor".into(),
+            ));
+        }
+        let path = root.join(&extension.path);
+        let metadata = fs::symlink_metadata(&path)?;
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            return Err(StoreError::Invalid(
+                "extension must be a regular non-symlink file".into(),
+            ));
+        }
+        if metadata.len() > MAX_EXTENSION_BYTES {
+            return Err(StoreError::Invalid(
+                "extension exceeds configured limit".into(),
+            ));
+        }
+        total = total
+            .checked_add(metadata.len())
+            .ok_or_else(|| StoreError::Invalid("aggregate extension length overflow".into()))?;
+        if total > MAX_TOTAL_EXTENSION_BYTES {
+            return Err(StoreError::Invalid(
+                "aggregate extensions exceed configured limit".into(),
+            ));
+        }
+        if extension.required_for_replay
+            && !matches!(
+                extension.name.as_str(),
+                "rules" | "stream-events" | "websocket-messages" | "interop-provenance"
+            )
+        {
+            return Err(StoreError::Invalid(format!(
+                "unknown required extension {}",
+                extension.name
+            )));
+        }
+        if extension.name == "rules" {
+            if extension.schema_version != eggreplay_core::RULES_SCHEMA_VERSION {
+                return Err(StoreError::Invalid(format!(
+                    "unsupported rules extension schema {}",
+                    extension.schema_version
+                )));
+            }
+            let rules: eggreplay_core::ScenarioRules = serde_json::from_reader(File::open(path)?)?;
+            rules.validate().map_err(StoreError::Invalid)?;
+        }
+    }
+    Ok(())
+}
+
 fn verify_blob_file(root: &Path, blob: &BlobRef, limits: StoreLimits) -> Result<(), StoreError> {
     validate_digest(&blob.sha256)?;
     if blob.length > limits.max_blob_bytes {
@@ -1149,7 +1619,9 @@ fn count_blobs(root: &Path) -> Result<usize, StoreError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use eggreplay_core::{BodyRef, FlowOutcome, HttpRequest, HttpResponse, Provenance};
+    use eggreplay_core::{
+        BodyRef, FlowOutcome, HttpRequest, HttpResponse, Provenance, SCHEMA_VERSION,
+    };
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn sample() -> Flow {
@@ -1224,6 +1696,215 @@ mod tests {
         };
         assert_eq!(session.read_blob(blob).unwrap(), b"hello");
         fs::remove_dir_all(destination).unwrap();
+    }
+
+    #[test]
+    fn schema_two_extension_registry_is_bounded_and_confined() {
+        let destination = path("extensions");
+        let mut writer = SessionWriter::create(
+            &destination,
+            SessionMetadata::default(),
+            StoreLimits::default(),
+        )
+        .unwrap();
+        writer
+            .write_extension(
+                "rules",
+                1,
+                "rules.json",
+                true,
+                br#"{"schema_version":1,"scenarios":[]}"#,
+            )
+            .unwrap();
+        assert!(
+            writer
+                .write_extension("other", 1, "../escape.json", false, b"{}")
+                .is_err()
+        );
+        let session = writer.finish().unwrap();
+        assert_eq!(session.manifest().metadata.schema_version, 2);
+        assert_eq!(session.manifest().extensions.len(), 1);
+        assert_eq!(
+            session.read_extension("rules").unwrap().unwrap(),
+            br#"{"schema_version":1,"scenarios":[]}"#
+        );
+        assert!(session.read_extension("missing").unwrap().is_none());
+        fs::remove_dir_all(destination).unwrap();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn required_extension_rejects_symlinked_payload() {
+        let destination = path("symlink-extension");
+        let mut writer = SessionWriter::create(
+            &destination,
+            SessionMetadata::default(),
+            StoreLimits::default(),
+        )
+        .unwrap();
+        writer
+            .write_extension(
+                "rules",
+                1,
+                "rules.json",
+                true,
+                br#"{"schema_version":1,"scenarios":[]}"#,
+            )
+            .unwrap();
+        let session = writer.finish().unwrap();
+        drop(session);
+        let extension = destination.join("rules.json");
+        let backup = destination.join("rules.backup");
+        let target = path("symlink-extension-target");
+        fs::write(&target, br#"{"schema_version":1,"scenarios":[]}"#).unwrap();
+        fs::rename(&extension, &backup).unwrap();
+        std::os::unix::fs::symlink(&target, &extension).unwrap();
+        assert!(Session::open(&destination, StoreLimits::default()).is_err());
+        fs::remove_file(extension).unwrap();
+        fs::rename(backup, destination.join("rules.json")).unwrap();
+        fs::remove_file(target).unwrap();
+        fs::remove_dir_all(destination).unwrap();
+    }
+
+    #[test]
+    fn unknown_required_extension_is_rejected() {
+        let destination = path("unknown-required-extension");
+        let mut writer = SessionWriter::create(
+            &destination,
+            SessionMetadata::default(),
+            StoreLimits::default(),
+        )
+        .unwrap();
+        writer
+            .write_extension(
+                "rules",
+                1,
+                "rules.json",
+                true,
+                br#"{"schema_version":1,"scenarios":[]}"#,
+            )
+            .unwrap();
+        let session = writer.finish().unwrap();
+        drop(session);
+        let manifest_path = destination.join("manifest.json");
+        let mut manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+        manifest["extensions"][0]["name"] = serde_json::json!("future-required");
+        fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+        let result = Session::open(&destination, StoreLimits::default());
+        assert!(
+            matches!(result, Err(StoreError::Invalid(message)) if message.contains("unknown required extension"))
+        );
+        fs::remove_dir_all(destination).unwrap();
+    }
+
+    #[test]
+    fn checked_in_schema_fixtures_open_and_current_extension_is_readable() {
+        let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+        let schema_one = Session::open(fixtures.join("schema-1-empty"), StoreLimits::default())
+            .expect("schema-1 golden fixture must remain readable");
+        assert_eq!(schema_one.manifest().metadata.schema_version, 1);
+        let schema_two = Session::open(fixtures.join("schema-2-rules"), StoreLimits::default())
+            .expect("schema-2 golden fixture must validate");
+        let rules = schema_two.read_extension("rules").unwrap().unwrap();
+        assert_eq!(
+            rules.strip_suffix(b"\n").unwrap_or(&rules),
+            br#"{"schema_version":1,"scenarios":[]}"#
+        );
+    }
+
+    #[test]
+    fn schema_migration_is_transactional_and_current_copy_is_idempotent() {
+        let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+        let source = Session::open(fixtures.join("schema-1-empty"), StoreLimits::default())
+            .expect("schema-1 golden fixture must open");
+        let migrated_path = path("migrated-schema-two");
+        let migrated = source
+            .copy_to(&migrated_path, eggreplay_core::SESSION_SCHEMA_VERSION)
+            .unwrap();
+        assert_eq!(migrated.manifest().metadata.schema_version, 2);
+        assert_eq!(migrated.manifest().flow_count, 0);
+        let copied_path = path("current-copy");
+        let copied = migrated
+            .copy_to(&copied_path, eggreplay_core::SESSION_SCHEMA_VERSION)
+            .unwrap();
+        assert_eq!(copied.manifest().metadata, migrated.manifest().metadata);
+        assert_eq!(copied.manifest().extensions, migrated.manifest().extensions);
+        fs::remove_dir_all(migrated_path).unwrap();
+        fs::remove_dir_all(copied_path).unwrap();
+    }
+
+    #[test]
+    fn merge_to_combines_flows_and_deduplicates_blobs_transactionally() {
+        let base_path = path("merge-base");
+        let add_path = path("merge-add");
+        let merged_path = path("merge-result");
+        let mut base_writer = SessionWriter::create(
+            &base_path,
+            SessionMetadata::default(),
+            StoreLimits::default(),
+        )
+        .unwrap();
+        let mut base_blob = base_writer.begin_blob().unwrap();
+        base_blob.write_all(b"shared").unwrap();
+        let shared = base_blob.finish().unwrap();
+        let mut base_flow = sample();
+        base_flow.request.body = shared.clone();
+        base_writer.append_flow(&base_flow).unwrap();
+        let base = base_writer.finish().unwrap();
+
+        let mut add_writer = SessionWriter::create(
+            &add_path,
+            SessionMetadata::default(),
+            StoreLimits::default(),
+        )
+        .unwrap();
+        let mut duplicate_blob = add_writer.begin_blob().unwrap();
+        duplicate_blob.write_all(b"shared").unwrap();
+        let duplicate = duplicate_blob.finish().unwrap();
+        let mut new_blob = add_writer.begin_blob().unwrap();
+        new_blob.write_all(b"new").unwrap();
+        let new_reference = new_blob.finish().unwrap();
+        let mut repeated = sample();
+        repeated.id = "additional".into();
+        repeated.request.body = duplicate;
+        add_writer.append_flow(&repeated).unwrap();
+        let mut added = sample();
+        added.id = "added".into();
+        added.request.body = new_reference;
+        add_writer.append_flow(&added).unwrap();
+        let additional = add_writer.finish().unwrap();
+
+        let merged = base
+            .merge_to(
+                &additional,
+                &merged_path,
+                eggreplay_core::SESSION_SCHEMA_VERSION,
+            )
+            .unwrap();
+        assert_eq!(merged.manifest().flow_count, 3);
+        assert_eq!(merged.manifest().blob_count, 2);
+        assert_eq!(
+            merged
+                .read_blob(match &shared {
+                    BodyRef::Blob(blob) => blob,
+                    _ => unreachable!(),
+                })
+                .unwrap(),
+            b"shared"
+        );
+        assert_eq!(
+            merged
+                .iter_flows()
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap()
+                .len(),
+            3
+        );
+        for dir in [base_path, add_path, merged_path] {
+            fs::remove_dir_all(dir).unwrap();
+        }
     }
 
     #[test]

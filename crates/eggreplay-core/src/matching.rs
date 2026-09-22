@@ -703,12 +703,12 @@ pub fn has_redaction_marker(markers: &[RedactionMarker], field: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{BodyRef, FlowOutcome, HttpResponse, Provenance, SCHEMA_VERSION};
+    use crate::{BodyRef, FLOW_SCHEMA_VERSION, FlowOutcome, HttpResponse, Provenance};
 
     fn candidate(method: &str, path: &str, body: &[u8]) -> MatchCandidate {
         MatchCandidate::new(
             Flow {
-                schema_version: SCHEMA_VERSION,
+                schema_version: FLOW_SCHEMA_VERSION,
                 id: path.into(),
                 started_at_ms: 1,
                 completed_at_ms: Some(2),

@@ -147,6 +147,40 @@ fn malformed_route_fails_configuration_without_credentials() {
 }
 
 #[test]
+fn serve_record_modes_require_explicit_upstream_without_sealed_fallback() {
+    let dir = temp_dir("record-policy");
+    let missing_fixture = dir.join("missing.eggr");
+    let append = run_cli(&[
+        "serve",
+        "--fixture",
+        missing_fixture.to_str().unwrap(),
+        "--record-mode",
+        "append-new",
+        "--output",
+        "json",
+    ]);
+    assert_eq!(append.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&append.stderr).contains("requires an explicit upstream"));
+
+    let fixture = write_minimal_fixture(&dir, 0);
+    let sealed_with_upstream = run_cli(&[
+        "serve",
+        "--fixture",
+        fixture.to_str().unwrap(),
+        "--record-mode",
+        "sealed",
+        "--upstream",
+        "http://127.0.0.1:9",
+    ]);
+    assert_eq!(sealed_with_upstream.status.code(), Some(2));
+    assert!(
+        String::from_utf8_lossy(&sealed_with_upstream.stderr)
+            .contains("sealed mode does not accept an upstream")
+    );
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
 fn missing_fixture_is_exit_three_with_fixture_class() {
     let dir = temp_dir("missing-fixture");
     let missing = dir.join("nope.eggr");
