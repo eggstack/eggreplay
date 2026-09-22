@@ -28,6 +28,22 @@ type. JSON Pointer replacements operate on parsed JSON values. The rules
 extension does not replace ordinary flow matching unless an enabled scenario
 transition matches.
 
+## Stream events and SSE views (M010)
+
+The optional `stream-events` extension stores bounded JSON metadata keyed by
+flow id. It records relative monotonic DATA boundaries, trailers, clean EOF, or
+a typed mid-body error and byte offset. It never duplicates DATA bytes; body
+blobs remain authoritative. Event capture is limited to 2,048 entries per
+direction, 4,096 per flow, and 16 MiB serialized metadata per session. Fixture
+opening validates offsets, order, schema, and delays.
+
+Replay is immediate by default. `serve --timing-mode recorded` reproduces
+relative delays; `scaled:<factor>` scales them within the documented bounds.
+These modes reproduce semantic body event cadence rather than TCP packet
+timing. `inspect --sse` and `diff` derive ordered SSE event views from
+`text/event-stream`; malformed SSE is reported while the original body remains
+unchanged.
+
 ## Lazy replay (C001)
 
 Replay loading is metadata-bounded and never buffers fixture-wide payloads.

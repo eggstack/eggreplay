@@ -10,6 +10,7 @@ pub mod matching;
 pub mod report;
 pub mod scenario;
 pub mod security;
+pub mod stream;
 
 pub use config::{
     Config, Limits, MatcherProfile, OutputFormat, RecordMode, RecordPolicy, RedactionProfile,
@@ -25,7 +26,7 @@ pub use matching::{
 };
 pub use report::{
     DiffFinding, DiffKind, RegressionReport, ReportScheduler, TimingAssertion, compare_flows,
-    compare_flows_with_timing,
+    compare_flows_with_timing, compare_stream_events,
 };
 pub use scenario::{
     ExtractionFailureBehavior, JsonPointerReplacement, RULES_SCHEMA_VERSION,
@@ -37,6 +38,10 @@ pub use security::{
     RESPONSE_BODY_JSON_MARKER_PREFIX, RedactionConfig, apply_form_redaction, apply_json_redaction,
     push_body_markers, reconcile_headers_after_body_redaction, redact_flow, redact_json,
     redact_url,
+};
+pub use stream::{
+    FlowStreamEvents, SseEvent, SseParseResult, StreamDirection, StreamEvent, StreamEventKind,
+    StreamEvents, StreamTimingMode, compare_sse, parse_sse, timeline_order_offsets,
 };
 
 /// Legacy flow-schema constant retained for downstream source compatibility.

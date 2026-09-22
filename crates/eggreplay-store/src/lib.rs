@@ -257,6 +257,10 @@ pub struct SessionWriter {
     flow_count: usize,
     total_bytes: u64,
     extensions: Vec<ExtensionDescriptor>,
+    stream_events: eggreplay_core::StreamEvents,
+    stream_event_ids: std::collections::HashSet<String>,
+    stream_event_records: usize,
+    stream_event_object_bytes: usize,
 }
 
 impl SessionWriter {
@@ -302,6 +306,10 @@ impl SessionWriter {
             flow_count: 0,
             total_bytes: 0,
             extensions: Vec::new(),
+            stream_events: eggreplay_core::StreamEvents::default(),
+            stream_event_ids: std::collections::HashSet::new(),
+            stream_event_records: 0,
+            stream_event_object_bytes: 0,
         })
     }
 
@@ -324,6 +332,46 @@ impl SessionWriter {
             bytes,
         )?;
         self.metadata.schema_version = eggreplay_core::SESSION_SCHEMA_VERSION;
+        Ok(())
+    }
+
+    /// Append bounded, payload-free event metadata for one recorded flow.
+    pub fn append_stream_events(
+        &mut self,
+        events: eggreplay_core::FlowStreamEvents,
+    ) -> Result<(), StoreError> {
+        let single = eggreplay_core::StreamEvents {
+            schema_version: eggreplay_core::stream::STREAM_EVENTS_SCHEMA_VERSION,
+            flows: vec![events.clone()],
+        };
+        single.validate().map_err(StoreError::Invalid)?;
+        if self.stream_event_ids.contains(&events.flow_id) {
+            return Err(StoreError::Invalid("duplicate stream event flow id".into()));
+        }
+        let records = events.request.len().saturating_add(events.response.len());
+        let next_records = self.stream_event_records.saturating_add(records);
+        if next_records > eggreplay_core::stream::MAX_STREAM_EVENTS_PER_SESSION {
+            return Err(StoreError::Invalid(
+                "aggregate stream event count exceeds configured limit".into(),
+            ));
+        }
+        let object_bytes = serde_json::to_vec(&events)?.len();
+        let next_object_bytes = self
+            .stream_event_object_bytes
+            .saturating_add(object_bytes)
+            .saturating_add(usize::from(!self.stream_events.flows.is_empty()));
+        let base_bytes = serde_json::to_vec(&eggreplay_core::StreamEvents::default())?.len() - 2;
+        if base_bytes.saturating_add(next_object_bytes)
+            > eggreplay_core::stream::MAX_STREAM_EVENTS_BYTES
+        {
+            return Err(StoreError::Invalid(
+                "stream event metadata exceeds configured limit".into(),
+            ));
+        }
+        self.stream_event_ids.insert(events.flow_id.clone());
+        self.stream_event_records = next_records;
+        self.stream_event_object_bytes = next_object_bytes;
+        self.stream_events.flows.push(events);
         Ok(())
     }
 
@@ -408,6 +456,20 @@ impl SessionWriter {
     pub fn finish(mut self) -> Result<Session, StoreError> {
         self.flows.flush()?;
         self.flows.sync_all()?;
+        if !self.stream_events.flows.is_empty() {
+            self.stream_events.validate().map_err(StoreError::Invalid)?;
+            let bytes = serde_json::to_vec(&self.stream_events)?;
+            write_extension_file(
+                &self.staging,
+                &mut self.extensions,
+                "stream-events",
+                eggreplay_core::stream::STREAM_EVENTS_SCHEMA_VERSION,
+                "stream-events.json",
+                false,
+                &bytes,
+            )?;
+            self.metadata.schema_version = eggreplay_core::SESSION_SCHEMA_VERSION;
+        }
         let manifest = Manifest {
             metadata: self.metadata.clone(),
             complete: true,
@@ -435,6 +497,10 @@ impl SessionWriter {
             flow_count: _,
             total_bytes: _,
             extensions: _,
+            stream_events: _,
+            stream_event_ids: _,
+            stream_event_records: _,
+            stream_event_object_bytes: _,
         } = self;
         drop(flows);
         fs::rename(&staging, &destination)?;
@@ -463,6 +529,10 @@ struct RecordingInner {
     active_blobs: AtomicUsize,
     shutdown: AtomicBool,
     extensions: std::sync::Mutex<Vec<ExtensionDescriptor>>,
+    stream_events: std::sync::Mutex<eggreplay_core::StreamEvents>,
+    stream_event_ids: std::sync::Mutex<std::collections::HashSet<String>>,
+    stream_event_records: AtomicUsize,
+    stream_event_object_bytes: AtomicUsize,
 }
 
 /// Cloneable concurrent recording session.
@@ -666,6 +736,10 @@ impl RecordingSession {
                 active_blobs: AtomicUsize::new(0),
                 shutdown: AtomicBool::new(false),
                 extensions: std::sync::Mutex::new(Vec::new()),
+                stream_events: std::sync::Mutex::new(eggreplay_core::StreamEvents::default()),
+                stream_event_ids: std::sync::Mutex::new(std::collections::HashSet::new()),
+                stream_event_records: AtomicUsize::new(0),
+                stream_event_object_bytes: AtomicUsize::new(0),
             }),
         })
     }
@@ -724,6 +798,77 @@ impl RecordingSession {
     /// Return the number of appended flows.
     pub fn flow_count(&self) -> usize {
         self.inner.flow_count.load(Ordering::SeqCst)
+    }
+
+    /// Append bounded, payload-free event metadata for one recorded flow.
+    pub fn append_stream_events(
+        &self,
+        events: eggreplay_core::FlowStreamEvents,
+    ) -> Result<(), StoreError> {
+        if self.inner.shutdown.load(Ordering::SeqCst) {
+            return Err(StoreError::Invalid("session is shutting down".into()));
+        }
+        let mut stored = self
+            .inner
+            .stream_events
+            .lock()
+            .map_err(|_| StoreError::Invalid("stream event registry poisoned".into()))?;
+        if self.inner.shutdown.load(Ordering::SeqCst) {
+            return Err(StoreError::Invalid("session is shutting down".into()));
+        }
+        let single = eggreplay_core::StreamEvents {
+            schema_version: eggreplay_core::stream::STREAM_EVENTS_SCHEMA_VERSION,
+            flows: vec![events.clone()],
+        };
+        single.validate().map_err(StoreError::Invalid)?;
+        let mut ids = self
+            .inner
+            .stream_event_ids
+            .lock()
+            .map_err(|_| StoreError::Invalid("stream event id registry poisoned".into()))?;
+        if ids.contains(&events.flow_id) {
+            return Err(StoreError::Invalid("duplicate stream event flow id".into()));
+        }
+        if stored.flows.len() >= eggreplay_core::stream::MAX_STREAM_EVENTS_PER_SESSION {
+            return Err(StoreError::Invalid(
+                "stream event flow count exceeds configured limit".into(),
+            ));
+        }
+        let records = events.request.len().saturating_add(events.response.len());
+        let next_records = self
+            .inner
+            .stream_event_records
+            .load(Ordering::SeqCst)
+            .saturating_add(records);
+        if next_records > eggreplay_core::stream::MAX_STREAM_EVENTS_PER_SESSION {
+            return Err(StoreError::Invalid(
+                "aggregate stream event count exceeds configured limit".into(),
+            ));
+        }
+        let object_bytes = serde_json::to_vec(&events)?.len();
+        let next_object_bytes = self
+            .inner
+            .stream_event_object_bytes
+            .load(Ordering::SeqCst)
+            .saturating_add(object_bytes)
+            .saturating_add(usize::from(!stored.flows.is_empty()));
+        let base_bytes = serde_json::to_vec(&eggreplay_core::StreamEvents::default())?.len() - 2;
+        if base_bytes.saturating_add(next_object_bytes)
+            > eggreplay_core::stream::MAX_STREAM_EVENTS_BYTES
+        {
+            return Err(StoreError::Invalid(
+                "stream event metadata exceeds configured limit".into(),
+            ));
+        }
+        ids.insert(events.flow_id.clone());
+        self.inner
+            .stream_event_records
+            .store(next_records, Ordering::SeqCst);
+        self.inner
+            .stream_event_object_bytes
+            .store(next_object_bytes, Ordering::SeqCst);
+        stored.flows.push(events);
+        Ok(())
     }
 
     /// Start a bounded streaming blob write without holding the flow lock.
@@ -853,6 +998,36 @@ impl RecordingSession {
         };
         drop(flows_file);
         let flow_count = self.inner.flow_count.load(Ordering::SeqCst);
+        {
+            let stream_events = self
+                .inner
+                .stream_events
+                .lock()
+                .map_err(|_| StoreError::Invalid("stream event registry poisoned".into()))?;
+            if !stream_events.flows.is_empty() {
+                stream_events.validate().map_err(StoreError::Invalid)?;
+                let bytes = serde_json::to_vec(&*stream_events)?;
+                if bytes.len() > eggreplay_core::stream::MAX_STREAM_EVENTS_BYTES {
+                    return Err(StoreError::Invalid(
+                        "stream event metadata exceeds configured limit".into(),
+                    ));
+                }
+                let mut extensions = self
+                    .inner
+                    .extensions
+                    .lock()
+                    .map_err(|_| StoreError::Invalid("extension registry poisoned".into()))?;
+                write_extension_file(
+                    &self.inner.staging,
+                    &mut extensions,
+                    "stream-events",
+                    eggreplay_core::stream::STREAM_EVENTS_SCHEMA_VERSION,
+                    "stream-events.json",
+                    false,
+                    &bytes,
+                )?;
+            }
+        }
         let manifest = Manifest {
             metadata: {
                 let mut metadata = self.inner.metadata.clone();
@@ -996,8 +1171,19 @@ impl Session {
         validate_extensions(&session.root, &session.manifest.extensions)?;
         let mut count = 0usize;
         let mut total = 0u64;
+        let mut response_lengths = std::collections::HashMap::new();
         for item in session.iter_flows()? {
             let flow = item?;
+            let response_length = match &flow.outcome {
+                eggreplay_core::FlowOutcome::Response(response) => response.body.len().unwrap_or(0),
+                eggreplay_core::FlowOutcome::Error(_) => 0,
+            };
+            if response_lengths
+                .insert(flow.id.clone(), response_length)
+                .is_some()
+            {
+                return Err(StoreError::Invalid("duplicate flow id".into()));
+            }
             count += 1;
             total = total
                 .checked_add(flow_body_bytes(&flow))
@@ -1011,6 +1197,32 @@ impl Session {
         }
         if count != session.manifest.flow_count {
             return Err(StoreError::Invalid("manifest flow count mismatch".into()));
+        }
+        if let Some(extension) = session
+            .manifest
+            .extensions
+            .iter()
+            .find(|extension| extension.name == "stream-events")
+        {
+            let events: eggreplay_core::StreamEvents =
+                serde_json::from_reader(File::open(session.root.join(&extension.path))?)?;
+            for flow_events in events.flows {
+                let expected_length =
+                    response_lengths.get(&flow_events.flow_id).ok_or_else(|| {
+                        StoreError::Invalid("stream events reference an unknown flow".into())
+                    })?;
+                let event_length = flow_events.response.iter().fold(0u64, |total, event| {
+                    total.saturating_add(match &event.event {
+                        eggreplay_core::StreamEventKind::Data { length, .. } => *length,
+                        _ => 0,
+                    })
+                });
+                if event_length != *expected_length {
+                    return Err(StoreError::Invalid(
+                        "stream event byte count disagrees with response body".into(),
+                    ));
+                }
+            }
         }
         if count_blobs(&session.root.join("blobs"))? != session.manifest.blob_count {
             return Err(StoreError::Invalid("manifest blob count mismatch".into()));
@@ -1542,8 +1754,18 @@ fn validate_extensions(root: &Path, extensions: &[ExtensionDescriptor]) -> Resul
                     extension.schema_version
                 )));
             }
-            let rules: eggreplay_core::ScenarioRules = serde_json::from_reader(File::open(path)?)?;
+            let rules: eggreplay_core::ScenarioRules = serde_json::from_reader(File::open(&path)?)?;
             rules.validate().map_err(StoreError::Invalid)?;
+        }
+        if extension.name == "stream-events" {
+            if extension.schema_version != eggreplay_core::stream::STREAM_EVENTS_SCHEMA_VERSION {
+                return Err(StoreError::Invalid(format!(
+                    "unsupported stream-events extension schema {}",
+                    extension.schema_version
+                )));
+            }
+            let events: eggreplay_core::StreamEvents = serde_json::from_reader(File::open(path)?)?;
+            events.validate().map_err(StoreError::Invalid)?;
         }
     }
     Ok(())
@@ -1738,6 +1960,47 @@ mod tests {
             br#"{"schema_version":1,"scenarios":[]}"#
         );
         assert!(session.read_extension("missing").unwrap().is_none());
+        fs::remove_dir_all(destination).unwrap();
+    }
+
+    #[test]
+    fn stream_event_extension_round_trips_without_body_payloads() {
+        let destination = path("stream-events");
+        let mut writer = SessionWriter::create(
+            &destination,
+            SessionMetadata::default(),
+            StoreLimits::default(),
+        )
+        .unwrap();
+        let mut flow = sample();
+        flow.id = "stream-1".into();
+        writer.append_flow(&flow).unwrap();
+        writer
+            .append_stream_events(eggreplay_core::FlowStreamEvents {
+                flow_id: flow.id.clone(),
+                start_offset_ns: 10,
+                request: vec![
+                    eggreplay_core::StreamEvent {
+                        delta_ns: 1,
+                        event: eggreplay_core::StreamEventKind::Data {
+                            offset: 0,
+                            length: 4,
+                        },
+                    },
+                    eggreplay_core::StreamEvent {
+                        delta_ns: 2,
+                        event: eggreplay_core::StreamEventKind::End,
+                    },
+                ],
+                response: vec![],
+            })
+            .unwrap();
+        let session = writer.finish().unwrap();
+        let bytes = session.read_extension("stream-events").unwrap().unwrap();
+        assert!(!bytes.windows(4).any(|window| window == b"body"));
+        let parsed: eggreplay_core::StreamEvents = serde_json::from_slice(&bytes).unwrap();
+        parsed.validate().unwrap();
+        assert_eq!(parsed.flows[0].flow_id, "stream-1");
         fs::remove_dir_all(destination).unwrap();
     }
 

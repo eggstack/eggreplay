@@ -105,6 +105,9 @@ struct ServeArgs {
     /// Request matching profile used by this replay server.
     #[arg(long, value_enum, default_value_t = ServeMatcherProfile::Strict)]
     matcher_profile: ServeMatcherProfile,
+    /// Body delay mode: immediate, recorded, or scaled:<factor>.
+    #[arg(long, default_value = "immediate")]
+    timing_mode: String,
     /// Explicitly select a named authored scenario from the `rules` extension.
     #[arg(long)]
     scenario: Option<String>,
@@ -161,6 +164,12 @@ struct ReplayArgs {
     /// Outbound route: `direct` or a pproxy URI. See `record --route`.
     #[arg(long, default_value = "direct")]
     route: String,
+    /// Candidate request scheduler; timeline requires stream event metadata.
+    #[arg(long, value_enum, default_value_t = SchedulerChoice::Sequential)]
+    scheduler: SchedulerChoice,
+    /// Maximum concurrent candidate requests for timeline scheduling.
+    #[arg(long, default_value_t = 8)]
+    max_concurrency: usize,
     #[command(flatten)]
     output: OutputArgs,
 }
@@ -173,8 +182,25 @@ struct TestArgs {
     /// Outbound route: `direct` or a pproxy URI. See `record --route`.
     #[arg(long, default_value = "direct")]
     route: String,
+    /// Candidate request scheduler; timeline requires stream event metadata.
+    #[arg(long, value_enum, default_value_t = SchedulerChoice::Sequential)]
+    scheduler: SchedulerChoice,
+    /// Maximum concurrent candidate requests for timeline scheduling.
+    #[arg(long, default_value_t = 8)]
+    max_concurrency: usize,
     #[command(flatten)]
     output: OutputArgs,
+}
+#[derive(Debug, Clone, Copy, ValueEnum, Default)]
+enum SchedulerChoice {
+    #[default]
+    Sequential,
+    Timeline,
+}
+#[derive(Debug, Clone, Copy)]
+struct SchedulerOptions {
+    choice: SchedulerChoice,
+    max_concurrency: usize,
 }
 #[derive(Debug, Args)]
 struct DiffArgs {
@@ -194,6 +220,9 @@ struct InspectArgs {
     /// Show bounded base64 for non-UTF8 bodies (explicit opt-in only).
     #[arg(long, default_value_t = false)]
     bodies_base64: bool,
+    /// Include a bounded parsed view for `text/event-stream` response bodies.
+    #[arg(long, default_value_t = false)]
+    sse: bool,
     /// CLI inspection bound per body in bytes (truncates with explicit counts).
     #[arg(long, default_value_t = 65536)]
     max_body_bytes: u64,
@@ -252,6 +281,10 @@ async fn run(cli: Cli) -> Result<(), (String, String)> {
                 "replay",
                 args.output,
                 false,
+                SchedulerOptions {
+                    choice: args.scheduler,
+                    max_concurrency: args.max_concurrency,
+                },
             )
             .await
         }
@@ -263,6 +296,10 @@ async fn run(cli: Cli) -> Result<(), (String, String)> {
                 "test",
                 args.output,
                 true,
+                SchedulerOptions {
+                    choice: args.scheduler,
+                    max_concurrency: args.max_concurrency,
+                },
             )
             .await
         }
@@ -379,6 +416,16 @@ async fn serve(args: ServeArgs) -> Result<(), (String, String)> {
     let policy = eggreplay_core::RecordMode::from(args.record_mode)
         .resolve(args.fixture.exists(), args.upstream.is_some())
         .map_err(|message| ("configuration".into(), message))?;
+    let timing_mode = eggreplay_core::StreamTimingMode::parse(&args.timing_mode)
+        .map_err(|error| ("configuration".into(), error))?;
+    if timing_mode != eggreplay_core::StreamTimingMode::Immediate
+        && policy.mode != eggreplay_core::RecordMode::Sealed
+    {
+        return Err((
+            "configuration".into(),
+            "timed replay is only supported in sealed serve mode".into(),
+        ));
+    }
     if !policy.upstream_enabled && args.route != "direct" {
         return Err((
             "configuration".into(),
@@ -410,13 +457,16 @@ async fn serve(args: ServeArgs) -> Result<(), (String, String)> {
         .map_err(|error| ("fixture".into(), error.to_string()))?;
     let (serve_redaction, _) = effective_serve_redaction_policy(&args);
     let fixture = match args.scenario.as_deref() {
-        Some(scenario_id) => ReplayFixture::load_with_scenario_and_redaction(
+        Some(scenario_id) => ReplayFixture::load_with_scenario_and_redaction_and_timing(
             &session,
             args.matcher_profile.matcher(),
             scenario_id,
             serve_redaction,
+            timing_mode,
         ),
-        None => ReplayFixture::load_with_matcher(&session, args.matcher_profile.matcher()),
+        None => {
+            ReplayFixture::load_with_timing(&session, args.matcher_profile.matcher(), timing_mode)
+        }
     }
     .map_err(|error| ("fixture".into(), error.to_string()))?;
     let server = fixture
@@ -438,7 +488,7 @@ async fn serve(args: ServeArgs) -> Result<(), (String, String)> {
         args.output.output,
         true,
         None,
-        json!({"fixture": args.fixture, "scenario": args.scenario, "record_mode": "sealed", "upstream_enabled": false, "matcher_profile": args.matcher_profile.as_str(), "status": "stopped"}),
+        json!({"fixture": args.fixture, "scenario": args.scenario, "record_mode": "sealed", "upstream_enabled": false, "matcher_profile": args.matcher_profile.as_str(), "timing_mode": args.timing_mode, "status": "stopped"}),
     );
     Ok(())
 }
@@ -720,6 +770,7 @@ async fn regression(
     command: &str,
     output: OutputArgs,
     enforce: bool,
+    scheduler: SchedulerOptions,
 ) -> Result<(), (String, String)> {
     let session = Session::open(&fixture, StoreLimits::default()).map_err(|error| {
         emit_reports(
@@ -760,39 +811,120 @@ async fn regression(
         );
         (class, message)
     })?;
-    let mut reports = Vec::new();
-    let mut flow_ids = Vec::new();
-    for item in session
+    let flows = session
         .iter_flows()
         .map_err(|error| ("fixture".into(), error.to_string()))?
-    {
-        let baseline = item.map_err(|error| ("fixture".into(), error.to_string()))?;
-        flow_ids.push(baseline.id.clone());
-        let request_body = body(&session, &baseline.request.body)
-            .map_err(|error| ("fixture".into(), error.to_string()))?;
-        let candidate = execute_candidate(
-            &client,
-            &baseline.request,
-            &request_body,
-            &target_uri,
-            StoreLimits::default().max_blob_bytes,
-            Some(physical_route.clone()),
-        )
-        .await
-        .map_err(|error| ("runtime".into(), error.to_string()))?;
-        let baseline_response = match &baseline.outcome {
-            FlowOutcome::Response(response) => body(&session, &response.body)
-                .map_err(|error| ("fixture".into(), error.to_string()))?,
-            FlowOutcome::Error(_) => Vec::new(),
-        };
-        reports.push(compare_flows(
-            &baseline,
-            &candidate.flow,
-            &baseline_response,
-            &candidate.response_body,
-            ReportScheduler::Sequential,
-        ));
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| ("fixture".into(), error.to_string()))?;
+    let flow_ids = flows.iter().map(|flow| flow.id.clone()).collect::<Vec<_>>();
+    let mut reports = vec![None; flows.len()];
+    match scheduler.choice {
+        SchedulerChoice::Sequential => {
+            for (index, baseline) in flows.iter().enumerate() {
+                reports[index] = Some(
+                    compare_candidate_flow(
+                        &session,
+                        &client,
+                        &target_uri,
+                        &physical_route,
+                        baseline.clone(),
+                        ReportScheduler::Sequential,
+                    )
+                    .await
+                    .map_err(|error| ("runtime".into(), error))?,
+                );
+            }
+        }
+        SchedulerChoice::Timeline => {
+            if scheduler.max_concurrency == 0 || scheduler.max_concurrency > 1024 {
+                return Err((
+                    "configuration".into(),
+                    "--max-concurrency must be within 1..=1024".into(),
+                ));
+            }
+            let event_bytes = session
+                .read_extension("stream-events")
+                .map_err(|error| ("fixture".into(), error.to_string()))?
+                .ok_or_else(|| {
+                    (
+                        "configuration".into(),
+                        "timeline scheduler requires a stream-events extension".into(),
+                    )
+                })?;
+            let events: eggreplay_core::StreamEvents = serde_json::from_slice(&event_bytes)
+                .map_err(|error| {
+                    (
+                        "fixture".into(),
+                        format!("invalid stream-events extension: {error}"),
+                    )
+                })?;
+            events
+                .validate()
+                .map_err(|error| ("fixture".into(), error))?;
+            let event_map = events
+                .flows
+                .into_iter()
+                .map(|flow| (flow.flow_id, flow.start_offset_ns))
+                .collect::<std::collections::HashMap<_, _>>();
+            let offsets = flows
+                .iter()
+                .map(|flow| {
+                    event_map.get(&flow.id).copied().ok_or_else(|| {
+                        (
+                            "fixture".into(),
+                            format!("timeline offset is missing for flow {}", flow.id),
+                        )
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let order = eggreplay_core::timeline_order_offsets(&offsets, scheduler.max_concurrency)
+                .map_err(|error| ("configuration".into(), error))?;
+            let ordered = order
+                .into_iter()
+                .map(|index| (offsets[index], index))
+                .collect::<Vec<_>>();
+            let origin = tokio::time::Instant::now();
+            let mut next = 0usize;
+            let mut tasks = tokio::task::JoinSet::new();
+            while next < ordered.len() || !tasks.is_empty() {
+                while next < ordered.len() && tasks.len() < scheduler.max_concurrency {
+                    let (offset, index) = ordered[next];
+                    next += 1;
+                    let baseline = flows[index].clone();
+                    let session = session.clone();
+                    let client = client.clone();
+                    let target_uri = target_uri.clone();
+                    let physical_route = physical_route.clone();
+                    tasks.spawn(async move {
+                        tokio::time::sleep_until(origin + std::time::Duration::from_nanos(offset))
+                            .await;
+                        let report = compare_candidate_flow(
+                            &session,
+                            &client,
+                            &target_uri,
+                            &physical_route,
+                            baseline,
+                            ReportScheduler::Timeline,
+                        )
+                        .await?;
+                        Ok::<_, String>((index, report))
+                    });
+                }
+                if let Some(result) = tasks.join_next().await {
+                    let (index, report) = result
+                        .map_err(|error| {
+                            ("runtime".into(), format!("timeline task failed: {error}"))
+                        })?
+                        .map_err(|error| ("runtime".into(), error))?;
+                    reports[index] = Some(report);
+                }
+            }
+        }
     }
+    let reports = reports
+        .into_iter()
+        .collect::<Option<Vec<_>>>()
+        .ok_or_else(|| ("runtime".into(), "scheduler omitted a flow result".into()))?;
     let findings = reports
         .iter()
         .flat_map(|report| report.findings.clone())
@@ -830,6 +962,40 @@ async fn regression(
         );
         Ok(())
     }
+}
+
+async fn compare_candidate_flow(
+    session: &Session,
+    client: &eggfetch_core::Client,
+    target_uri: &http::Uri,
+    physical_route: &PhysicalRoute,
+    baseline: eggreplay_core::Flow,
+    scheduler: ReportScheduler,
+) -> Result<eggreplay_core::RegressionReport, String> {
+    let request_body = body(session, &baseline.request.body).map_err(|error| error.to_string())?;
+    let candidate = execute_candidate(
+        client,
+        &baseline.request,
+        &request_body,
+        target_uri,
+        StoreLimits::default().max_blob_bytes,
+        Some(physical_route.clone()),
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    let baseline_response = match &baseline.outcome {
+        FlowOutcome::Response(response) => {
+            body(session, &response.body).map_err(|error| error.to_string())?
+        }
+        FlowOutcome::Error(_) => Vec::new(),
+    };
+    Ok(compare_flows(
+        &baseline,
+        &candidate.flow,
+        &baseline_response,
+        &candidate.response_body,
+        scheduler,
+    ))
 }
 
 async fn diff(args: DiffArgs) -> Result<(), (String, String)> {
@@ -922,6 +1088,23 @@ async fn inspect(args: InspectArgs) -> Result<(), (String, String)> {
         } else {
             None
         };
+        let sse_view = if args.sse {
+            match &flow.outcome {
+                FlowOutcome::Response(response)
+                    if response.headers.iter().any(|header| {
+                        header.name.eq_ignore_ascii_case("content-type")
+                            && header.value.split(';').next().is_some_and(|media| {
+                                media.trim().eq_ignore_ascii_case("text/event-stream")
+                            })
+                    }) =>
+                {
+                    Some(inspect_sse(&session, &response.body, args.max_body_bytes))
+                }
+                _ => None,
+            }
+        } else {
+            None
+        };
         flows.push(json!({
             "id": flow.id,
             "method": flow.request.method,
@@ -930,6 +1113,7 @@ async fn inspect(args: InspectArgs) -> Result<(), (String, String)> {
             "redactions": flow.redactions,
             "request_body": body_view,
             "response_body": response_view,
+            "sse": sse_view,
         }));
     }
     emit(
@@ -1036,6 +1220,22 @@ fn inspect_body(
                 })
             }
         }
+    }
+}
+
+fn inspect_sse(
+    session: &Session,
+    body_ref: &eggreplay_core::BodyRef,
+    max_bytes: u64,
+) -> serde_json::Value {
+    let max_bytes = max_bytes.min(eggreplay_core::stream::MAX_SSE_BODY_BYTES as u64);
+    if body_ref.len().is_some_and(|length| length > max_bytes) {
+        return json!({"error": "SSE body exceeds --max-body-bytes"});
+    }
+    match body(session, body_ref) {
+        Ok(bytes) => serde_json::to_value(eggreplay_core::parse_sse(&bytes, true))
+            .unwrap_or_else(|_| json!({"error": "SSE view serialization failed"})),
+        Err(_) => json!({"error": "SSE body could not be read"}),
     }
 }
 

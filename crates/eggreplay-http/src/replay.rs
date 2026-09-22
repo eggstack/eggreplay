@@ -2,9 +2,11 @@
 
 use eggreplay_core::{
     BodyRef, ConsumptionMode, FlowOutcome, HeaderEntry, HttpRequest, MatchCandidate, MatchResult,
-    Matcher, MatcherSession, QueryPair, ScenarioRules, ScenarioRuntime,
+    Matcher, MatcherSession, QueryPair, ScenarioRules, ScenarioRuntime, StreamEvents,
+    StreamTimingMode,
 };
 use eggreplay_store::{Session, StoreError};
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use thiserror::Error;
@@ -37,6 +39,14 @@ struct ReplayState {
     session: MatcherSession,
     store: Session,
     scenario: Option<ScenarioRuntime>,
+    stream_events: HashMap<String, eggreplay_core::FlowStreamEvents>,
+    timing_mode: StreamTimingMode,
+}
+
+#[derive(Clone)]
+enum TimedStreamStep {
+    Data { delay_ns: u64, length: u64 },
+    Error { delay_ns: u64, message: String },
 }
 
 #[cfg(feature = "eggserve")]
@@ -101,13 +111,23 @@ impl ReplayFixture {
 
     /// Load with an explicit matcher (for semantic-mode tests).
     pub fn load_with_matcher(session: &Session, matcher: Matcher) -> Result<Self, ReplayError> {
-        Self::load_inner(session, matcher, None)
+        Self::load_inner(session, matcher, None, StreamTimingMode::Immediate)
+    }
+
+    /// Load with an explicit relative body-timing replay mode.
+    pub fn load_with_timing(
+        session: &Session,
+        matcher: Matcher,
+        timing_mode: StreamTimingMode,
+    ) -> Result<Self, ReplayError> {
+        Self::load_inner(session, matcher, None, timing_mode)
     }
 
     fn load_inner(
         session: &Session,
         matcher: Matcher,
         scenario: Option<ScenarioRuntime>,
+        timing_mode: StreamTimingMode,
     ) -> Result<Self, ReplayError> {
         for extension in &session.manifest().extensions {
             if extension.required_for_replay && !(extension.name == "rules" && scenario.is_some()) {
@@ -122,6 +142,48 @@ impl ReplayFixture {
             let flow = item?;
             candidates.push(MatchCandidate::from_flow(flow));
         }
+        let mut stream_events = HashMap::new();
+        if let Some(bytes) = session.read_extension("stream-events")? {
+            let decoded: StreamEvents = serde_json::from_slice(&bytes).map_err(|error| {
+                ReplayError::State(format!("invalid stream-events extension: {error}"))
+            })?;
+            decoded.validate().map_err(ReplayError::State)?;
+            for flow_events in decoded.flows {
+                stream_events.insert(flow_events.flow_id.clone(), flow_events);
+            }
+        } else if timing_mode != StreamTimingMode::Immediate {
+            return Err(ReplayError::State(
+                "timed replay requires a stream-events extension".into(),
+            ));
+        }
+        for candidate in &candidates {
+            if let Some(events) = stream_events.get(&candidate.flow.id) {
+                let response_length = events.response.iter().fold(0u64, |total, event| {
+                    total.saturating_add(match &event.event {
+                        eggreplay_core::StreamEventKind::Data { length, .. } => *length,
+                        _ => 0,
+                    })
+                });
+                let expected_length = match &candidate.flow.outcome {
+                    FlowOutcome::Response(response) => response.body.len().unwrap_or(0),
+                    FlowOutcome::Error(_) => 0,
+                };
+                if response_length != expected_length {
+                    return Err(ReplayError::State(format!(
+                        "stream event byte count disagrees with flow {} response body",
+                        candidate.flow.id
+                    )));
+                }
+            }
+        }
+        if timing_mode != StreamTimingMode::Immediate
+            && candidates.iter().any(|candidate| {
+                matches!(&candidate.flow.outcome, FlowOutcome::Response(response) if !matches!(response.body, BodyRef::Absent | BodyRef::Empty))
+                    && !stream_events.contains_key(&candidate.flow.id)
+            })
+        {
+            return Err(ReplayError::State("timed replay is missing response event metadata".into()));
+        }
         Ok(Self {
             state: Arc::new(Mutex::new(ReplayState {
                 candidates,
@@ -130,6 +192,8 @@ impl ReplayFixture {
                 session: MatcherSession::new(),
                 store: session.clone(),
                 scenario,
+                stream_events,
+                timing_mode,
             })),
         })
     }
@@ -156,6 +220,23 @@ impl ReplayFixture {
         scenario_id: &str,
         redaction: eggreplay_core::RedactionConfig,
     ) -> Result<Self, ReplayError> {
+        Self::load_with_scenario_and_redaction_and_timing(
+            session,
+            matcher,
+            scenario_id,
+            redaction,
+            StreamTimingMode::Immediate,
+        )
+    }
+
+    /// Load a named scenario with protected-field policy and body timing mode.
+    pub fn load_with_scenario_and_redaction_and_timing(
+        session: &Session,
+        matcher: Matcher,
+        scenario_id: &str,
+        redaction: eggreplay_core::RedactionConfig,
+        timing_mode: StreamTimingMode,
+    ) -> Result<Self, ReplayError> {
         let bytes = session
             .read_extension("rules")?
             .ok_or_else(|| ReplayError::State("fixture has no rules extension".into()))?;
@@ -164,7 +245,7 @@ impl ReplayFixture {
         let scenario = rules
             .runtime_with_redaction(scenario_id, redaction)
             .map_err(ReplayError::State)?;
-        Self::load_inner(session, matcher, Some(scenario))
+        Self::load_inner(session, matcher, Some(scenario), timing_mode)
     }
 
     /// Return the number of loaded candidates (metadata only).
@@ -337,6 +418,16 @@ async fn handle_request(
                         response.trailers.clone(),
                         store,
                         in_append,
+                        if in_append {
+                            Vec::new()
+                        } else {
+                            guard
+                                .stream_events
+                                .get(&flow.id)
+                                .map(|events| events.response.clone())
+                                .unwrap_or_default()
+                        },
+                        guard.timing_mode,
                     )),
                     FlowOutcome::Error(error) => {
                         return response_bytes(
@@ -364,6 +455,8 @@ async fn handle_request(
         response_trailers,
         store,
         in_append,
+        stream_events,
+        timing_mode,
     ) = match selection {
         Ok(selection) => selection,
         Err(context) => return append_miss(state, context, actual, body.to_vec()).await,
@@ -431,16 +524,112 @@ async fn handle_request(
             let digest = handle.sha256().to_owned();
             let std_file = handle.into_file();
             let tokio_file = tokio::fs::File::from_std(std_file);
+            let mut schedule = Vec::<TimedStreamStep>::new();
+            let mut previous_delta = 0u64;
+            let mut accumulated_delay = 0u64;
+            let mut trailer_delay = 0u64;
+            let mut terminal_delay = 0u64;
+            let mut terminal_error = false;
+            for event in &stream_events {
+                let delay = match timing_mode.delay_ns(
+                    event.delta_ns.saturating_sub(previous_delta),
+                    accumulated_delay,
+                ) {
+                    Ok(delay) => delay,
+                    Err(error) => {
+                        return response_bytes(
+                            500,
+                            &[],
+                            format!("invalid replay timing: {error}\n"),
+                        );
+                    }
+                };
+                previous_delta = event.delta_ns;
+                accumulated_delay = accumulated_delay.saturating_add(delay);
+                match &event.event {
+                    eggreplay_core::StreamEventKind::Data { length, .. } => {
+                        schedule.push(TimedStreamStep::Data {
+                            delay_ns: delay,
+                            length: *length,
+                        });
+                    }
+                    eggreplay_core::StreamEventKind::Trailers { .. } => {
+                        trailer_delay = delay;
+                    }
+                    eggreplay_core::StreamEventKind::Error {
+                        category, phase, ..
+                    } => {
+                        terminal_error = true;
+                        schedule.push(TimedStreamStep::Error {
+                            delay_ns: delay,
+                            message: format!("recorded stream error: {category}/{phase}"),
+                        });
+                    }
+                    eggreplay_core::StreamEventKind::End => terminal_delay = delay,
+                }
+            }
+            let schedule = Arc::new(schedule);
             let byte_stream = futures_util::stream::unfold(
-                (Some(tokio_file), Some(Sha256::new()), 0u64, false),
-                move |(mut file_opt, mut hasher_opt, mut read, terminal)| {
+                (
+                    Some(tokio_file),
+                    Some(Sha256::new()),
+                    0u64,
+                    false,
+                    0usize,
+                    0u64,
+                    schedule,
+                ),
+                move |(
+                    mut file_opt,
+                    mut hasher_opt,
+                    mut read,
+                    terminal,
+                    mut schedule_index,
+                    mut segment_remaining,
+                    schedule,
+                )| {
                     let digest = digest.clone();
                     async move {
                         if terminal || file_opt.is_none() {
                             return None;
                         }
+                        if segment_remaining == 0 && schedule_index < schedule.len() {
+                            let step = schedule[schedule_index].clone();
+                            schedule_index += 1;
+                            let delay_ns = match &step {
+                                TimedStreamStep::Data { delay_ns, .. }
+                                | TimedStreamStep::Error { delay_ns, .. } => *delay_ns,
+                            };
+                            if delay_ns > 0 {
+                                tokio::time::sleep(std::time::Duration::from_nanos(delay_ns)).await;
+                            }
+                            match step {
+                                TimedStreamStep::Data { length, .. } => segment_remaining = length,
+                                TimedStreamStep::Error { message, .. } => {
+                                    file_opt = None;
+                                    hasher_opt = None;
+                                    return Some((
+                                        Err(ResponseStreamError::new(message)),
+                                        (
+                                            file_opt,
+                                            hasher_opt,
+                                            read,
+                                            true,
+                                            schedule_index,
+                                            segment_remaining,
+                                            schedule,
+                                        ),
+                                    ));
+                                }
+                            }
+                        }
                         let file = file_opt.as_mut().expect("file present");
-                        let mut buf = vec![0u8; 64 * 1024];
+                        let max_chunk = if segment_remaining == 0 {
+                            64 * 1024
+                        } else {
+                            segment_remaining.min(64 * 1024) as usize
+                        };
+                        let mut buf = vec![0u8; max_chunk];
                         use tokio::io::AsyncReadExt;
                         match file.read(&mut buf).await {
                             Ok(0) => {
@@ -453,7 +642,15 @@ async fn handle_request(
                                     );
                                     return Some((
                                         Err(ResponseStreamError::new(msg)),
-                                        (file_opt, hasher_opt, read, true),
+                                        (
+                                            file_opt,
+                                            hasher_opt,
+                                            read,
+                                            true,
+                                            schedule_index,
+                                            segment_remaining,
+                                            schedule,
+                                        ),
                                     ));
                                 }
                                 None
@@ -471,18 +668,46 @@ async fn handle_request(
                                         Err(ResponseStreamError::new(format!(
                                             "blob integrity failure for {digest}"
                                         ))),
-                                        (file_opt, hasher_opt, read, true),
+                                        (
+                                            file_opt,
+                                            hasher_opt,
+                                            read,
+                                            true,
+                                            schedule_index,
+                                            segment_remaining,
+                                            schedule,
+                                        ),
                                     ));
                                 }
+                                segment_remaining = segment_remaining.saturating_sub(n as u64);
                                 let bytes = bytes::Bytes::from(buf);
-                                Some((Ok(bytes), (file_opt, hasher_opt, read, false)))
+                                Some((
+                                    Ok(bytes),
+                                    (
+                                        file_opt,
+                                        hasher_opt,
+                                        read,
+                                        false,
+                                        schedule_index,
+                                        segment_remaining,
+                                        schedule,
+                                    ),
+                                ))
                             }
                             Err(e) => {
                                 file_opt = None;
                                 hasher_opt = None;
                                 Some((
                                     Err(ResponseStreamError::new(e.to_string())),
-                                    (file_opt, hasher_opt, read, true),
+                                    (
+                                        file_opt,
+                                        hasher_opt,
+                                        read,
+                                        true,
+                                        schedule_index,
+                                        segment_remaining,
+                                        schedule,
+                                    ),
                                 ))
                             }
                         }
@@ -490,21 +715,31 @@ async fn handle_request(
                 },
             );
             let trailers_owned = response_trailers.clone();
-            let stream =
-                ResponseStream::with_known_length_and_trailers(byte_stream, length, async move {
-                    if trailers_owned.is_empty() {
-                        return Ok(None);
-                    }
-                    let mut block = eggserve_primitives::HeaderBlock::new();
-                    for header in trailers_owned {
-                        block
-                            .push_bytes(header.name, header.value.as_bytes())
-                            .map_err(|e| ResponseStreamError::new(e.to_string()))?;
-                    }
-                    eggserve_primitives::Trailers::new(block)
-                        .map(Some)
-                        .map_err(|e| ResponseStreamError::new(e.to_string()))
-                });
+            let terminal_delay = if terminal_error { 0 } else { terminal_delay };
+            let trailer_delay = if terminal_error { 0 } else { trailer_delay };
+            let trailer_future = async move {
+                let delay = trailer_delay.saturating_add(terminal_delay);
+                if delay > 0 {
+                    tokio::time::sleep(std::time::Duration::from_nanos(delay)).await;
+                }
+                if trailers_owned.is_empty() {
+                    return Ok(None);
+                }
+                let mut block = eggserve_primitives::HeaderBlock::new();
+                for header in trailers_owned {
+                    block
+                        .push_bytes(header.name, header.value.as_bytes())
+                        .map_err(|e| ResponseStreamError::new(e.to_string()))?;
+                }
+                eggserve_primitives::Trailers::new(block)
+                    .map(Some)
+                    .map_err(|e| ResponseStreamError::new(e.to_string()))
+            };
+            let stream = if terminal_error {
+                ResponseStream::with_trailers(byte_stream, trailer_future)
+            } else {
+                ResponseStream::with_known_length_and_trailers(byte_stream, length, trailer_future)
+            };
             let status = StatusCode::new(response_status)
                 .map_err(|e| ServiceError::internal(e.to_string()))?;
             let mut builder = Response::builder().status(status);
@@ -962,6 +1197,124 @@ mod tests {
         assert!(max_chunk > 0);
         assert_eq!(collected, payload);
         assert_eq!(format!("{:x}", hasher.finalize()), blob.sha256);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn recorded_timing_delays_between_semantic_data_events() {
+        use eggfetch_core::Client;
+        use http_body_util::BodyExt;
+
+        let port = {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
+            drop(listener);
+            port
+        };
+        let authority = format!("127.0.0.1:{port}");
+        let dir = temp_path("timed-replay");
+        let mut writer =
+            SessionWriter::create(&dir, SessionMetadata::default(), test_limits()).unwrap();
+        let mut sink = writer.begin_blob().unwrap();
+        sink.write_all(b"abcd").unwrap();
+        let body = sink.finish().unwrap();
+        let flow = flow_with_bodies(
+            "timed",
+            "GET",
+            &authority,
+            "/timed",
+            BodyRef::Empty,
+            body,
+            vec![],
+        );
+        writer.append_flow(&flow).unwrap();
+        let events = StreamEvents {
+            schema_version: eggreplay_core::stream::STREAM_EVENTS_SCHEMA_VERSION,
+            flows: vec![eggreplay_core::FlowStreamEvents {
+                flow_id: flow.id.clone(),
+                start_offset_ns: 0,
+                request: vec![],
+                response: vec![
+                    eggreplay_core::StreamEvent {
+                        delta_ns: 0,
+                        event: eggreplay_core::StreamEventKind::Data {
+                            offset: 0,
+                            length: 2,
+                        },
+                    },
+                    eggreplay_core::StreamEvent {
+                        delta_ns: 40_000_000,
+                        event: eggreplay_core::StreamEventKind::Data {
+                            offset: 2,
+                            length: 2,
+                        },
+                    },
+                    eggreplay_core::StreamEvent {
+                        delta_ns: 80_000_000,
+                        event: eggreplay_core::StreamEventKind::Error {
+                            offset: 4,
+                            category: "other".into(),
+                            phase: "body".into(),
+                        },
+                    },
+                ],
+            }],
+        };
+        writer
+            .write_extension(
+                "stream-events",
+                eggreplay_core::stream::STREAM_EVENTS_SCHEMA_VERSION,
+                "stream-events.json",
+                false,
+                &serde_json::to_vec(&events).unwrap(),
+            )
+            .unwrap();
+        let session = writer.finish().unwrap();
+        let mut matcher = eggreplay_core::Matcher::practical(8);
+        for header in ["host", "accept", "accept-encoding", "connection"] {
+            matcher.ignore_header(header);
+        }
+        let fixture =
+            ReplayFixture::load_with_timing(&session, matcher, StreamTimingMode::Recorded).unwrap();
+        let bind: std::net::SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+        let server = fixture
+            .start(bind, test_limits().max_blob_bytes)
+            .await
+            .unwrap();
+        let client = Client::builder().retry_canceled_requests(false).build();
+        let request = http::Request::builder()
+            .uri(
+                format!("http://{authority}/timed")
+                    .parse::<http::Uri>()
+                    .unwrap(),
+            )
+            .body(http_body_util::Full::new(bytes::Bytes::new()))
+            .unwrap();
+        let response = client.execute_http_body_default(request).await.unwrap();
+        let (_, mut body) = response.into_parts();
+        let mut times = Vec::new();
+        let start = tokio::time::Instant::now();
+        let mut bytes = Vec::new();
+        let mut stream_error = false;
+        while let Some(frame) = body.frame().await {
+            let frame = match frame {
+                Ok(frame) => frame,
+                Err(_) => {
+                    stream_error = true;
+                    break;
+                }
+            };
+            if frame.is_data() {
+                times.push(start.elapsed());
+                bytes.extend_from_slice(&frame.into_data().unwrap());
+            }
+        }
+        assert_eq!(bytes, b"abcd");
+        assert!(stream_error, "recorded terminal stream error is replayed");
+        assert!(times.len() >= 2);
+        assert!(times[1] - times[0] >= std::time::Duration::from_millis(30));
+        server.shutdown();
+        server.wait().await;
         std::fs::remove_dir_all(&dir).ok();
     }
 

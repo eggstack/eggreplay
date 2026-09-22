@@ -16,7 +16,7 @@ use std::io::Write;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 
 #[cfg(feature = "eggserve")]
@@ -177,6 +177,7 @@ where
     semantic_request.body = request_body;
     semantic_request.trailers = request_trailers;
 
+    let mut response_events = Vec::new();
     let outcome = match result {
         Ok(response) => {
             let (parts, body) = response.into_parts();
@@ -184,8 +185,29 @@ where
             let response_sink = Arc::new(Mutex::new(Some(writer.begin_blob()?)));
             let mut body = Box::pin(body);
             let mut response_trailers = Vec::new();
+            let response_started = Instant::now();
+            let mut response_offset = 0u64;
+            let mut response_failed = false;
             while let Some(frame) = body.frame().await {
-                let frame = frame.map_err(|error| HttpError::Body(error.to_string()))?;
+                let frame = match frame {
+                    Ok(frame) => frame,
+                    Err(error) => {
+                        push_stream_event(
+                            &mut response_events,
+                            eggreplay_core::StreamEvent {
+                                delta_ns: elapsed_ns(response_started),
+                                event: eggreplay_core::StreamEventKind::Error {
+                                    offset: response_offset,
+                                    category: "other".into(),
+                                    phase: "body".into(),
+                                },
+                            },
+                        )?;
+                        response_failed = true;
+                        let _ = error;
+                        break;
+                    }
+                };
                 if frame.is_data() {
                     let data = frame
                         .into_data()
@@ -197,12 +219,42 @@ where
                         .ok_or_else(|| HttpError::Body("response sink already closed".into()))?
                         .write_all(&data)
                         .map_err(|error| HttpError::Body(error.to_string()))?;
+                    let length = data.len() as u64;
+                    push_stream_event(
+                        &mut response_events,
+                        eggreplay_core::StreamEvent {
+                            delta_ns: elapsed_ns(response_started),
+                            event: eggreplay_core::StreamEventKind::Data {
+                                offset: response_offset,
+                                length,
+                            },
+                        },
+                    )?;
+                    response_offset = response_offset.saturating_add(length);
                 } else if frame.is_trailers() {
                     let trailers = frame
                         .into_trailers()
                         .map_err(|_| HttpError::Body("invalid response trailer frame".into()))?;
                     response_trailers = header_entries(&trailers).0;
+                    push_stream_event(
+                        &mut response_events,
+                        eggreplay_core::StreamEvent {
+                            delta_ns: elapsed_ns(response_started),
+                            event: eggreplay_core::StreamEventKind::Trailers {
+                                fields: response_trailers.clone(),
+                            },
+                        },
+                    )?;
                 }
+            }
+            if !response_failed {
+                push_stream_event(
+                    &mut response_events,
+                    eggreplay_core::StreamEvent {
+                        delta_ns: elapsed_ns(response_started),
+                        event: eggreplay_core::StreamEventKind::End,
+                    },
+                )?;
             }
             // Transform staged response before publication; raw never finalized.
             // Temporarily take sink for redaction check without finishing raw.
@@ -303,7 +355,14 @@ where
         flow.annotations
             .push(("conversion".into(), "opaque-header-values-escaped".into()));
     }
+    reconcile_stream_event_body_length(&mut response_events, &flow.outcome);
     writer.append_flow(&flow)?;
+    writer.append_stream_events(eggreplay_core::FlowStreamEvents {
+        flow_id: flow.id.clone(),
+        start_offset_ns: monotonic_offset_ns(),
+        request: Vec::new(),
+        response: response_events,
+    })?;
     Ok(flow)
 }
 
@@ -338,7 +397,16 @@ where
     let request_sink: Arc<Mutex<Option<RecordingBodyWriter>>> =
         Arc::new(Mutex::new(Some(session.begin_blob()?)));
     let request_trailers = Arc::new(Mutex::new(Vec::new()));
-    let upstream_body = tee_body_with_session(body, request_sink.clone(), request_trailers.clone());
+    let request_events = Arc::new(Mutex::new(Vec::new()));
+    let request_started = Instant::now();
+    let capture_start_offset_ns = monotonic_offset_ns();
+    let upstream_body = tee_body_with_session(
+        body,
+        request_sink.clone(),
+        request_trailers.clone(),
+        request_events.clone(),
+        request_started,
+    );
     let upstream = Request::from_parts(parts, upstream_body);
 
     let result = client.execute_http_body_default(upstream).await;
@@ -352,10 +420,12 @@ where
         false,
     )?;
     let request_trailers = take_trailers(request_trailers)?;
+    let request_events = take_stream_events(request_events)?;
     let mut semantic_request = converted.request;
     semantic_request.body = request_body;
     semantic_request.trailers = request_trailers;
 
+    let mut response_events = Vec::new();
     let outcome = match result {
         Ok(response) => {
             let (parts, body) = response.into_parts();
@@ -364,8 +434,29 @@ where
                 Arc::new(Mutex::new(Some(session.begin_blob()?)));
             let mut body = Box::pin(body);
             let mut response_trailers = Vec::new();
+            let response_started = Instant::now();
+            let mut response_offset = 0u64;
+            let mut response_failed = false;
             while let Some(frame) = body.frame().await {
-                let frame = frame.map_err(|error| HttpError::Body(error.to_string()))?;
+                let frame = match frame {
+                    Ok(frame) => frame,
+                    Err(error) => {
+                        push_stream_event(
+                            &mut response_events,
+                            eggreplay_core::StreamEvent {
+                                delta_ns: elapsed_ns(response_started),
+                                event: eggreplay_core::StreamEventKind::Error {
+                                    offset: response_offset,
+                                    category: "other".into(),
+                                    phase: "body".into(),
+                                },
+                            },
+                        )?;
+                        let _ = error;
+                        response_failed = true;
+                        break;
+                    }
+                };
                 if frame.is_data() {
                     let data = frame
                         .into_data()
@@ -377,12 +468,42 @@ where
                         .ok_or_else(|| HttpError::Body("response sink already closed".into()))?
                         .write_all(&data)
                         .map_err(|error| HttpError::Body(error.to_string()))?;
+                    let length = data.len() as u64;
+                    push_stream_event(
+                        &mut response_events,
+                        eggreplay_core::StreamEvent {
+                            delta_ns: elapsed_ns(response_started),
+                            event: eggreplay_core::StreamEventKind::Data {
+                                offset: response_offset,
+                                length,
+                            },
+                        },
+                    )?;
+                    response_offset = response_offset.saturating_add(length);
                 } else if frame.is_trailers() {
                     let trailers = frame
                         .into_trailers()
                         .map_err(|_| HttpError::Body("invalid response trailer frame".into()))?;
                     response_trailers = header_entries(&trailers).0;
+                    push_stream_event(
+                        &mut response_events,
+                        eggreplay_core::StreamEvent {
+                            delta_ns: elapsed_ns(response_started),
+                            event: eggreplay_core::StreamEventKind::Trailers {
+                                fields: response_trailers.clone(),
+                            },
+                        },
+                    )?;
                 }
+            }
+            if !response_failed {
+                push_stream_event(
+                    &mut response_events,
+                    eggreplay_core::StreamEvent {
+                        delta_ns: elapsed_ns(response_started),
+                        event: eggreplay_core::StreamEventKind::End,
+                    },
+                )?;
             }
             // Redact staged response before publication.
             let (response_body, mut resp_markers) = {
@@ -485,7 +606,14 @@ where
         flow.annotations
             .push(("conversion".into(), "opaque-header-values-escaped".into()));
     }
+    reconcile_stream_event_body_length(&mut response_events, &flow.outcome);
     session.append_flow(&flow)?;
+    session.append_stream_events(eggreplay_core::FlowStreamEvents {
+        flow_id: flow.id.clone(),
+        start_offset_ns: capture_start_offset_ns,
+        request: request_events,
+        response: response_events,
+    })?;
     Ok(flow)
 }
 
@@ -946,6 +1074,8 @@ fn tee_body_with_session<B>(
     body: B,
     sink: Arc<Mutex<Option<eggreplay_store::RecordingBodyWriter>>>,
     trailers: Arc<Mutex<Vec<HeaderEntry>>>,
+    events: Arc<Mutex<Vec<eggreplay_core::StreamEvent>>>,
+    started: Instant,
 ) -> StreamBody<TeeSessionStream<B>>
 where
     B: Body<Data = Bytes> + Send + 'static,
@@ -955,6 +1085,9 @@ where
         body: Box::pin(body),
         sink,
         trailers,
+        events,
+        started,
+        offset: 0,
         done: false,
     })
 }
@@ -963,6 +1096,9 @@ struct TeeSessionStream<B> {
     body: Pin<Box<B>>,
     sink: Arc<Mutex<Option<eggreplay_store::RecordingBodyWriter>>>,
     trailers: Arc<Mutex<Vec<HeaderEntry>>>,
+    events: Arc<Mutex<Vec<eggreplay_core::StreamEvent>>>,
+    started: Instant,
+    offset: u64,
     done: bool,
 }
 
@@ -982,10 +1118,32 @@ where
             Poll::Pending => Poll::Pending,
             Poll::Ready(None) => {
                 this.done = true;
+                if let Ok(mut events) = this.events.lock() {
+                    let _ = push_stream_event_inner(
+                        &mut events,
+                        eggreplay_core::StreamEvent {
+                            delta_ns: elapsed_ns(this.started),
+                            event: eggreplay_core::StreamEventKind::End,
+                        },
+                    );
+                }
                 Poll::Ready(None)
             }
             Poll::Ready(Some(Err(error))) => {
                 this.done = true;
+                if let Ok(mut events) = this.events.lock() {
+                    let _ = push_stream_event_inner(
+                        &mut events,
+                        eggreplay_core::StreamEvent {
+                            delta_ns: elapsed_ns(this.started),
+                            event: eggreplay_core::StreamEventKind::Error {
+                                offset: this.offset,
+                                category: "other".into(),
+                                phase: "body".into(),
+                            },
+                        },
+                    );
+                }
                 Poll::Ready(Some(Err(BodyError(error.to_string()))))
             }
             Poll::Ready(Some(Ok(frame))) => {
@@ -1010,6 +1168,31 @@ where
                                         .map_err(|error| BodyError(error.to_string()))
                                 })
                         });
+                    if result.is_ok() {
+                        let length = data.len() as u64;
+                        let recorded = this
+                            .events
+                            .lock()
+                            .map_err(|_| BodyError("stream event registry poisoned".into()))
+                            .and_then(|mut events| {
+                                push_stream_event_inner(
+                                    &mut events,
+                                    eggreplay_core::StreamEvent {
+                                        delta_ns: elapsed_ns(this.started),
+                                        event: eggreplay_core::StreamEventKind::Data {
+                                            offset: this.offset,
+                                            length,
+                                        },
+                                    },
+                                )
+                                .map_err(BodyError)
+                            });
+                        if let Err(error) = recorded {
+                            this.done = true;
+                            return Poll::Ready(Some(Err(error)));
+                        }
+                        this.offset = this.offset.saturating_add(length);
+                    }
                     Poll::Ready(Some(result.map(|()| Frame::data(data))))
                 } else if frame.is_trailers() {
                     let header_map = match frame.into_trailers() {
@@ -1022,6 +1205,19 @@ where
                     };
                     if let Ok(mut target) = this.trailers.lock() {
                         target.extend(header_entries(&header_map).0);
+                    }
+                    if let Ok(mut events) = this.events.lock() {
+                        let fields = header_entries(&header_map).0;
+                        if let Err(error) = push_stream_event_inner(
+                            &mut events,
+                            eggreplay_core::StreamEvent {
+                                delta_ns: elapsed_ns(this.started),
+                                event: eggreplay_core::StreamEventKind::Trailers { fields },
+                            },
+                        ) {
+                            this.done = true;
+                            return Poll::Ready(Some(Err(BodyError(error))));
+                        }
                     }
                     Poll::Ready(Some(Ok(Frame::trailers(header_map))))
                 } else {
@@ -1137,6 +1333,106 @@ fn now_ms() -> u64 {
         .map_or(0, |duration| {
             duration.as_millis().try_into().unwrap_or(u64::MAX)
         })
+}
+
+fn elapsed_ns(started: Instant) -> u64 {
+    started.elapsed().as_nanos().min(u64::MAX as u128) as u64
+}
+
+fn monotonic_offset_ns() -> u64 {
+    use std::sync::OnceLock;
+    static ORIGIN: OnceLock<Instant> = OnceLock::new();
+    ORIGIN
+        .get_or_init(Instant::now)
+        .elapsed()
+        .as_nanos()
+        .min(u64::MAX as u128) as u64
+}
+
+fn push_stream_event(
+    events: &mut Vec<eggreplay_core::StreamEvent>,
+    event: eggreplay_core::StreamEvent,
+) -> Result<(), HttpError> {
+    push_stream_event_inner(events, event).map_err(HttpError::Body)
+}
+
+fn push_stream_event_inner(
+    events: &mut Vec<eggreplay_core::StreamEvent>,
+    event: eggreplay_core::StreamEvent,
+) -> Result<(), String> {
+    const MAX_EVENTS_PER_DIRECTION: usize = eggreplay_core::stream::MAX_STREAM_EVENTS_PER_FLOW / 2;
+    if matches!(
+        &event.event,
+        eggreplay_core::StreamEventKind::Data { length: 0, .. }
+    ) {
+        return Ok(());
+    }
+    if events.len() < MAX_EVENTS_PER_DIRECTION {
+        events.push(event);
+        return Ok(());
+    }
+    if let (Some(last), eggreplay_core::StreamEventKind::Data { offset, length }) =
+        (events.last_mut(), &event.event)
+        && let eggreplay_core::StreamEventKind::Data {
+            offset: last_offset,
+            length: last_length,
+        } = &mut last.event
+        && last_offset.saturating_add(*last_length) == *offset
+    {
+        *last_length = last_length.saturating_add(*length);
+        return Ok(());
+    }
+    Err("stream event count exceeds configured limit".into())
+}
+
+fn take_stream_events(
+    events: Arc<Mutex<Vec<eggreplay_core::StreamEvent>>>,
+) -> Result<Vec<eggreplay_core::StreamEvent>, HttpError> {
+    Ok(std::mem::take(&mut *events.lock().map_err(|_| {
+        HttpError::Body("stream event registry poisoned".into())
+    })?))
+}
+
+fn reconcile_stream_event_body_length(
+    events: &mut Vec<eggreplay_core::StreamEvent>,
+    outcome: &FlowOutcome,
+) {
+    let expected = match outcome {
+        FlowOutcome::Response(response) => response.body.len().unwrap_or(0),
+        FlowOutcome::Error(_) => return,
+    };
+    let actual = events.iter().fold(0u64, |total, event| {
+        total.saturating_add(match &event.event {
+            eggreplay_core::StreamEventKind::Data { length, .. } => *length,
+            _ => 0,
+        })
+    });
+    if actual == expected {
+        return;
+    }
+    let first_data = events
+        .iter()
+        .position(|event| matches!(&event.event, eggreplay_core::StreamEventKind::Data { .. }));
+    let first_delta = first_data.map_or(0, |index| events[index].delta_ns);
+    events.retain(|event| !matches!(&event.event, eggreplay_core::StreamEventKind::Data { .. }));
+    if expected > 0 {
+        let insert_at = first_data.unwrap_or(events.len()).min(events.len());
+        events.insert(
+            insert_at,
+            eggreplay_core::StreamEvent {
+                delta_ns: first_delta,
+                event: eggreplay_core::StreamEventKind::Data {
+                    offset: 0,
+                    length: expected,
+                },
+            },
+        );
+    }
+    for event in events {
+        if let eggreplay_core::StreamEventKind::Error { offset, .. } = &mut event.event {
+            *offset = expected;
+        }
+    }
 }
 
 #[allow(dead_code)]
@@ -1369,6 +1665,22 @@ mod tests {
             .unwrap()
             .collect::<Result<_, _>>()
             .unwrap();
+        let stream_events: eggreplay_core::StreamEvents =
+            serde_json::from_slice(&finalized.read_extension("stream-events").unwrap().unwrap())
+                .unwrap();
+        assert_eq!(stream_events.flows.len(), 2);
+        assert!(
+            stream_events
+                .flows
+                .iter()
+                .all(|events| flows.iter().any(|flow| flow.id == events.flow_id))
+        );
+        assert!(
+            stream_events
+                .flows
+                .iter()
+                .all(|events| !events.response.is_empty())
+        );
         assert_ne!(flows[0].id, flows[1].id);
         std::fs::remove_dir_all(dir).ok();
     }

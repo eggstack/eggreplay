@@ -41,4 +41,20 @@ publishes the merged fixture when the server stops, while re-record stages a
 replacement and preserves the old fixture until the new recording validates.
 `--route` is only accepted with a network-capable mode. `--matcher-profile`
 selects `strict` or `practical`, and serve's JSON result reports the effective
-record, matcher, upstream, and redaction policies.
+record, matcher, upstream, timing, and redaction policies. `serve --timing-mode`
+accepts `immediate` (default), `recorded`, or `scaled:<factor>` with factors
+from `0.01` to `100`. Timed replay needs a validated `stream-events`
+extension; recorded data delays are capped at 60 seconds each and five minutes
+per flow. Dropping a response cancels its pending sleep.
+
+`inspect --sse` adds a derived view for `text/event-stream` response bodies.
+The view is bounded by `--max-body-bytes` and the 16 MiB parser cap; raw body
+bytes remain authoritative. `diff` compares ordered SSE fields whenever both
+responses declare `text/event-stream`, alongside the ordinary raw-body
+comparison.
+
+`replay` and `test` keep sequential candidate execution by default. Add
+`--scheduler timeline` to start candidate requests at their recorded monotonic
+offsets; equal offsets follow fixture order, and `--max-concurrency` (default
+8, maximum 1,024) bounds active requests. Timeline mode requires one validated
+start offset for every flow and reports findings in fixture order.
