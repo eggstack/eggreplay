@@ -6,8 +6,8 @@ Status source of truth for implementation handoff.
 
 | ID | Plan | Status | Depends on | Release gate |
 |---|---|---|---|---|
-| M001 | `implementation/foundation/001-workspace-and-contracts.md` | ready | — | foundation |
-| M002 | `implementation/foundation/002-flow-model-and-store.md` | blocked | M001 | foundation |
+| M001 | `implementation/foundation/001-workspace-and-contracts.md` | closed | — | foundation |
+| M002 | `implementation/foundation/002-flow-model-and-store.md` | ready | M001 | foundation |
 | M003 | `implementation/recording/003-eggfetch-recording-path.md` | blocked | M002 | v0.1 |
 | M004 | `implementation/replay/004-eggserve-replay-server.md` | blocked | M002 | v0.1 |
 | M005 | `implementation/matching/005-matching-consumption-near-miss.md` | blocked | M002, M004 | v0.1 |

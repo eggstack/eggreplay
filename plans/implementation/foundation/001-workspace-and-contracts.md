@@ -1,6 +1,6 @@
 # M001 — Workspace and Contract Skeleton
 
-Status: ready
+Status: closed
 Depends on: none
 Release gate: foundation
 
