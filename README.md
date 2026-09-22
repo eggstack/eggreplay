@@ -7,9 +7,13 @@ EggServe. Optional outbound routing is delegated to Eggress.
 
 ## Status
 
-The v0.1 implementation is being delivered through the ordered milestones in
-[`plans/registry.md`](plans/registry.md). The core and store remain usable
-without a network runtime.
+v0.1 is closed via the corrective workstream (`C001`–`C005`) in
+[`plans/registry.md`](plans/registry.md); see
+[`plans/closure/v0.1-corrective-closure.md`](plans/closure/v0.1-corrective-closure.md)
+which supersedes the original foundation qualification. The core and store
+remain usable without a network runtime. Supported transport is direct
+HTTP/1.1 acquisition and EggServe inbound HTTP/1.1 replay with optional
+listener-free Eggress routing; H2/H3 remain deferred (see `docs/non-goals.md`).
 
 ## Quickstart routes
 

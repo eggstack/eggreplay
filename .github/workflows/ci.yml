@@ -8,8 +8,15 @@ jobs:
   verify:
     strategy:
       matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
         toolchain: [stable, "1.89.0"]
-    runs-on: ubuntu-latest
+        exclude:
+          # MSRV qualification is Linux-only; stable covers all three platforms.
+          - os: macos-latest
+            toolchain: "1.89.0"
+          - os: windows-latest
+            toolchain: "1.89.0"
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -17,6 +24,22 @@ jobs:
           toolchain: ${{ matrix.toolchain }}
           components: rustfmt, clippy
       - run: cargo fmt --all -- --check
-      - run: cargo check --workspace --all-targets --all-features
-      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
-      - run: cargo test --workspace --all-features
+      - run: cargo check --workspace --all-targets --all-features --locked
+      - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - run: cargo test --workspace --all-features --locked
+
+  dependency-boundary:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+      # Core/store must not pull transport runtimes.
+      - run: cargo tree -p eggreplay-core --no-default-features --edges normal --prefix none | grep -Ei "eggfetch|eggserve|eggress|tokio|hyper" && exit 1 || echo "core clean"
+      - run: cargo tree -p eggreplay-store --no-default-features --edges normal --prefix none | grep -Ei "eggfetch|eggserve|eggress|tokio|hyper" && exit 1 || echo "store clean"
+      # Direct HTTP build must not require Eggress routing.
+      - run: cargo check -p eggreplay-http --no-default-features --features direct
+      # CLI Eggress grammar enables only the narrow pproxy-compat set.
+      - run: cargo tree -p eggreplay-http --features eggress --edges normal --prefix none | grep -i "eggress-outbound" | head -n 5
+      - run: cargo tree -p eggreplay-http --features eggress -i eggress-outbound --prefix none | grep -Ei "ssh|quic|extended" && exit 1 || echo "eggress narrow ok"
