@@ -15,9 +15,10 @@ Status source of truth for implementation handoff.
 | M007 | `implementation/integration/007-eggress-routing-and-cli.md` | closed | M003, M004, M006 | v0.1 |
 | M008 | `implementation/security/008-v0.1-hardening-and-qualification.md` | closed (historical) | M001–M007 | v0.1 foundation closure |
 
-M001–M008 remain closed as historical execution records. A post-closure audit of head `951991e4e4d726a029e703a406d31e4350230153` found acceptance/qualification gaps, so the original v0.1 support claims are **not the current release gate** until the corrective workstream below closes. Do not rewrite the original closure records; C005 will issue a superseding corrective closure.
+M001–M008 remain historical execution records. The original foundation
+qualification was superseded by the corrective workstream.
 
-## Active corrective workstream
+## Corrective workstream
 
 | ID | Plan | Status | Depends on | Corrective gate |
 |---|---|---|---|---|
@@ -25,18 +26,34 @@ M001–M008 remain closed as historical execution records. A post-closure audit 
 | C002 | `implementation/corrective/c002-concurrent-recording-session.md` | closed | historical M001–M008 baseline | v0.1 requalification |
 | C003 | `implementation/corrective/c003-persistence-redaction-policy.md` | closed | historical M001–M008 baseline | v0.1 requalification |
 | C004 | `implementation/corrective/c004-cli-eggress-contracts.md` | closed | historical M001–M008 baseline | v0.1 requalification |
-| C005 | `implementation/corrective/c005-v0.1-requalification.md` | closed | C001–C004 | v0.1 corrective closure |
+| C005 | `implementation/corrective/c005-v0.1-requalification.md` | closed (local qualification artifact) | C001–C004 | superseded by hosted gate C006 |
+| C006 | `implementation/corrective/c006-windows-hosted-ci-qualification.md` | ready | C001–C005 implementation baseline | **current v0.1 hosted release gate** |
 
-C001–C004 are intentionally parallelizable but may touch shared HTTP/store/CLI seams. Agents must rebase/merge carefully and preserve the ownership decisions in ADRs 0001–0004. C005 is the only plan authorized to reassert the v0.1 qualification gate.
+### Current release-gate state
 
-## Audit findings driving C001–C005
+The v0.1 hosted release qualification gate is **open**.
 
-- replay fixture load eagerly materializes all stored request/response bodies and selected responses are cloned into byte bodies;
-- gateway recording holds a Tokio session-writer mutex across the complete awaited upstream transaction, serializing concurrent requests;
-- recording hardcodes the default redactor after body publication, so configured structured-body redaction is not persistence-safe;
-- Eggress Dialer exists but is not exposed by CLI execution paths;
-- CLI errors all exit 1, JUnit is aggregate-only, and `inspect --bodies` is placeholder behavior;
-- initial hosted CI is green on Linux stable/MSRV but the workspace contains only five tests and does not prove the documented qualification matrix.
+C005 produced the expanded 56-test qualification suite and local green
+evidence, but its own closure condition required the newly declared hosted
+platform matrix to pass. The first hosted matrix run after C005,
+GitHub Actions run `35763470419` on
+`be5b3d076531a4ead94999eab2988e4c99e3f880`, failed only in
+`verify (windows-latest, stable)`.
+
+Observed Windows Clippy failures:
+
+- `eggreplay-store/src/lib.rs:1058`: Unix-only
+  `set_private_permissions(path)` leaves `path` unused on Windows.
+- `eggreplay-store/src/lib.rs:1219`: the Unix-gated symlink test leaves
+  `session` unused on Windows.
+
+Linux stable, Linux Rust 1.89 MSRV, macOS stable, and
+`dependency-boundary` passed. Windows tests did not run because the Clippy
+step failed first.
+
+C006 is therefore the only active implementation plan. Do not begin M009–M014
+until C006 is closed unless the work is explicitly being done on a separate
+future-feature branch.
 
 ## Canonical planning documents
 
@@ -58,7 +75,7 @@ C001–C004 are intentionally parallelizable but may touch shared HTTP/store/CLI
 
 ## Deferred feature milestones
 
-These remain deferred. Corrective work must not pull them into v0.1.
+These remain deferred and are not part of C006.
 
 | ID | Scope | State |
 |---|---|---|
@@ -71,6 +88,16 @@ These remain deferred. Corrective work must not pull them into v0.1.
 
 ## Registry rules
 
-A plan moves from **blocked** to **ready** only when every dependency is closed or the dependent plan explicitly permits an implemented-but-not-closed dependency. A plan moves to **closed** only after implementation, required test/evidence commands, documentation updates, and a closure record are present.
+A plan moves from **blocked** to **ready** only when every dependency is
+closed or the dependent plan explicitly permits an implemented-but-not-closed
+dependency. A plan moves to **closed** only after implementation, required
+test/evidence commands, documentation updates, and a closure record are
+present.
 
-Implementation agents must update this registry in the same change that activates, blocks, implements, or closes a corrective milestone. Historical closure records remain immutable audit artifacts.
+For hosted-CI-gated plans, an implementation commit must remain open until the
+required remote run completes successfully. Do not write a closure record that
+assumes a future hosted run will pass.
+
+Implementation agents must update this registry in the same change that
+activates, blocks, implements, or closes a milestone. Historical closure
+records remain immutable audit artifacts.
