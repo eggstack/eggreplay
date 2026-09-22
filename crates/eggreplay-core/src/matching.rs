@@ -286,9 +286,10 @@ impl MatcherSession {
     fn is_available(&self, index: usize, mode: ConsumptionMode) -> bool {
         match mode {
             ConsumptionMode::Once => !self.consumed.contains(&index),
-            ConsumptionMode::RepeatLast => {
-                self.last.is_none_or(|last| last == index) || !self.consumed.contains(&index)
-            }
+            ConsumptionMode::RepeatLast => match self.last {
+                Some(last) => last == index,
+                None => !self.consumed.contains(&index),
+            },
             ConsumptionMode::Unlimited => true,
         }
     }

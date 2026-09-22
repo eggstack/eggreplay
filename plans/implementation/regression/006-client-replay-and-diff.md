@@ -1,6 +1,6 @@
 # M006 — Client Replay and Semantic Regression Diff
 
-Status: blocked
+Status: ready
 Depends on: M002, M003, M005
 Release gate: v0.1
 
