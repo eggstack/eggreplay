@@ -1,6 +1,6 @@
 # M004 — EggServe Offline Replay Server
 
-Status: ready
+Status: closed
 Depends on: M002
 Release gate: v0.1
 

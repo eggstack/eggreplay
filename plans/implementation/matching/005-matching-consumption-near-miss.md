@@ -1,6 +1,6 @@
 # M005 — Matching, Consumption, and Near-Miss Diagnostics
 
-Status: blocked
+Status: ready
 Depends on: M002, M004
 Release gate: v0.1
 

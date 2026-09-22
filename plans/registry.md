@@ -9,8 +9,8 @@ Status source of truth for implementation handoff.
 | M001 | `implementation/foundation/001-workspace-and-contracts.md` | closed | — | foundation |
 | M002 | `implementation/foundation/002-flow-model-and-store.md` | closed | M001 | foundation |
 | M003 | `implementation/recording/003-eggfetch-recording-path.md` | closed | M002 | v0.1 |
-| M004 | `implementation/replay/004-eggserve-replay-server.md` | ready | M002 | v0.1 |
-| M005 | `implementation/matching/005-matching-consumption-near-miss.md` | blocked | M002, M004 | v0.1 |
+| M004 | `implementation/replay/004-eggserve-replay-server.md` | closed | M002 | v0.1 |
+| M005 | `implementation/matching/005-matching-consumption-near-miss.md` | ready | M002, M004 | v0.1 |
 | M006 | `implementation/regression/006-client-replay-and-diff.md` | blocked | M002, M003, M005 | v0.1 |
 | M007 | `implementation/integration/007-eggress-routing-and-cli.md` | blocked | M003, M004, M006 | v0.1 |
 | M008 | `implementation/security/008-v0.1-hardening-and-qualification.md` | blocked | M001–M007 | v0.1 closure |
