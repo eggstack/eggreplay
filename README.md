@@ -11,6 +11,18 @@ The v0.1 implementation is being delivered through the ordered milestones in
 [`plans/registry.md`](plans/registry.md). The core and store remain usable
 without a network runtime.
 
+## Quickstart routes
+
+```sh
+eggreplay record --listen 127.0.0.1:8080 --upstream http://127.0.0.1:9000 --fixture demo.eggr --route direct
+eggreplay replay --fixture demo.eggr --target http://127.0.0.1:9000 --route direct --output json
+eggreplay test --fixture demo.eggr --target http://127.0.0.1:9000 --route socks5://127.0.0.1:1080 --output junit
+```
+
+`direct` is the default; non-direct values use listener-free Eggress routing
+via the `pproxy-compat` grammar only (see `docs/eggress-routing.md` and
+`docs/cli.md` for exit codes and JSON/JUnit contracts).
+
 ## Development
 
 Rust 1.89 is the minimum supported version. Run the fast verification command

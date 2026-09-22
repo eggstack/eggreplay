@@ -1,6 +1,6 @@
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use eggreplay_core::{FlowOutcome, ReportScheduler, SessionMetadata, compare_flows};
-use eggreplay_http::{ReplayFixture, execute_candidate};
+use eggreplay_core::{FlowOutcome, PhysicalRoute, ReportScheduler, SessionMetadata, compare_flows};
+use eggreplay_http::{EggressDialer, ReplayFixture, execute_candidate};
 use eggreplay_store::{RecordingSession, Session, StoreLimits};
 use serde::Serialize;
 use serde_json::json;
@@ -65,6 +65,10 @@ struct RecordArgs {
     /// Clearly named unsafe override: replace secure defaults instead of extending them.
     #[arg(long = "unsafe-replace-default-redaction", default_value_t = false)]
     unsafe_replace: bool,
+    /// Outbound route: `direct` or a pproxy URI (`socks5://...`, `http://...`,
+    /// two-hop `socks5://...__http://...`). Listener-free Eggress routing only.
+    #[arg(long, default_value = "direct")]
+    route: String,
     #[command(flatten)]
     output: OutputArgs,
 }
@@ -83,6 +87,9 @@ struct ReplayArgs {
     fixture: PathBuf,
     #[arg(long)]
     target: String,
+    /// Outbound route: `direct` or a pproxy URI. See `record --route`.
+    #[arg(long, default_value = "direct")]
+    route: String,
     #[command(flatten)]
     output: OutputArgs,
 }
@@ -92,6 +99,9 @@ struct TestArgs {
     fixture: PathBuf,
     #[arg(long)]
     target: String,
+    /// Outbound route: `direct` or a pproxy URI. See `record --route`.
+    #[arg(long, default_value = "direct")]
+    route: String,
     #[command(flatten)]
     output: OutputArgs,
 }
@@ -110,6 +120,12 @@ struct InspectArgs {
     fixture: PathBuf,
     #[arg(long, default_value_t = false)]
     bodies: bool,
+    /// Show bounded base64 for non-UTF8 bodies (explicit opt-in only).
+    #[arg(long, default_value_t = false)]
+    bodies_base64: bool,
+    /// CLI inspection bound per body in bytes (truncates with explicit counts).
+    #[arg(long, default_value_t = 65536)]
+    max_body_bytes: u64,
     #[command(flatten)]
     output: OutputArgs,
 }
@@ -131,13 +147,24 @@ struct Envelope<T: Serialize> {
     payload: T,
 }
 
+/// Stable process exit categories (CLI compatibility contract).
+fn exit_code_for_class(class: &str) -> u8 {
+    match class {
+        "regression" | "diff" => 1,
+        "configuration" => 2,
+        "fixture" => 3,
+        "runtime" => 4,
+        _ => 5,
+    }
+}
+
 #[tokio::main]
 async fn main() -> ExitCode {
     match run(Cli::parse()).await {
         Ok(()) => ExitCode::SUCCESS,
         Err((class, message)) => {
             eprintln!("{class}: {message}");
-            ExitCode::from(1)
+            ExitCode::from(exit_code_for_class(&class))
         }
     }
 }
@@ -147,10 +174,26 @@ async fn run(cli: Cli) -> Result<(), (String, String)> {
         Command::Record(args) => record(args).await,
         Command::Serve(args) => serve(args).await,
         Command::Replay(args) => {
-            regression(args.fixture, args.target, "replay", args.output, false).await
+            regression(
+                args.fixture,
+                args.target,
+                args.route,
+                "replay",
+                args.output,
+                false,
+            )
+            .await
         }
         Command::Test(args) => {
-            regression(args.fixture, args.target, "test", args.output, true).await
+            regression(
+                args.fixture,
+                args.target,
+                args.route,
+                "test",
+                args.output,
+                true,
+            )
+            .await
         }
         Command::Diff(args) => diff(args).await,
         Command::Inspect(args) => inspect(args).await,
@@ -158,18 +201,54 @@ async fn run(cli: Cli) -> Result<(), (String, String)> {
     }
 }
 
+fn build_client(route: &str) -> Result<(eggfetch_core::Client, PhysicalRoute), (String, String)> {
+    match eggreplay_http::parse_route(route) {
+        Ok(None) => {
+            let client = eggfetch_core::Client::builder()
+                .retry_canceled_requests(false)
+                .build();
+            Ok((
+                client,
+                PhysicalRoute {
+                    kind: "direct".into(),
+                    description: Some("direct".into()),
+                },
+            ))
+        }
+        Ok(Some(connector)) => {
+            let physical = PhysicalRoute {
+                kind: "eggress".into(),
+                description: Some(eggreplay_http::redact_route_credentials(route)),
+            };
+            let dialer = EggressDialer::new(connector);
+            let client = eggfetch_core::Client::builder()
+                .retry_canceled_requests(false)
+                .dialer(dialer)
+                .build();
+            Ok((client, physical))
+        }
+        Err(message) => Err(("configuration".into(), message)),
+    }
+}
+
 async fn record(args: RecordArgs) -> Result<(), (String, String)> {
     if args.fixture.exists() && !args.overwrite {
-        return Err((
-            "policy".into(),
-            "fixture exists; pass --overwrite to replace it".into(),
-        ));
+        let message = "fixture exists; pass --overwrite to replace it".to_string();
+        emit(
+            "record",
+            args.output.output,
+            false,
+            Some("configuration"),
+            json!({"fixture": args.fixture}),
+        );
+        return Err(("configuration".into(), message));
     }
     if args.fixture.exists() {
         std::fs::remove_dir_all(&args.fixture)
-            .map_err(|error| ("filesystem".into(), error.to_string()))?;
+            .map_err(|error| ("runtime".into(), error.to_string()))?;
     }
     let (redaction, profile_id) = effective_redaction_policy(&args);
+    let (client, physical_route) = build_client(&args.route)?;
     let session = RecordingSession::create(
         &args.fixture,
         SessionMetadata {
@@ -181,9 +260,6 @@ async fn record(args: RecordArgs) -> Result<(), (String, String)> {
         StoreLimits::default(),
     )
     .map_err(|error| ("fixture".into(), error.to_string()))?;
-    let client = eggfetch_core::Client::builder()
-        .retry_canceled_requests(false)
-        .build();
     let upstream = args
         .upstream
         .parse()
@@ -197,6 +273,7 @@ async fn record(args: RecordArgs) -> Result<(), (String, String)> {
         redaction,
         profile_id,
         eggreplay_core::DEFAULT_MAX_STRUCTURED_REDACTION_BYTES,
+        physical_route,
     )
     .await
     .map_err(|error| ("runtime".into(), error.to_string()))?;
@@ -204,14 +281,9 @@ async fn record(args: RecordArgs) -> Result<(), (String, String)> {
     tokio::signal::ctrl_c()
         .await
         .map_err(|error| ("runtime".into(), error.to_string()))?;
-    // Documented shutdown policy: stop admission, drain active gateway
-    // tasks via server wait, then finalize only when no transaction can
-    // still append.
     server.shutdown();
     server.wait().await;
     session.shutdown();
-    // Spin briefly for any just-completed tasks to release their sinks;
-    // finish fails closed if actives remain rather than racing.
     for _ in 0..100 {
         if session.active_blobs() == 0 {
             break;
@@ -263,32 +335,67 @@ async fn serve(args: ServeArgs) -> Result<(), (String, String)> {
 async fn regression(
     fixture: PathBuf,
     target: String,
+    route: String,
     command: &str,
     output: OutputArgs,
     enforce: bool,
 ) -> Result<(), (String, String)> {
-    let session = Session::open(&fixture, StoreLimits::default())
-        .map_err(|error| ("fixture".into(), error.to_string()))?;
-    let target: http::Uri = target
-        .parse()
-        .map_err(|error: http::uri::InvalidUri| ("configuration".into(), error.to_string()))?;
-    let client = eggfetch_core::Client::builder()
-        .retry_canceled_requests(false)
-        .build();
+    let session = Session::open(&fixture, StoreLimits::default()).map_err(|error| {
+        emit_reports(
+            command,
+            output.output,
+            false,
+            Some("fixture"),
+            &target,
+            &[],
+            &[],
+            0,
+        );
+        ("fixture".into(), error.to_string())
+    })?;
+    let target_uri: http::Uri = target.parse().map_err(|error: http::uri::InvalidUri| {
+        emit_reports(
+            command,
+            output.output,
+            false,
+            Some("configuration"),
+            &target,
+            &[],
+            &[],
+            0,
+        );
+        ("configuration".into(), error.to_string())
+    })?;
+    let (client, physical_route) = build_client(&route).map_err(|(class, message)| {
+        emit_reports(
+            command,
+            output.output,
+            false,
+            Some(&class),
+            &target,
+            &[],
+            &[],
+            0,
+        );
+        (class, message)
+    })?;
     let mut reports = Vec::new();
+    let mut flow_ids = Vec::new();
     for item in session
         .iter_flows()
         .map_err(|error| ("fixture".into(), error.to_string()))?
     {
         let baseline = item.map_err(|error| ("fixture".into(), error.to_string()))?;
+        flow_ids.push(baseline.id.clone());
         let request_body = body(&session, &baseline.request.body)
             .map_err(|error| ("fixture".into(), error.to_string()))?;
         let candidate = execute_candidate(
             &client,
             &baseline.request,
             &request_body,
-            &target,
+            &target_uri,
             StoreLimits::default().max_blob_bytes,
+            Some(physical_route.clone()),
         )
         .await
         .map_err(|error| ("runtime".into(), error.to_string()))?;
@@ -309,21 +416,39 @@ async fn regression(
         .iter()
         .flat_map(|report| report.findings.clone())
         .collect::<Vec<_>>();
-    let success = findings.is_empty();
-    emit(
-        command,
-        output.output,
-        success,
-        (!success).then_some("regression"),
-        json!({"target": redact_url(&target.to_string()), "reports": reports, "finding_count": findings.len()}),
-    );
-    if enforce && !success {
-        return Err((
-            "regression".into(),
-            "candidate differs from baseline".into(),
-        ));
+    // `replay` reports differences with exit 0; `test` enforces with exit 1.
+    if enforce {
+        let success = findings.is_empty();
+        emit_reports(
+            command,
+            output.output,
+            success,
+            (!success).then_some("regression"),
+            &target_uri.to_string(),
+            &flow_ids,
+            &reports,
+            findings.len(),
+        );
+        if !success {
+            return Err((
+                "regression".into(),
+                "candidate differs from baseline".into(),
+            ));
+        }
+        Ok(())
+    } else {
+        emit_reports(
+            command,
+            output.output,
+            true,
+            None,
+            &target_uri.to_string(),
+            &flow_ids,
+            &reports,
+            findings.len(),
+        );
+        Ok(())
     }
-    Ok(())
 }
 
 async fn diff(args: DiffArgs) -> Result<(), (String, String)> {
@@ -367,13 +492,20 @@ async fn diff(args: DiffArgs) -> Result<(), (String, String)> {
         })
         .collect::<Vec<_>>();
     let success = left.len() == right.len() && reports.iter().all(|report| report.is_success());
-    emit(
+    let flow_ids = left.iter().map(|flow| flow.id.clone()).collect::<Vec<_>>();
+    emit_reports(
         "diff",
         args.output.output,
         success,
         (!success).then_some("diff"),
-        json!({"reports": reports, "baseline_flows": left.len(), "candidate_flows": right.len()}),
+        "",
+        &flow_ids,
+        &reports,
+        reports.iter().map(|report| report.findings.len()).sum(),
     );
+    if !success {
+        return Err(("diff".into(), "fixtures differ".into()));
+    }
     Ok(())
 }
 
@@ -386,15 +518,37 @@ async fn inspect(args: InspectArgs) -> Result<(), (String, String)> {
         .map_err(|error| ("fixture".into(), error.to_string()))?
     {
         let flow = item.map_err(|error| ("fixture".into(), error.to_string()))?;
-        // Expose policy identifier + markers without secret values. Markers
-        // contain only field paths and profile IDs, never redacted values.
+        let body_view = if args.bodies {
+            Some(inspect_body(
+                &session,
+                &flow.request.body,
+                args.max_body_bytes,
+                args.bodies_base64,
+            ))
+        } else {
+            None
+        };
+        let response_view = if args.bodies {
+            match &flow.outcome {
+                FlowOutcome::Response(response) => Some(inspect_body(
+                    &session,
+                    &response.body,
+                    args.max_body_bytes,
+                    args.bodies_base64,
+                )),
+                FlowOutcome::Error(_) => None,
+            }
+        } else {
+            None
+        };
         flows.push(json!({
             "id": flow.id,
             "method": flow.request.method,
             "path": flow.request.path,
             "outcome": match flow.outcome { FlowOutcome::Response(response) => json!({"status": response.status}), FlowOutcome::Error(error) => json!({"error": format!("{:?}", error.category)}) },
             "redactions": flow.redactions,
-            "body_dump": if args.bodies { json!("explicit body dump is bounded by CLI policy") } else { json!(null) }
+            "request_body": body_view,
+            "response_body": response_view,
         }));
     }
     emit(
@@ -409,6 +563,99 @@ async fn inspect(args: InspectArgs) -> Result<(), (String, String)> {
         }),
     );
     Ok(())
+}
+
+/// Bounded explicit body view for `inspect --bodies`.
+///
+/// Reads at most `max_bytes` via the validated streaming seam (never beyond
+/// the CLI bound), truncates with explicit counts, shows UTF-8 text only when
+/// valid, otherwise length + digest (plus bounded base64 only with explicit
+/// opt-in). Stored blobs are already redacted (C003), so no secret bypass.
+fn inspect_body(
+    session: &Session,
+    body: &eggreplay_core::BodyRef,
+    max_bytes: u64,
+    base64: bool,
+) -> serde_json::Value {
+    use sha2::{Digest, Sha256};
+    match body {
+        eggreplay_core::BodyRef::Absent => json!({"present": false}),
+        eggreplay_core::BodyRef::Empty => json!({"present": true, "length": 0, "text": ""}),
+        eggreplay_core::BodyRef::Blob(blob) => {
+            let handle = match session.open_blob(blob) {
+                Ok(handle) => handle,
+                Err(error) => return json!({"error": error.to_string()}),
+            };
+            let total = handle.len();
+            let mut file = handle.into_file();
+            use std::io::Read;
+            let mut buf = vec![0u8; (total.min(max_bytes)) as usize];
+            let read = std::io::Read::by_ref(&mut file)
+                .take(max_bytes)
+                .read(&mut buf)
+                .unwrap_or(0);
+            buf.truncate(read);
+            let truncated = total > max_bytes;
+            // Hash the shown prefix for diagnostics (full digest via stored ref).
+            let mut hasher = Sha256::new();
+            hasher.update(&buf);
+            let shown_digest = format!("{:x}", hasher.finalize());
+            if let Ok(text) = std::str::from_utf8(&buf) {
+                json!({
+                    "present": true,
+                    "length": total,
+                    "shown": read,
+                    "truncated": truncated,
+                    "encoding": "utf8",
+                    "text": text,
+                    "sha256": blob.sha256,
+                })
+            } else if base64 {
+                // Bounded base64 only with explicit opt-in.
+                const B64: &[u8; 64] =
+                    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+                let mut encoded = String::new();
+                for chunk in buf.chunks(3) {
+                    let mut triple = [0u8; 3];
+                    for (index, byte) in chunk.iter().enumerate() {
+                        triple[index] = *byte;
+                    }
+                    let combined =
+                        ((triple[0] as u32) << 16) | ((triple[1] as u32) << 8) | (triple[2] as u32);
+                    let pad = 3 - chunk.len();
+                    for index in 0..4 - pad {
+                        encoded.push(B64[((combined >> (18 - 6 * index)) & 63) as usize] as char);
+                    }
+                    for _ in 0..pad {
+                        encoded.push('=');
+                    }
+                    if encoded.len() > 4 * 1024 {
+                        break;
+                    }
+                }
+                json!({
+                    "present": true,
+                    "length": total,
+                    "shown": read,
+                    "truncated": truncated,
+                    "encoding": "base64",
+                    "base64": encoded,
+                    "sha256": blob.sha256,
+                    "shown_sha256": shown_digest,
+                })
+            } else {
+                json!({
+                    "present": true,
+                    "length": total,
+                    "shown": read,
+                    "truncated": truncated,
+                    "encoding": "binary",
+                    "sha256": blob.sha256,
+                    "shown_sha256": shown_digest,
+                })
+            }
+        }
+    }
 }
 
 fn effective_redaction_policy(args: &RecordArgs) -> (eggreplay_core::RedactionConfig, String) {
@@ -480,6 +727,114 @@ fn redact_url(value: &str) -> String {
         })
         .unwrap_or_else(|_| "<invalid-url>".into())
 }
+
+fn escape_xml(input: &str) -> String {
+    input
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+}
+
+fn junit_for_reports(
+    command: &str,
+    flow_ids: &[String],
+    reports: &[eggreplay_core::RegressionReport],
+) -> String {
+    let mut out = format!(
+        "<testsuite name=\"{}\" tests=\"{}\" failures=\"{}\" errors=\"0\">",
+        escape_xml(command),
+        flow_ids.len(),
+        reports.iter().filter(|report| !report.is_success()).count()
+    );
+    for (index, flow_id) in flow_ids.iter().enumerate() {
+        let report = reports.get(index);
+        let (failed, details) = match report {
+            Some(report) if !report.is_success() => {
+                let details = report
+                    .findings
+                    .iter()
+                    .map(|finding| {
+                        format!(
+                            "{} {} baseline={} candidate={}",
+                            escape_xml(&format!("{:?}", finding.kind)),
+                            escape_xml(&finding.field),
+                            escape_xml(&finding.baseline),
+                            escape_xml(&finding.candidate)
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                (true, details)
+            }
+            _ => (false, String::new()),
+        };
+        out.push_str(&format!(
+            "<testcase name=\"{}\" classname=\"{}\">",
+            escape_xml(flow_id),
+            escape_xml(command)
+        ));
+        if failed {
+            out.push_str(&format!(
+                "<failure message=\"mismatch\">{}</failure>",
+                details
+            ));
+        }
+        out.push_str("</testcase>");
+    }
+    out.push_str("</testsuite>");
+    out
+}
+
+#[allow(clippy::too_many_arguments)]
+fn emit_reports(
+    command: &str,
+    output: OutputChoice,
+    success: bool,
+    failure: Option<&str>,
+    target: &str,
+    flow_ids: &[String],
+    reports: &[eggreplay_core::RegressionReport],
+    finding_count: usize,
+) {
+    match output {
+        OutputChoice::Json => {
+            let envelope = Envelope {
+                command: command.into(),
+                schema_version: 1,
+                success,
+                failure_class: failure.map(str::to_owned),
+                warnings: Vec::new(),
+                payload: json!({"target": if target.is_empty() { serde_json::Value::Null } else { json!(redact_url(target)) }, "reports": reports, "finding_count": finding_count}),
+            };
+            println!(
+                "{}",
+                serde_json::to_string(&envelope).unwrap_or_else(|_| "{\"success\":false}".into())
+            );
+        }
+        OutputChoice::Junit => {
+            // JUnit is a projection of the report authority, not a re-evaluation.
+            println!("{}", junit_for_reports(command, flow_ids, reports));
+        }
+        OutputChoice::Human => {
+            if success {
+                println!(
+                    "{command}: {finding_count} findings across {} flows",
+                    flow_ids.len()
+                );
+            } else {
+                println!(
+                    "{command}: {} findings across {} flows (failure_class={})",
+                    finding_count,
+                    flow_ids.len(),
+                    failure.unwrap_or("regression")
+                );
+            }
+        }
+    }
+}
+
 fn emit(
     command: &str,
     output: OutputChoice,
@@ -487,26 +842,49 @@ fn emit(
     failure: Option<&str>,
     payload: serde_json::Value,
 ) {
-    let envelope = Envelope {
-        command: command.into(),
-        schema_version: 1,
-        success,
-        failure_class: failure.map(str::to_owned),
-        warnings: Vec::new(),
-        payload,
-    };
     match output {
-        OutputChoice::Json => println!(
-            "{}",
-            serde_json::to_string(&envelope).unwrap_or_else(|_| "{\"success\":false}".into())
-        ),
-        OutputChoice::Junit => println!(
-            "<testsuite name=\"{command}\" tests=\"1\" failures=\"{}\"></testsuite>",
-            usize::from(!success)
-        ),
-        OutputChoice::Human => println!(
-            "{}",
-            serde_json::to_string_pretty(&envelope).unwrap_or_default()
-        ),
+        OutputChoice::Json => {
+            let envelope = Envelope {
+                command: command.into(),
+                schema_version: 1,
+                success,
+                failure_class: failure.map(str::to_owned),
+                warnings: Vec::new(),
+                payload,
+            };
+            println!(
+                "{}",
+                serde_json::to_string(&envelope).unwrap_or_else(|_| "{\"success\":false}".into())
+            );
+        }
+        OutputChoice::Junit => {
+            // Single-assertion commands project as one testcase.
+            let failures = usize::from(!success);
+            let detail = failure.unwrap_or("");
+            if failures == 0 {
+                println!(
+                    "<testsuite name=\"{}\" tests=\"1\" failures=\"0\" errors=\"0\"><testcase name=\"{}\" classname=\"{}\"/></testsuite>",
+                    escape_xml(command),
+                    escape_xml(command),
+                    escape_xml(command)
+                );
+            } else {
+                println!(
+                    "<testsuite name=\"{}\" tests=\"1\" failures=\"1\" errors=\"0\"><testcase name=\"{}\" classname=\"{}\"><failure message=\"{}\"/></testcase></testsuite>",
+                    escape_xml(command),
+                    escape_xml(command),
+                    escape_xml(command),
+                    escape_xml(detail)
+                );
+            }
+        }
+        OutputChoice::Human => {
+            // Human rendering is terminal text, never machine JSON.
+            if success {
+                println!("{command}: ok");
+            } else {
+                println!("{command}: failed ({})", failure.unwrap_or("error"));
+            }
+        }
     }
 }

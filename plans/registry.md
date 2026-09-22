@@ -24,8 +24,8 @@ M001–M008 remain closed as historical execution records. A post-closure audit 
 | C001 | `implementation/corrective/c001-lazy-replay-streaming.md` | closed | historical M001–M008 baseline | v0.1 requalification |
 | C002 | `implementation/corrective/c002-concurrent-recording-session.md` | closed | historical M001–M008 baseline | v0.1 requalification |
 | C003 | `implementation/corrective/c003-persistence-redaction-policy.md` | closed | historical M001–M008 baseline | v0.1 requalification |
-| C004 | `implementation/corrective/c004-cli-eggress-contracts.md` | ready | historical M001–M008 baseline | v0.1 requalification |
-| C005 | `implementation/corrective/c005-v0.1-requalification.md` | blocked | C001–C004 | v0.1 corrective closure |
+| C004 | `implementation/corrective/c004-cli-eggress-contracts.md` | closed | historical M001–M008 baseline | v0.1 requalification |
+| C005 | `implementation/corrective/c005-v0.1-requalification.md` | ready | C001–C004 | v0.1 corrective closure |
 
 C001–C004 are intentionally parallelizable but may touch shared HTTP/store/CLI seams. Agents must rebase/merge carefully and preserve the ownership decisions in ADRs 0001–0004. C005 is the only plan authorized to reassert the v0.1 qualification gate.
 

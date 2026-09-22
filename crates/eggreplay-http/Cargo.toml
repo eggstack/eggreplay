@@ -11,7 +11,9 @@ description = "HTTP recording, replay, matching, and regression adapters"
 default = ["direct"]
 direct = []
 eggserve = ["dep:eggserve-primitives", "dep:eggserve-server"]
-eggress = ["dep:eggress-outbound"]
+# Narrow Eggress feature: only pproxy-compat grammar for listener-free routing.
+# Do not enable extended, SSH, QUIC, listener, or server surfaces.
+eggress = ["dep:eggress-outbound", "eggress-outbound/pproxy-compat"]
 
 [dependencies]
 bytes.workspace = true

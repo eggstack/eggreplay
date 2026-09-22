@@ -1,6 +1,6 @@
 # C004 — CLI, Eggress Routing, Exit Codes, and Output Contracts
 
-Status: ready
+Status: closed
 Depends on: M001–M008 historical baseline
 Corrective gate: v0.1 requalification
 

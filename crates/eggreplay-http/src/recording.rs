@@ -138,6 +138,7 @@ fn transform_body(
 /// staging bytes transform before blob publication (bounded by
 /// `max_structured_bytes`, fail-closed). Raw bytes never become finalized
 /// blobs. An aborted stream leaves no referenced blob.
+#[allow(clippy::too_many_arguments)]
 pub async fn record_request<B>(
     client: &Client,
     writer: &mut SessionWriter,
@@ -145,6 +146,7 @@ pub async fn record_request<B>(
     redaction: &RedactionConfig,
     profile_id: &str,
     max_structured_bytes: u64,
+    physical_route: Option<eggreplay_core::PhysicalRoute>,
 ) -> Result<Flow, HttpError>
 where
     B: Body<Data = Bytes> + Send + 'static,
@@ -283,6 +285,7 @@ where
     flow.completed_at_ms = Some(now_ms());
     flow.provenance.mode = "eggfetch-native".into();
     flow.provenance.observer = "eggreplay-http".into();
+    flow.physical_route = physical_route.clone();
     eggreplay_core::redact_flow(&mut flow, redaction, profile_id);
     flow.redactions.append(&mut req_markers);
     // Reconcile request framing if request body was redacted.
@@ -312,6 +315,7 @@ where
 ///
 /// The redaction policy is explicit with the same before-publication guarantee
 /// as `record_request`.
+#[allow(clippy::too_many_arguments)]
 pub async fn record_request_with_session<B>(
     client: &Client,
     session: &RecordingSession,
@@ -319,6 +323,7 @@ pub async fn record_request_with_session<B>(
     redaction: &RedactionConfig,
     profile_id: &str,
     max_structured_bytes: u64,
+    physical_route: Option<eggreplay_core::PhysicalRoute>,
 ) -> Result<Flow, HttpError>
 where
     B: Body<Data = Bytes> + Send + 'static,
@@ -456,6 +461,7 @@ where
     flow.completed_at_ms = Some(now_ms());
     flow.provenance.mode = "eggfetch-native".into();
     flow.provenance.observer = "eggreplay-http".into();
+    flow.physical_route = physical_route.clone();
     eggreplay_core::redact_flow(&mut flow, redaction, profile_id);
     flow.redactions.append(&mut all_markers);
     let req_had_redaction = all_markers.iter().any(|marker| {
@@ -506,6 +512,7 @@ pub async fn start_recording_gateway(
     redaction: RedactionConfig,
     profile_id: String,
     max_structured_bytes: u64,
+    physical_route: eggreplay_core::PhysicalRoute,
 ) -> Result<ServerHandle, HttpError> {
     let service = service_fn_with_policy(
         move |request| {
@@ -514,6 +521,7 @@ pub async fn start_recording_gateway(
             let session = session.clone();
             let redaction = redaction.clone();
             let profile_id = profile_id.clone();
+            let physical_route = physical_route.clone();
             async move {
                 gateway_request(
                     request,
@@ -523,6 +531,7 @@ pub async fn start_recording_gateway(
                     redaction,
                     profile_id,
                     max_structured_bytes,
+                    physical_route,
                 )
                 .await
             }
@@ -548,6 +557,7 @@ pub async fn start_recording_gateway(
 }
 
 #[cfg(feature = "eggserve")]
+#[allow(clippy::too_many_arguments)]
 async fn gateway_request(
     request: eggserve_primitives::Request,
     upstream_base: Uri,
@@ -556,6 +566,7 @@ async fn gateway_request(
     redaction: RedactionConfig,
     profile_id: String,
     max_structured_bytes: u64,
+    physical_route: eggreplay_core::PhysicalRoute,
 ) -> Result<Response, ServiceError> {
     let (head, body, _connection) = request.into_parts();
     let mut headers = http::HeaderMap::new();
@@ -602,6 +613,7 @@ async fn gateway_request(
         &redaction,
         &profile_id,
         max_structured_bytes,
+        Some(physical_route),
     )
     .await
     .map_err(|error| ServiceError::internal(error.to_string()))?;
@@ -1173,6 +1185,7 @@ mod tests {
             &RedactionConfig::default_secure(),
             "default-v1",
             eggreplay_core::DEFAULT_MAX_STRUCTURED_REDACTION_BYTES,
+            None,
         )
         .await
         .unwrap();
@@ -1292,6 +1305,10 @@ mod tests {
             RedactionConfig::default_secure(),
             "default-v1".to_string(),
             eggreplay_core::DEFAULT_MAX_STRUCTURED_REDACTION_BYTES,
+            eggreplay_core::PhysicalRoute {
+                kind: "direct".into(),
+                description: Some("direct".into()),
+            },
         )
         .await
         .unwrap();
@@ -1376,6 +1393,10 @@ mod tests {
             RedactionConfig::default_secure(),
             "default-v1".to_string(),
             eggreplay_core::DEFAULT_MAX_STRUCTURED_REDACTION_BYTES,
+            eggreplay_core::PhysicalRoute {
+                kind: "direct".into(),
+                description: Some("direct".into()),
+            },
         )
         .await
         .unwrap();
@@ -1441,6 +1462,10 @@ mod tests {
             RedactionConfig::default_secure(),
             "default-v1".to_string(),
             eggreplay_core::DEFAULT_MAX_STRUCTURED_REDACTION_BYTES,
+            eggreplay_core::PhysicalRoute {
+                kind: "direct".into(),
+                description: Some("direct".into()),
+            },
         )
         .await
         .unwrap();
@@ -1514,6 +1539,7 @@ mod tests {
             &RedactionConfig::default_secure(),
             "default-v1",
             eggreplay_core::DEFAULT_MAX_STRUCTURED_REDACTION_BYTES,
+            None,
         )
         .await;
         // Oversized request bodies fail the upstream body stream, which is
@@ -1613,6 +1639,7 @@ mod tests {
             &RedactionConfig::default_secure(),
             "default-v1",
             eggreplay_core::DEFAULT_MAX_STRUCTURED_REDACTION_BYTES,
+            None,
         )
         .await
         .unwrap();
@@ -1672,6 +1699,7 @@ mod tests {
             &config,
             "custom-v1",
             eggreplay_core::DEFAULT_MAX_STRUCTURED_REDACTION_BYTES,
+            None,
         )
         .await
         .unwrap();
@@ -1751,6 +1779,7 @@ mod tests {
                 &config,
                 "custom-v1",
                 eggreplay_core::DEFAULT_MAX_STRUCTURED_REDACTION_BYTES,
+                None,
             )
             .await;
             assert!(result.is_err(), "malformed must fail closed");
@@ -1777,9 +1806,16 @@ mod tests {
                 .header("content-type", "application/json")
                 .body(Full::new(Bytes::from(big_json)))
                 .unwrap();
-            let result =
-                record_request_with_session(&client, &session, req, &config, "custom-v1", 1024)
-                    .await;
+            let result = record_request_with_session(
+                &client,
+                &session,
+                req,
+                &config,
+                "custom-v1",
+                1024,
+                None,
+            )
+            .await;
             assert!(result.is_err(), "oversized must fail closed");
             assert_eq!(session.flow_count(), 0);
             session.shutdown();

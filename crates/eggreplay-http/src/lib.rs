@@ -13,7 +13,7 @@ pub mod regression;
 pub mod replay;
 
 #[cfg(feature = "eggress")]
-pub use eggress::EggressDialer;
+pub use eggress::{EggressDialer, parse_route, physical_route_for, redact_route_credentials};
 pub use recording::{HttpError, RecordedRequest, record_request, record_request_with_session};
 pub use regression::{CandidateObservation, RegressionError, execute_candidate};
 pub use replay::{ReplayError, ReplayFixture};

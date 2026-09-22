@@ -38,12 +38,14 @@ pub struct CandidateObservation {
 }
 
 /// Replay a materialized baseline request against a candidate target.
+#[allow(clippy::too_many_arguments)]
 pub async fn execute_candidate(
     client: &Client,
     request: &HttpRequest,
     request_body: &[u8],
     target_base: &Uri,
     max_body_bytes: u64,
+    physical_route: Option<eggreplay_core::PhysicalRoute>,
 ) -> Result<CandidateObservation, RegressionError> {
     let uri = target_uri(target_base, request)?;
     let method = Method::from_bytes(request.method.as_bytes())
@@ -119,6 +121,7 @@ pub async fn execute_candidate(
     let mut flow = Flow::new(request.clone(), outcome, start);
     flow.completed_at_ms = Some(start.saturating_add(elapsed));
     flow.provenance.mode = "eggfetch-native-candidate".into();
+    flow.physical_route = physical_route;
     Ok(CandidateObservation {
         flow,
         response_body,
