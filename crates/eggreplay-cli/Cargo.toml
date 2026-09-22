@@ -13,11 +13,14 @@ path = "src/main.rs"
 
 [dependencies]
 clap.workspace = true
+eggfetch-core.workspace = true
 eggreplay-core = { path = "../eggreplay-core" }
 eggreplay-http = { path = "../eggreplay-http", features = ["eggserve", "eggress"] }
 eggreplay-store = { path = "../eggreplay-store" }
+http.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing-subscriber.workspace = true
+url.workspace = true

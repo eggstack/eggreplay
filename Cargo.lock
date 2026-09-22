@@ -323,14 +323,17 @@ name = "eggreplay-cli"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "eggfetch-core",
  "eggreplay-core",
  "eggreplay-http",
  "eggreplay-store",
+ "http",
  "serde",
  "serde_json",
  "thiserror",
  "tokio",
  "tracing-subscriber",
+ "url",
 ]
 
 [[package]]
@@ -341,6 +344,7 @@ dependencies = [
  "proptest",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror",
  "url",
 ]

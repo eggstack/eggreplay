@@ -49,6 +49,11 @@ impl BodyRef {
             Self::Blob(blob) => Some(blob.length),
         }
     }
+
+    /// Return whether this body is the explicit zero-byte variant.
+    pub const fn is_empty(&self) -> bool {
+        matches!(self, Self::Empty)
+    }
 }
 
 /// A validated SHA-256 body reference.
@@ -229,23 +234,23 @@ impl Flow {
                 "invalid request line fields",
             ));
         }
-        if let Some(end) = self.completed_at_ms {
-            if end < self.started_at_ms {
-                return Err(FlowError::new(
-                    ErrorCategory::Policy,
-                    ErrorPhase::Policy,
-                    "flow completion precedes start",
-                ));
-            }
+        if let Some(end) = self.completed_at_ms
+            && end < self.started_at_ms
+        {
+            return Err(FlowError::new(
+                ErrorCategory::Policy,
+                ErrorPhase::Policy,
+                "flow completion precedes start",
+            ));
         }
-        if let FlowOutcome::Response(response) = &self.outcome {
-            if !(100..=599).contains(&response.status) {
-                return Err(FlowError::new(
-                    ErrorCategory::Protocol,
-                    ErrorPhase::Headers,
-                    "invalid response status",
-                ));
-            }
+        if let FlowOutcome::Response(response) = &self.outcome
+            && !(100..=599).contains(&response.status)
+        {
+            return Err(FlowError::new(
+                ErrorCategory::Protocol,
+                ErrorPhase::Headers,
+                "invalid response status",
+            ));
         }
         Ok(())
     }

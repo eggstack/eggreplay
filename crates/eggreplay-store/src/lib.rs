@@ -55,6 +55,26 @@ pub enum StoreError {
     Integrity(String),
 }
 
+/// Explicit schema migration seam. No schema-2 migration is implemented.
+pub trait Migration {
+    /// Validate or migrate an input schema to the current schema.
+    fn migrate(&self, schema_version: u16) -> Result<u16, StoreError>;
+}
+
+/// Schema-1 identity migration used by the current reader.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SchemaOneMigration;
+
+impl Migration for SchemaOneMigration {
+    fn migrate(&self, schema_version: u16) -> Result<u16, StoreError> {
+        if schema_version == SCHEMA_VERSION {
+            Ok(SCHEMA_VERSION)
+        } else {
+            Err(StoreError::UnsupportedSchema(schema_version))
+        }
+    }
+}
+
 impl From<FlowError> for StoreError {
     fn from(error: FlowError) -> Self {
         Self::Invalid(error.to_string())
@@ -173,11 +193,14 @@ impl SessionWriter {
             unique_suffix()
         ));
         fs::create_dir(&staging)?;
-        fs::create_dir(&staging.join("blobs"))?;
+        fs::create_dir(staging.join("blobs"))?;
+        set_private_permissions(&staging)?;
+        set_private_permissions(&staging.join("blobs"))?;
         let flows = OpenOptions::new()
             .create_new(true)
             .write(true)
             .open(staging.join("flows.jsonl"))?;
+        set_private_permissions(&staging.join("flows.jsonl"))?;
         Ok(Self {
             destination,
             staging,
@@ -205,6 +228,29 @@ impl SessionWriter {
             length: 0,
             max_bytes: self.limits.max_blob_bytes,
         })
+    }
+
+    /// Read a body that has already been finalized in the staging session.
+    /// This is used by the recording gateway before the session is published.
+    pub fn read_body(&self, body: &eggreplay_core::BodyRef) -> Result<Vec<u8>, StoreError> {
+        match body {
+            eggreplay_core::BodyRef::Absent | eggreplay_core::BodyRef::Empty => Ok(Vec::new()),
+            eggreplay_core::BodyRef::Blob(blob) => {
+                read_blob_from_root(&self.staging, blob, self.limits)
+            }
+        }
+    }
+
+    /// Return the confined staging path for a finalized blob.
+    pub fn body_path(&self, body: &eggreplay_core::BodyRef) -> Result<Option<PathBuf>, StoreError> {
+        match body {
+            eggreplay_core::BodyRef::Absent | eggreplay_core::BodyRef::Empty => Ok(None),
+            eggreplay_core::BodyRef::Blob(blob) => {
+                validate_digest(&blob.sha256)?;
+                verify_blob_file(&self.staging, blob, self.limits)?;
+                Ok(Some(self.staging.join("blobs").join(&blob.sha256)))
+            }
+        }
     }
 
     /// Append one validated flow record to the temporary JSONL stream.
@@ -243,6 +289,7 @@ impl SessionWriter {
             .create_new(true)
             .write(true)
             .open(self.staging.join("manifest.json"))?;
+        set_private_permissions(&self.staging.join("manifest.json"))?;
         manifest_file.write_all(&manifest_bytes)?;
         manifest_file.write_all(b"\n")?;
         manifest_file.sync_all()?;
@@ -440,7 +487,11 @@ fn verify_blob_file(root: &Path, blob: &BlobRef, limits: StoreLimits) -> Result<
     if blob.length > limits.max_blob_bytes {
         return Err(StoreError::Invalid("blob exceeds configured limit".into()));
     }
-    let mut file = File::open(root.join("blobs").join(&blob.sha256))?;
+    let blob_path = root.join("blobs").join(&blob.sha256);
+    if fs::symlink_metadata(&blob_path)?.file_type().is_symlink() {
+        return Err(StoreError::Invalid("symlinked blob is not allowed".into()));
+    }
+    let mut file = File::open(blob_path)?;
     let mut hasher = Sha256::new();
     let mut total = 0u64;
     let mut buf = [0u8; 64 * 1024];
@@ -459,6 +510,29 @@ fn verify_blob_file(root: &Path, blob: &BlobRef, limits: StoreLimits) -> Result<
     }
     if total != blob.length || format!("{:x}", hasher.finalize()) != blob.sha256 {
         return Err(StoreError::Integrity(blob.sha256.clone()));
+    }
+    Ok(())
+}
+
+fn read_blob_from_root(
+    root: &Path,
+    blob: &BlobRef,
+    limits: StoreLimits,
+) -> Result<Vec<u8>, StoreError> {
+    verify_blob_file(root, blob, limits)?;
+    let mut file = File::open(root.join("blobs").join(&blob.sha256))?;
+    let mut bytes = Vec::with_capacity(blob.length.min(1024 * 1024) as usize);
+    file.read_to_end(&mut bytes)?;
+    Ok(bytes)
+}
+
+fn set_private_permissions(path: &Path) -> Result<(), StoreError> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = fs::metadata(path)?.permissions();
+        permissions.set_mode(if path.is_dir() { 0o700 } else { 0o600 });
+        fs::set_permissions(path, permissions)?;
     }
     Ok(())
 }

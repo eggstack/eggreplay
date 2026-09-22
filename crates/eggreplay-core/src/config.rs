@@ -3,21 +3,16 @@
 use serde::{Deserialize, Serialize};
 
 /// Output presentation format.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum OutputFormat {
     /// Human-readable terminal output.
+    #[default]
     Human,
     /// Versioned machine-readable JSON.
     Json,
     /// JUnit XML presentation.
     Junit,
-}
-
-impl Default for OutputFormat {
-    fn default() -> Self {
-        Self::Human
-    }
 }
 
 /// Request/response and fixture resource limits.
@@ -77,23 +72,18 @@ impl Default for RedactionProfile {
 }
 
 /// Named matcher policy.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum MatcherProfile {
     /// Compare all selected request dimensions exactly.
+    #[default]
     Strict,
     /// Ignore explicitly volatile headers and configured fields.
     Practical,
 }
 
-impl Default for MatcherProfile {
-    fn default() -> Self {
-        Self::Strict
-    }
-}
-
 /// Top-level configuration skeleton.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct Config {
     /// Resource bounds.
     #[serde(default)]
@@ -107,15 +97,4 @@ pub struct Config {
     /// Default output format.
     #[serde(default)]
     pub output: OutputFormat,
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            limits: Limits::default(),
-            redaction: RedactionProfile::default(),
-            matcher: MatcherProfile::default(),
-            output: OutputFormat::default(),
-        }
-    }
 }
