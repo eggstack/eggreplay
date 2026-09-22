@@ -1,0 +1,36 @@
+[package]
+name = "eggreplay-http"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "HTTP recording, replay, matching, and regression adapters"
+
+[features]
+default = ["direct"]
+direct = []
+eggserve = ["dep:eggserve-primitives", "dep:eggserve-server"]
+eggress = ["dep:eggress-outbound"]
+
+[dependencies]
+bytes.workspace = true
+chrono.workspace = true
+eggreplay-core = { path = "../eggreplay-core" }
+eggreplay-store = { path = "../eggreplay-store" }
+eggfetch-core.workspace = true
+futures-util.workspace = true
+http.workspace = true
+http-body.workspace = true
+http-body-util.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+url.workspace = true
+eggserve-primitives = { workspace = true, optional = true }
+eggserve-server = { workspace = true, optional = true }
+eggress-outbound = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile.workspace = true

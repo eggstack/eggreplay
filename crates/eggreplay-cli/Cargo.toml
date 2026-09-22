@@ -1,0 +1,23 @@
+[package]
+name = "eggreplay-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Command-line interface for EggReplay"
+
+[[bin]]
+name = "eggreplay"
+path = "src/main.rs"
+
+[dependencies]
+clap.workspace = true
+eggreplay-core = { path = "../eggreplay-core" }
+eggreplay-http = { path = "../eggreplay-http", features = ["eggserve", "eggress"] }
+eggreplay-store = { path = "../eggreplay-store" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing-subscriber.workspace = true
