@@ -39,6 +39,27 @@ manifest reference to an incomplete blob. Shutdown policy: `shutdown` stops
 admission, `ServerHandle::shutdown` + `wait` drains in-flight gateway tasks,
 then `finish` fails closed if any sink remains active rather than racing.
 
+## Persistence-time redaction (C003)
+
+The effective redaction policy (`RedactionConfig` from `RedactionProfile` plus
+CLI `--redact-header/--redact-query/--redact-json-path`) is an explicit
+recording input, persisted by identifier in `SessionMetadata.redaction_profile`
+and inspectable via `inspect` (markers only, never secret values). Secure
+defaults (Authorization, Proxy-Authorization, Cookie, Set-Cookie) are preserved
+unless `--unsafe-replace-default-redaction` explicitly replaces them. URL
+userinfo never reaches persisted authority or diagnostics. Header/query
+redaction applies before flow append with typed markers. Structured JSON/form
+bodies buffer boundedly (`DEFAULT_MAX_STRUCTURED_REDACTION_BYTES`, 1 MiB) and
+transform before any finalized blob exists; oversized, malformed, or unsupported
+media types with requested redaction fail closed without publishing raw bytes
+or appending flows. Body transforms reconcile framing: `Content-Length`
+recomputed, `Content-MD5`/`Digest`/`Signature` and strong ETags removed with
+markers, weak ETags preserved with warning. Redacted request fields are
+matcher wildcards (headers/query ignored, JSON paths ignored semantically),
+never literal `"<redacted>"`. Opaque binary secret discovery is explicitly
+out of scope. Cookie redaction remains whole-value for v0.1; selective
+cookie-name parsing is not implemented.
+
 EggFetch 0.2.0 is consumed from crates.io. EggServe's generic runtime and
 Eggress's listener-free connector are not yet published as independent
 crates, so M001 pins the exact revisions used by v0.1. The removal gate is

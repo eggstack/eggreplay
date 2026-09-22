@@ -298,11 +298,17 @@ impl Matcher {
     /// Select with an explicit lazy body loader for higher-cost modes.
     ///
     /// The loader is invoked at most once per otherwise-matching candidate
-    /// that needs materialization (currently only `SemanticJson` with a
-    /// `Digest` descriptor). Candidates that already differ on method,
+    /// that needs materialization (semantic JSON, or any candidate carrying
+    /// body redaction markers). Candidates that already differ on method,
     /// authority, path, query, or headers never trigger a load, so
     /// fixture-wide request bodies stay metadata-bounded. The HTTP/store
     /// adapter owns the loader and its bound; core stays filesystem-free.
+    ///
+    /// Redacted request fields are wildcards, never literal `"<redacted>"`:
+    /// per-candidate `redactions` markers for `request.headers.*`,
+    /// `request.query.*`, and `request.body.json:*`/`request.body.form:*`
+    /// cause those dimensions/paths to be ignored while the remainder must
+    /// still match exactly.
     pub fn select_with_loader(
         &self,
         actual: &HttpRequest,
@@ -321,6 +327,14 @@ impl Matcher {
         let mut near = Vec::new();
         let mut matching_consumed = false;
         for (index, candidate) in candidates.iter().enumerate() {
+            let redacted_headers = redacted_request_headers(&candidate.flow.redactions);
+            let redacted_query = redacted_request_query(&candidate.flow.redactions);
+            // Per-candidate header comparison honoring redaction wildcards.
+            let mut combined_ignored = self.ignored_headers.clone();
+            combined_ignored.extend(redacted_headers.iter().cloned());
+            let actual_headers = normalize_headers(&actual.headers, &combined_ignored);
+            let expected_headers =
+                normalize_headers(&candidate.flow.request.headers, &combined_ignored);
             let expected_normalized = self.normalize(&candidate.flow.request);
             let mut dimensions = Vec::new();
             if actual_normalized.scheme != expected_normalized.scheme
@@ -331,10 +345,12 @@ impl Matcher {
             if actual_normalized.path != expected_normalized.path {
                 dimensions.push(MatchDimension::Path);
             }
-            if actual_normalized.query != expected_normalized.query {
+            if filter_query(&actual.query, &redacted_query)
+                != filter_query(&candidate.flow.request.query, &redacted_query)
+            {
                 dimensions.push(MatchDimension::Query);
             }
-            if actual_normalized.headers != expected_normalized.headers {
+            if actual_headers != expected_headers {
                 dimensions.push(MatchDimension::Headers);
             }
             if actual.method != candidate.flow.request.method {
@@ -394,6 +410,42 @@ impl Matcher {
         candidate: &MatchCandidate,
         loader: &mut dyn FnMut(usize, &MatchCandidate) -> Option<Vec<u8>>,
     ) -> bool {
+        let redacted_json = redacted_body_json_paths(&candidate.flow.redactions, false);
+        let redacted_form = redacted_body_form_keys(&candidate.flow.redactions);
+        let has_body_redaction = !redacted_json.is_empty() || !redacted_form.is_empty();
+        // Redacted bodies are wildcards: compare the remainder semantically
+        // even in ExactBytes mode, loading only the narrowed candidate.
+        if has_body_redaction {
+            if !narrowed {
+                return false;
+            }
+            let mut combined_json = self.ignored_json_paths.clone();
+            combined_json.extend(redacted_json.iter().cloned());
+            // Prefer loader for Digest; Inline already materialized.
+            let expected_opt: Option<Vec<u8>> = match descriptor {
+                CandidateBody::Digest { .. } => loader(index, candidate),
+                CandidateBody::Inline(bytes) if !bytes.is_empty() => Some(bytes.clone()),
+                CandidateBody::Inline(_) if !legacy_inline.is_empty() => {
+                    Some(legacy_inline.to_vec())
+                }
+                CandidateBody::Absent | CandidateBody::Empty => Some(Vec::new()),
+                _ => loader(index, candidate),
+            };
+            let Some(expected) = expected_opt else {
+                return false;
+            };
+            if !redacted_form.is_empty()
+                && let Some(result) = try_form_wildcard(actual_body, &expected, &redacted_form)
+            {
+                return result;
+            }
+            return body_match_with_json(
+                actual_body,
+                &expected,
+                &combined_json,
+                matches!(self.body_mode, BodyMatchMode::SemanticJson),
+            );
+        }
         match descriptor {
             CandidateBody::Absent | CandidateBody::Empty => actual_body.is_empty(),
             CandidateBody::Digest { sha256, length } => match self.body_mode {
@@ -508,6 +560,113 @@ fn body_match(
             actual == expected
         }
     }
+}
+
+/// Compare with redaction wildcards: try JSON semantic ignoring paths;
+/// if either side is not valid JSON, fall back to exact bytes only when no
+/// redaction paths were requested (otherwise mismatch, never literal).
+fn body_match_with_json(
+    actual: &[u8],
+    expected: &[u8],
+    ignored_paths: &BTreeSet<String>,
+    semantic_requested: bool,
+) -> bool {
+    let (Ok(mut actual_json), Ok(mut expected_json)) = (
+        serde_json::from_slice::<Value>(actual),
+        serde_json::from_slice::<Value>(expected),
+    ) else {
+        // Opaque bodies cannot be wildcarded safely; redacted opaque bytes
+        // must not match literally.
+        return false;
+    };
+    for path in ignored_paths {
+        remove_json_pointer(&mut actual_json, path);
+        remove_json_pointer(&mut expected_json, path);
+    }
+    // Suppress unused warning for future mode-specific handling.
+    let _ = semantic_requested;
+    actual_json == expected_json
+}
+
+/// Attempt form wildcard comparison; returns None when bodies are not forms.
+fn try_form_wildcard(
+    actual: &[u8],
+    expected: &[u8],
+    redacted_keys: &BTreeSet<String>,
+) -> Option<bool> {
+    let actual_text = std::str::from_utf8(actual).ok()?;
+    let expected_text = std::str::from_utf8(expected).ok()?;
+    // Heuristic: form bodies contain '=' and no leading '{'.
+    let is_form = |text: &str| text.contains('=') && !text.trim_start().starts_with('{');
+    if !is_form(actual_text) || !is_form(expected_text) {
+        return None;
+    }
+    let filter = |text: &str| {
+        url::form_urlencoded::parse(text.as_bytes())
+            .filter(|(key, _)| !redacted_keys.contains(&key.to_string()))
+            .map(|(key, value)| (key.into_owned(), value.into_owned()))
+            .collect::<Vec<_>>()
+    };
+    Some(filter(actual_text) == filter(expected_text))
+}
+
+fn redacted_request_headers(markers: &[RedactionMarker]) -> BTreeSet<String> {
+    markers
+        .iter()
+        .filter_map(|marker| {
+            marker
+                .field
+                .strip_prefix("request.headers.")
+                .map(|name| name.to_ascii_lowercase())
+        })
+        .collect()
+}
+
+fn redacted_request_query(markers: &[RedactionMarker]) -> BTreeSet<String> {
+    markers
+        .iter()
+        .filter_map(|marker| {
+            marker
+                .field
+                .strip_prefix("request.query.")
+                .map(str::to_owned)
+        })
+        .collect()
+}
+
+fn redacted_body_json_paths(markers: &[RedactionMarker], response: bool) -> BTreeSet<String> {
+    let prefix = if response {
+        crate::RESPONSE_BODY_JSON_MARKER_PREFIX
+    } else {
+        crate::BODY_JSON_MARKER_PREFIX
+    };
+    markers
+        .iter()
+        .filter_map(|marker| marker.field.strip_prefix(prefix).map(str::to_owned))
+        .collect()
+}
+
+fn redacted_body_form_keys(markers: &[RedactionMarker]) -> BTreeSet<String> {
+    markers
+        .iter()
+        .filter_map(|marker| {
+            marker
+                .field
+                .strip_prefix("request.body.form:")
+                .map(str::to_owned)
+        })
+        .collect()
+}
+
+fn filter_query(query: &[QueryPair], redacted: &BTreeSet<String>) -> Vec<QueryPair> {
+    if redacted.is_empty() {
+        return query.to_vec();
+    }
+    query
+        .iter()
+        .filter(|pair| !redacted.contains(&pair.key))
+        .cloned()
+        .collect()
 }
 
 fn remove_json_pointer(value: &mut Value, pointer: &str) {
@@ -770,5 +929,113 @@ mod tests {
         );
         assert_eq!(result, MatchResult::Matched(1));
         assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn redacted_fields_are_wildcards_not_literals() {
+        use crate::{RedactionConfig, redact_flow};
+        use std::collections::BTreeSet;
+        // Candidate with redacted header, query, and JSON body.
+        let mut flow = candidate("POST", "/redacted", b"").flow.clone();
+        flow.request.headers.push(crate::HeaderEntry {
+            name: "authorization".into(),
+            value: "Bearer sentinel-secret-123".into(),
+        });
+        flow.request.query.push(crate::QueryPair {
+            key: "api_key".into(),
+            value: "sentinel-secret-456".into(),
+        });
+        let raw_body = br#"{"user":"alice","secret":"sentinel-secret-789"}"#;
+        // Simulate persisted redacted body (placeholder) with markers.
+        let redacted_body = br#"{"user":"alice","secret":"<redacted>"}"#;
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(redacted_body);
+        flow.request.body = BodyRef::Blob(
+            crate::BlobRef::new(
+                format!("{:x}", hasher.finalize()),
+                redacted_body.len() as u64,
+            )
+            .unwrap(),
+        );
+        let mut config = RedactionConfig::default_secure();
+        config.query_keys.insert("api_key".into());
+        config.json_paths.insert("/secret".into());
+        redact_flow(&mut flow, &config, "test-v1");
+        // Attach body marker as the HTTP adapter would after transform.
+        flow.redactions.push(crate::RedactionMarker {
+            field: format!("{}stealth", ""),
+            profile: "test-v1".into(),
+        });
+        flow.redactions.pop();
+        crate::push_body_markers(
+            &mut flow.redactions,
+            &BTreeSet::from(["/secret".to_string()]),
+            "test-v1",
+            false,
+        );
+        let candidate = MatchCandidate::from_flow(flow);
+        // Actual with different secrets in redacted fields, same remainder.
+        let mut actual = candidate.flow.request.clone();
+        // Replace redacted header/query with different secrets.
+        for header in &mut actual.headers {
+            if header.name == "authorization" {
+                header.value = "Bearer different-secret".into();
+            }
+        }
+        for pair in &mut actual.query {
+            if pair.key == "api_key" {
+                pair.value = "different-key".into();
+            }
+        }
+        let actual_body = br#"{"user":"alice","secret":"different-secret"}"#;
+        let matcher = Matcher::strict(4);
+        let mut loader = |_: usize, cand: &MatchCandidate| -> Option<Vec<u8>> {
+            // Loader returns persisted redacted bytes.
+            match &cand.flow.request.body {
+                BodyRef::Blob(_) => Some(redacted_body.to_vec()),
+                _ => None,
+            }
+        };
+        assert_eq!(
+            matcher.select_with_loader(
+                &actual,
+                actual_body,
+                std::slice::from_ref(&candidate),
+                ConsumptionMode::Unlimited,
+                &mut MatcherSession::new(),
+                &mut loader
+            ),
+            MatchResult::Matched(0),
+            "only redacted fields differ must match"
+        );
+        // Non-redacted field differs must mismatch.
+        let mut actual2 = actual.clone();
+        actual2.path = "/different".into();
+        assert!(matches!(
+            matcher.select_with_loader(
+                &actual2,
+                actual_body,
+                std::slice::from_ref(&candidate),
+                ConsumptionMode::Unlimited,
+                &mut MatcherSession::new(),
+                &mut loader
+            ),
+            MatchResult::NoMatch { .. }
+        ));
+        // Non-redacted body field differs must mismatch.
+        let actual_body2 = br#"{"user":"bob","secret":"different-secret"}"#;
+        assert!(matches!(
+            matcher.select_with_loader(
+                &actual,
+                actual_body2,
+                std::slice::from_ref(&candidate),
+                ConsumptionMode::Unlimited,
+                &mut MatcherSession::new(),
+                &mut loader
+            ),
+            MatchResult::NoMatch { .. }
+        ));
+        let _ = raw_body;
     }
 }

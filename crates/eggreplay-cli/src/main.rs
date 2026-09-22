@@ -50,6 +50,21 @@ struct RecordArgs {
     fixture: PathBuf,
     #[arg(long, default_value_t = false)]
     overwrite: bool,
+    /// Additional sensitive header names (added to secure defaults unless replaced).
+    #[arg(long = "redact-header")]
+    redact_headers: Vec<String>,
+    /// Additional sensitive query keys (also applies to form bodies).
+    #[arg(long = "redact-query")]
+    redact_queries: Vec<String>,
+    /// Sensitive JSON Pointer body paths (e.g. `/secret`).
+    #[arg(long = "redact-json-path")]
+    redact_json_paths: Vec<String>,
+    /// Persisted redaction policy identifier.
+    #[arg(long = "redaction-profile", default_value = "default-v1")]
+    redaction_profile: String,
+    /// Clearly named unsafe override: replace secure defaults instead of extending them.
+    #[arg(long = "unsafe-replace-default-redaction", default_value_t = false)]
+    unsafe_replace: bool,
     #[command(flatten)]
     output: OutputArgs,
 }
@@ -154,11 +169,13 @@ async fn record(args: RecordArgs) -> Result<(), (String, String)> {
         std::fs::remove_dir_all(&args.fixture)
             .map_err(|error| ("filesystem".into(), error.to_string()))?;
     }
+    let (redaction, profile_id) = effective_redaction_policy(&args);
     let session = RecordingSession::create(
         &args.fixture,
         SessionMetadata {
             capture_mode: "gateway".into(),
             target: Some(redact_url(&args.upstream)),
+            redaction_profile: profile_id.clone(),
             ..SessionMetadata::default()
         },
         StoreLimits::default(),
@@ -177,6 +194,9 @@ async fn record(args: RecordArgs) -> Result<(), (String, String)> {
         client,
         session.clone(),
         StoreLimits::default().max_blob_bytes,
+        redaction,
+        profile_id,
+        eggreplay_core::DEFAULT_MAX_STRUCTURED_REDACTION_BYTES,
     )
     .await
     .map_err(|error| ("runtime".into(), error.to_string()))?;
@@ -366,16 +386,63 @@ async fn inspect(args: InspectArgs) -> Result<(), (String, String)> {
         .map_err(|error| ("fixture".into(), error.to_string()))?
     {
         let flow = item.map_err(|error| ("fixture".into(), error.to_string()))?;
-        flows.push(json!({"id": flow.id, "method": flow.request.method, "path": flow.request.path, "outcome": match flow.outcome { FlowOutcome::Response(response) => json!({"status": response.status}), FlowOutcome::Error(error) => json!({"error": format!("{:?}", error.category)}) }, "body_dump": if args.bodies { json!("explicit body dump is bounded by CLI policy") } else { json!(null) } }));
+        // Expose policy identifier + markers without secret values. Markers
+        // contain only field paths and profile IDs, never redacted values.
+        flows.push(json!({
+            "id": flow.id,
+            "method": flow.request.method,
+            "path": flow.request.path,
+            "outcome": match flow.outcome { FlowOutcome::Response(response) => json!({"status": response.status}), FlowOutcome::Error(error) => json!({"error": format!("{:?}", error.category)}) },
+            "redactions": flow.redactions,
+            "body_dump": if args.bodies { json!("explicit body dump is bounded by CLI policy") } else { json!(null) }
+        }));
     }
     emit(
         "inspect",
         args.output.output,
         true,
         None,
-        json!({"manifest": session.manifest(), "flows": flows}),
+        json!({
+            "manifest": session.manifest(),
+            "redaction_profile": session.manifest().metadata.redaction_profile,
+            "flows": flows
+        }),
     );
     Ok(())
+}
+
+fn effective_redaction_policy(args: &RecordArgs) -> (eggreplay_core::RedactionConfig, String) {
+    use std::collections::BTreeSet;
+    if args.unsafe_replace {
+        let config = eggreplay_core::RedactionConfig {
+            headers: args
+                .redact_headers
+                .iter()
+                .map(|name| name.to_ascii_lowercase())
+                .collect(),
+            query_keys: args.redact_queries.iter().cloned().collect::<BTreeSet<_>>(),
+            json_paths: args
+                .redact_json_paths
+                .iter()
+                .cloned()
+                .collect::<BTreeSet<_>>(),
+        };
+        (config, args.redaction_profile.clone())
+    } else {
+        let mut config = eggreplay_core::RedactionConfig::default_secure();
+        config.headers.extend(
+            args.redact_headers
+                .iter()
+                .map(|name| name.to_ascii_lowercase()),
+        );
+        config
+            .query_keys
+            .extend(args.redact_queries.iter().cloned());
+        config
+            .json_paths
+            .extend(args.redact_json_paths.iter().cloned());
+        (config, args.redaction_profile.clone())
+    }
 }
 
 async fn validate(args: ValidateArgs) -> Result<(), (String, String)> {

@@ -132,6 +132,34 @@ impl Write for BodyWriter {
 }
 
 impl BodyWriter {
+    /// Return the number of bytes streamed so far (staging, not finalized).
+    #[allow(clippy::len_without_is_empty)]
+    pub fn len(&self) -> u64 {
+        self.length
+    }
+
+    /// Read back staging bytes boundedly for pre-publication transforms.
+    ///
+    /// Flushes the staging file and reads it without publishing. Raw bytes
+    /// never become a finalized blob via this path; caller must either
+    /// publish a transformed blob via a new writer or drop this writer
+    /// (which cleans staging) on fail-closed errors.
+    pub fn read_staging_bounded(&mut self, max_bytes: u64) -> Result<Vec<u8>, StoreError> {
+        self.file.flush()?;
+        if self.length > max_bytes {
+            return Err(StoreError::Invalid(
+                "staged body exceeds structured redaction limit".into(),
+            ));
+        }
+        let mut file = File::open(&self.path)?;
+        let mut bytes = Vec::with_capacity(self.length.min(1024 * 1024) as usize);
+        file.read_to_end(&mut bytes)?;
+        if bytes.len() as u64 != self.length {
+            return Err(StoreError::Integrity("staging length mismatch".into()));
+        }
+        Ok(bytes)
+    }
+
     /// Finish the stream, hash it, and atomically publish the content-addressed blob.
     pub fn finish(mut self) -> Result<eggreplay_core::BodyRef, StoreError> {
         // Take ownership of staging state so Drop (abort cleanup) becomes a
@@ -396,6 +424,37 @@ impl Write for RecordingBodyWriter {
 }
 
 impl RecordingBodyWriter {
+    /// Return staged length without publishing.
+    #[allow(clippy::len_without_is_empty)]
+    pub fn len(&self) -> u64 {
+        self.length
+    }
+
+    /// Read back staging bytes boundedly for pre-publication transforms.
+    pub fn read_staging_bounded(&mut self, max_bytes: u64) -> Result<Vec<u8>, StoreError> {
+        let file = self
+            .file
+            .as_mut()
+            .ok_or_else(|| StoreError::Invalid("body writer closed".into()))?;
+        file.flush()?;
+        if self.length > max_bytes {
+            return Err(StoreError::Invalid(
+                "staged body exceeds structured redaction limit".into(),
+            ));
+        }
+        let path = self
+            .path
+            .as_ref()
+            .ok_or_else(|| StoreError::Invalid("body writer closed".into()))?;
+        let mut handle = File::open(path)?;
+        let mut bytes = Vec::with_capacity(self.length.min(1024 * 1024) as usize);
+        handle.read_to_end(&mut bytes)?;
+        if bytes.len() as u64 != self.length {
+            return Err(StoreError::Integrity("staging length mismatch".into()));
+        }
+        Ok(bytes)
+    }
+
     /// Finish, publish the blob, and release the active reservation.
     pub fn finish(mut self) -> Result<eggreplay_core::BodyRef, StoreError> {
         let path = self.path.take().expect("body writer path");

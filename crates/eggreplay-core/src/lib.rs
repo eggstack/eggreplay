@@ -24,7 +24,12 @@ pub use report::{
     DiffFinding, DiffKind, RegressionReport, ReportScheduler, TimingAssertion, compare_flows,
     compare_flows_with_timing,
 };
-pub use security::{RedactionConfig, redact_flow, redact_json, redact_url};
+pub use security::{
+    BODY_JSON_MARKER_PREFIX, DEFAULT_MAX_STRUCTURED_REDACTION_BYTES,
+    RESPONSE_BODY_JSON_MARKER_PREFIX, RedactionConfig, apply_form_redaction, apply_json_redaction,
+    push_body_markers, reconcile_headers_after_body_redaction, redact_flow, redact_json,
+    redact_url,
+};
 
 /// The current persisted schema version.
 pub const SCHEMA_VERSION: u16 = 1;
