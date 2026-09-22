@@ -1,6 +1,6 @@
 # M007 — Eggress Routing and Primary CLI
 
-Status: blocked
+Status: closed
 Depends on: M003, M004, M006
 Release gate: v0.1
 

@@ -46,6 +46,13 @@ pub struct DiffFinding {
     pub candidate: String,
 }
 
+/// An explicit timing assertion; no implicit timing comparisons are made.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TimingAssertion {
+    /// Maximum candidate elapsed milliseconds.
+    pub max_elapsed_ms: u64,
+}
+
 /// Versioned semantic comparison report.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RegressionReport {
@@ -73,6 +80,25 @@ pub fn compare_flows(
     baseline_body: &[u8],
     candidate_body: &[u8],
     scheduler: ReportScheduler,
+) -> RegressionReport {
+    compare_flows_with_timing(
+        baseline,
+        candidate,
+        baseline_body,
+        candidate_body,
+        scheduler,
+        None,
+    )
+}
+
+/// Compare flows and optionally apply an explicit timing assertion.
+pub fn compare_flows_with_timing(
+    baseline: &Flow,
+    candidate: &Flow,
+    baseline_body: &[u8],
+    candidate_body: &[u8],
+    scheduler: ReportScheduler,
+    timing: Option<TimingAssertion>,
 ) -> RegressionReport {
     let mut findings = Vec::new();
     match (&baseline.outcome, &candidate.outcome) {
@@ -134,6 +160,19 @@ pub fn compare_flows(
             baseline: outcome_name(expected).into(),
             candidate: outcome_name(actual).into(),
         }),
+    }
+    if let Some(assertion) = timing
+        && let Some(end) = candidate.completed_at_ms
+    {
+        let elapsed = end.saturating_sub(candidate.started_at_ms);
+        if elapsed > assertion.max_elapsed_ms {
+            findings.push(DiffFinding {
+                kind: DiffKind::Timing,
+                field: "timing.elapsed_ms".into(),
+                baseline: assertion.max_elapsed_ms.to_string(),
+                candidate: elapsed.to_string(),
+            });
+        }
     }
     findings.sort_by(|left, right| {
         (format!("{:?}", left.kind), &left.field).cmp(&(format!("{:?}", right.kind), &right.field))
