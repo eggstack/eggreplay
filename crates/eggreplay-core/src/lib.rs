@@ -20,7 +20,10 @@ pub use matching::{
     BodyMatchMode, ConsumptionMode, MatchCandidate, MatchDimension, MatchResult, Matcher,
     MatcherSession, NearMiss, NormalizedRequest,
 };
-pub use report::{DiffFinding, DiffKind, RegressionReport, ReportScheduler, compare_flows};
+pub use report::{
+    DiffFinding, DiffKind, RegressionReport, ReportScheduler, TimingAssertion, compare_flows,
+    compare_flows_with_timing,
+};
 pub use security::{RedactionConfig, redact_flow, redact_json, redact_url};
 
 /// The current persisted schema version.

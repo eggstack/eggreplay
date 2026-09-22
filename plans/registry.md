@@ -13,9 +13,10 @@ Status source of truth for implementation handoff.
 | M005 | `implementation/matching/005-matching-consumption-near-miss.md` | closed | M002, M004 | v0.1 |
 | M006 | `implementation/regression/006-client-replay-and-diff.md` | closed | M002, M003, M005 | v0.1 |
 | M007 | `implementation/integration/007-eggress-routing-and-cli.md` | closed | M003, M004, M006 | v0.1 |
-| M008 | `implementation/security/008-v0.1-hardening-and-qualification.md` | ready | M001–M007 | v0.1 closure |
+| M008 | `implementation/security/008-v0.1-hardening-and-qualification.md` | closed | M001–M007 | v0.1 closure |
 
-Only M001 is dependency-ready at repository bootstrap.
+M001–M008 are closed. Future milestones remain deferred until v0.1 evidence justifies
+new executable plans.
 
 ## Canonical planning documents
 
