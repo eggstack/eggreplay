@@ -27,7 +27,7 @@ qualification was superseded by the corrective workstream.
 | C003 | `implementation/corrective/c003-persistence-redaction-policy.md` | closed | historical M001–M008 baseline | v0.1 requalification |
 | C004 | `implementation/corrective/c004-cli-eggress-contracts.md` | closed | historical M001–M008 baseline | v0.1 requalification |
 | C005 | `implementation/corrective/c005-v0.1-requalification.md` | closed (local qualification artifact) | C001–C004 | superseded by hosted gate C006 |
-| C006 | `implementation/corrective/c006-windows-hosted-ci-qualification.md` | ready | C001–C005 implementation baseline | **current v0.1 hosted release gate** |
+| C006 | `implementation/corrective/c006-windows-hosted-ci-qualification.md` | implemented (Stage A pushed; awaiting hosted green — not closed) | C001–C005 implementation baseline | **current v0.1 hosted release gate** |
 
 ### Current release-gate state
 

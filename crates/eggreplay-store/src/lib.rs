@@ -1055,14 +1055,17 @@ fn read_blob_from_root(
     Ok(bytes)
 }
 
+#[cfg(unix)]
 fn set_private_permissions(path: &Path) -> Result<(), StoreError> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut permissions = fs::metadata(path)?.permissions();
-        permissions.set_mode(if path.is_dir() { 0o700 } else { 0o600 });
-        fs::set_permissions(path, permissions)?;
-    }
+    use std::os::unix::fs::PermissionsExt;
+    let mut permissions = fs::metadata(path)?.permissions();
+    permissions.set_mode(if path.is_dir() { 0o700 } else { 0o600 });
+    fs::set_permissions(path, permissions)?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn set_private_permissions(_path: &Path) -> Result<(), StoreError> {
     Ok(())
 }
 
@@ -1201,7 +1204,12 @@ mod tests {
         fs::remove_dir_all(destination).unwrap();
     }
 
+    // Symlink construction requires privileges that are not reliably
+    // available on standard GitHub-hosted Windows runners, so this
+    // rejection test is Unix-only. The production `symlink_metadata`
+    // rejection check itself remains portable and runs on Windows.
     #[test]
+    #[cfg(unix)]
     fn open_blob_rejects_symlinked_blob() {
         let destination = path("symlink-blob");
         let mut writer = SessionWriter::create(
@@ -1232,24 +1240,12 @@ mod tests {
         std::fs::write(&target, b"secret").unwrap();
         let backup = blob_path.with_extension("bak");
         std::fs::rename(&blob_path, &backup).unwrap();
-        #[cfg(unix)]
         std::os::unix::fs::symlink(&target, &blob_path).unwrap();
-        #[cfg(unix)]
-        {
-            let result = session.open_blob(&blob);
-            assert!(result.is_err(), "symlinked blob must be rejected");
-        }
-        #[cfg(unix)]
-        {
-            std::fs::remove_file(&blob_path).unwrap();
-            std::fs::rename(&backup, &blob_path).unwrap();
-            std::fs::remove_file(&target).unwrap();
-        }
-        #[cfg(not(unix))]
-        {
-            std::fs::rename(&backup, &blob_path).unwrap();
-            std::fs::remove_file(&target).unwrap();
-        }
+        let result = session.open_blob(&blob);
+        assert!(result.is_err(), "symlinked blob must be rejected");
+        std::fs::remove_file(&blob_path).unwrap();
+        std::fs::rename(&backup, &blob_path).unwrap();
+        std::fs::remove_file(&target).unwrap();
         fs::remove_dir_all(destination).unwrap();
     }
 

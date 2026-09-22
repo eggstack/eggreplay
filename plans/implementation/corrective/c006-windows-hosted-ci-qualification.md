@@ -1,6 +1,6 @@
 # C006 — Windows CI Repair and Hosted v0.1 Qualification
 
-Status: ready
+Status: implemented (Stage A pushed; awaiting hosted green — not closed)
 Depends on: C001–C005 implementation baseline
 Corrective gate: v0.1 hosted release qualification
 
