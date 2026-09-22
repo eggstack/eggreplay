@@ -1,6 +1,6 @@
 # C002 — Concurrent Recording Session Ownership
 
-Status: ready
+Status: closed
 Depends on: M001–M008 historical baseline
 Corrective gate: v0.1 requalification
 

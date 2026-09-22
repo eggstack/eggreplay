@@ -1,12 +1,11 @@
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use eggreplay_core::{FlowOutcome, ReportScheduler, SessionMetadata, compare_flows};
 use eggreplay_http::{ReplayFixture, execute_candidate};
-use eggreplay_store::{Session, SessionWriter, StoreLimits};
+use eggreplay_store::{RecordingSession, Session, StoreLimits};
 use serde::Serialize;
 use serde_json::json;
 use std::path::PathBuf;
 use std::process::ExitCode;
-use std::sync::Arc;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -155,7 +154,7 @@ async fn record(args: RecordArgs) -> Result<(), (String, String)> {
         std::fs::remove_dir_all(&args.fixture)
             .map_err(|error| ("filesystem".into(), error.to_string()))?;
     }
-    let writer = SessionWriter::create(
+    let session = RecordingSession::create(
         &args.fixture,
         SessionMetadata {
             capture_mode: "gateway".into(),
@@ -165,7 +164,6 @@ async fn record(args: RecordArgs) -> Result<(), (String, String)> {
         StoreLimits::default(),
     )
     .map_err(|error| ("fixture".into(), error.to_string()))?;
-    let writer = Arc::new(tokio::sync::Mutex::new(writer));
     let client = eggfetch_core::Client::builder()
         .retry_canceled_requests(false)
         .build();
@@ -177,7 +175,7 @@ async fn record(args: RecordArgs) -> Result<(), (String, String)> {
         args.listen,
         upstream,
         client,
-        writer.clone(),
+        session.clone(),
         StoreLimits::default().max_blob_bytes,
     )
     .await
@@ -186,12 +184,21 @@ async fn record(args: RecordArgs) -> Result<(), (String, String)> {
     tokio::signal::ctrl_c()
         .await
         .map_err(|error| ("runtime".into(), error.to_string()))?;
+    // Documented shutdown policy: stop admission, drain active gateway
+    // tasks via server wait, then finalize only when no transaction can
+    // still append.
     server.shutdown();
     server.wait().await;
-    let writer = Arc::try_unwrap(writer)
-        .map_err(|_| ("runtime".into(), "recording writer still in use".into()))?
-        .into_inner();
-    writer
+    session.shutdown();
+    // Spin briefly for any just-completed tasks to release their sinks;
+    // finish fails closed if actives remain rather than racing.
+    for _ in 0..100 {
+        if session.active_blobs() == 0 {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    session
         .finish()
         .map_err(|error| ("fixture".into(), error.to_string()))?;
     emit(

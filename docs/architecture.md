@@ -23,6 +23,22 @@ HTTP/store adapter, keeping core filesystem-free. Fixtures must be treated
 as immutable while a session or handle is open; concurrent blob replacement
 fails as integrity errors rather than silent serving.
 
+## Concurrent recording session (C002)
+
+`RecordingSession` is the cloneable concurrent owner: `begin_blob` never
+holds the flow-log mutex while body bytes stream to independent staging
+files, and `append_flow` serializes only the final bounded JSONL write plus
+flow-count/total-bytes accounting. No Tokio mutex spans the awaited upstream
+transaction, so gateway requests execute upstream simultaneously up to
+EggServe/EggFetch limits. No unbounded channel buffers whole flows/bodies.
+Flow IDs embed start milliseconds plus a random UUID, unique under
+concurrency; chronology stays in start/completion timestamps with JSONL
+append order as the tie-breaker (no schema change). Aborted body writers
+clean staging files via Drop, so failed/cancelled transactions never leave a
+manifest reference to an incomplete blob. Shutdown policy: `shutdown` stops
+admission, `ServerHandle::shutdown` + `wait` drains in-flight gateway tasks,
+then `finish` fails closed if any sink remains active rather than racing.
+
 EggFetch 0.2.0 is consumed from crates.io. EggServe's generic runtime and
 Eggress's listener-free connector are not yet published as independent
 crates, so M001 pins the exact revisions used by v0.1. The removal gate is

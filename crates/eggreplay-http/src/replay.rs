@@ -100,8 +100,13 @@ impl ReplayFixture {
                 max_bytes: max_body_bytes,
             },
         );
-        Server::builder()
+        let runtime = eggserve_server::RuntimeConfig::builder()
             .bind(bind)
+            .max_request_body_bytes(max_body_bytes)
+            .build()
+            .map_err(|error| ReplayError::Serve(error.to_string()))?;
+        Server::builder()
+            .runtime(runtime)
             .build()
             .map_err(|error| ReplayError::Serve(error.to_string()))?
             .start_with_service(service)

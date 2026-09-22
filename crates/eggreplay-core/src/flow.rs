@@ -185,11 +185,18 @@ pub struct Flow {
 }
 
 impl Flow {
-    /// Construct a schema-1 flow with a generated identifier.
+    /// Construct a schema-1 flow with a generated collision-resistant identifier.
+    ///
+    /// The ID embeds the start milliseconds for chronology plus a random
+    /// UUID so concurrent requests starting in the same millisecond stay
+    /// unique. Chronology remains in `started_at_ms`/`completed_at_ms`;
+    /// flows sharing identical timestamps retain JSONL append (capture)
+    /// order as the tie-breaker. No schema change: existing fixtures stay
+    /// valid.
     pub fn new(request: HttpRequest, outcome: FlowOutcome, started_at_ms: u64) -> Self {
         Self {
             schema_version: SCHEMA_VERSION,
-            id: format!("flow-{started_at_ms}-0"),
+            id: format!("flow-{started_at_ms}-{}", uuid::Uuid::new_v4().simple()),
             started_at_ms,
             completed_at_ms: None,
             request,
@@ -289,5 +296,46 @@ impl Default for SessionMetadata {
             matcher_profile: "strict".into(),
             redaction_profile: "default-v1".into(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    fn test_request() -> HttpRequest {
+        HttpRequest {
+            method: "GET".into(),
+            scheme: "http".into(),
+            authority: "example.test".into(),
+            path: "/".into(),
+            query: vec![],
+            headers: vec![],
+            body: BodyRef::Empty,
+            trailers: vec![],
+        }
+    }
+
+    fn test_outcome() -> FlowOutcome {
+        FlowOutcome::Response(HttpResponse {
+            status: 200,
+            headers: vec![],
+            body: BodyRef::Empty,
+            trailers: vec![],
+        })
+    }
+
+    #[test]
+    fn flow_ids_unique_with_identical_timestamps() {
+        let mut ids = BTreeSet::new();
+        for _ in 0..200 {
+            let flow = Flow::new(test_request(), test_outcome(), 1_700_000_000_000);
+            assert!(flow.validate().is_ok());
+            assert!(ids.insert(flow.id.clone()), "flow IDs must be unique");
+        }
+        // Chronology stays in timestamps; identical timestamps tie-break by
+        // JSONL append order (fixture order), not by ID sort.
+        assert_eq!(ids.len(), 200);
     }
 }

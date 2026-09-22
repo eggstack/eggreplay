@@ -9,6 +9,10 @@ use sha2::{Digest, Sha256};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+};
 use thiserror::Error;
 
 /// Default validation bounds for untrusted fixtures.
@@ -130,28 +134,44 @@ impl Write for BodyWriter {
 impl BodyWriter {
     /// Finish the stream, hash it, and atomically publish the content-addressed blob.
     pub fn finish(mut self) -> Result<eggreplay_core::BodyRef, StoreError> {
+        // Take ownership of staging state so Drop (abort cleanup) becomes a
+        // no-op after successful publish; File is still closed via drop.
+        let path = std::mem::replace(&mut self.path, PathBuf::from("__finished__"));
+        let hasher = std::mem::replace(&mut self.hasher, Sha256::new());
         self.file.flush()?;
         self.file.sync_all()?;
         if self.length == 0 {
-            let _ = fs::remove_file(&self.path);
+            let _ = fs::remove_file(&path);
             return Ok(eggreplay_core::BodyRef::Empty);
         }
-        let digest = format!("{:x}", self.hasher.finalize());
-        let destination = self
-            .path
+        let digest = format!("{:x}", hasher.finalize());
+        let destination = path
             .parent()
             .and_then(Path::parent)
             .ok_or_else(|| StoreError::Invalid("blob staging path has no store root".into()))?
             .join("blobs")
             .join(&digest);
         if destination.exists() {
-            fs::remove_file(&self.path)?;
+            fs::remove_file(&path)?;
         } else {
-            fs::rename(&self.path, &destination)?;
+            fs::rename(&path, &destination)?;
         }
         Ok(eggreplay_core::BodyRef::Blob(
             BlobRef::new(digest, self.length).map_err(StoreError::from)?,
         ))
+    }
+}
+
+impl Drop for BodyWriter {
+    /// Best-effort staging cleanup for aborted transactions.
+    ///
+    /// Ensures a failed/cancelled body stream never leaves an orphan staging
+    /// file that could be counted as a blob. `finish` replaces the path with
+    /// a sentinel so successful publishes are unaffected.
+    fn drop(&mut self) {
+        if self.path.as_os_str() != "__finished__" {
+            let _ = fs::remove_file(&self.path);
+        }
     }
 }
 
@@ -187,11 +207,7 @@ impl SessionWriter {
             .file_name()
             .and_then(|value| value.to_str())
             .ok_or_else(|| StoreError::Invalid("fixture path has no filename".into()))?;
-        let staging = parent.join(format!(
-            ".{name}.incomplete-{}-{}",
-            std::process::id(),
-            unique_suffix()
-        ));
+        let staging = parent.join(format!(".{name}.incomplete-{}", unique_suffix()));
         fs::create_dir(&staging)?;
         fs::create_dir(staging.join("blobs"))?;
         set_private_permissions(&staging)?;
@@ -295,6 +311,347 @@ impl SessionWriter {
         manifest_file.sync_all()?;
         fs::rename(&self.staging, &self.destination)?;
         Session::open(&self.destination, self.limits)
+    }
+}
+
+/// Shared inner state for concurrent recording.
+///
+/// `flows` is the only serialized authority: it guards the JSONL append and
+/// flow-count update. Body bytes never hold this lock; they stream to
+/// independent staging files. Aggregate limits are enforced via atomics +
+/// short critical sections, never via an unbounded channel.
+#[derive(Debug)]
+struct RecordingInner {
+    destination: PathBuf,
+    staging: PathBuf,
+    metadata: SessionMetadata,
+    limits: StoreLimits,
+    flows: std::sync::Mutex<File>,
+    flow_count: AtomicUsize,
+    total_bytes: AtomicU64,
+    active_blobs: AtomicUsize,
+    shutdown: AtomicBool,
+}
+
+/// Cloneable concurrent recording session.
+///
+/// Obtained via [`RecordingSession::create`]; clones share the same staging
+/// directory and flow log. `begin_blob` never holds the flow-log lock while
+/// body bytes are written. `append_flow` serializes only the final bounded
+/// metadata append. `shutdown` stops admission; `finish` must be called only
+/// after all clones/tasks have drained (active count zero), otherwise it
+/// fails instead of racing.
+///
+/// Crash safety is unchanged: manifest-last publication; incomplete staging
+/// directories are never valid sessions.
+#[derive(Debug, Clone)]
+pub struct RecordingSession {
+    inner: Arc<RecordingInner>,
+}
+
+/// Concurrent body sink tied to a [`RecordingSession`] for accounting.
+///
+/// Like [`BodyWriter`] but decrements the session active count on finish or
+/// abort (Drop) so finalization cannot race active sinks. Staging files for
+/// aborted bodies are removed best-effort, preventing orphan blobs.
+pub struct RecordingBodyWriter {
+    file: Option<File>,
+    path: Option<PathBuf>,
+    hasher: Option<Sha256>,
+    length: u64,
+    max_bytes: u64,
+    session: Arc<RecordingInner>,
+}
+
+impl Write for RecordingBodyWriter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let next = self
+            .length
+            .checked_add(buf.len() as u64)
+            .ok_or_else(|| io::Error::other("body length overflow"))?;
+        if next > self.max_bytes {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "body exceeds configured limit",
+            ));
+        }
+        self.file
+            .as_mut()
+            .ok_or_else(|| io::Error::other("body writer closed"))?
+            .write_all(buf)?;
+        self.hasher
+            .as_mut()
+            .ok_or_else(|| io::Error::other("body writer closed"))?
+            .update(buf);
+        self.length = next;
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.file
+            .as_mut()
+            .ok_or_else(|| io::Error::other("body writer closed"))?
+            .flush()
+    }
+}
+
+impl RecordingBodyWriter {
+    /// Finish, publish the blob, and release the active reservation.
+    pub fn finish(mut self) -> Result<eggreplay_core::BodyRef, StoreError> {
+        let path = self.path.take().expect("body writer path");
+        let mut file = self.file.take().expect("body writer file");
+        let hasher = self.hasher.take().expect("body writer hasher");
+        let length = self.length;
+        // `self` now holds None fields so Drop becomes a no-op (no double
+        // release); explicit release below is the single accounting point.
+        // If any I/O below fails, still release and leave staging cleanup to
+        // Drop-less manual removal to avoid orphans.
+        let result: Result<eggreplay_core::BodyRef, StoreError> = (|| {
+            file.flush()?;
+            file.sync_all()?;
+            if length == 0 {
+                let _ = fs::remove_file(&path);
+                return Ok(eggreplay_core::BodyRef::Empty);
+            }
+            let digest = format!("{:x}", hasher.finalize());
+            let destination = path
+                .parent()
+                .and_then(Path::parent)
+                .ok_or_else(|| StoreError::Invalid("blob staging path has no store root".into()))?
+                .join("blobs")
+                .join(&digest);
+            if destination.exists() {
+                fs::remove_file(&path)?;
+            } else {
+                fs::rename(&path, &destination)?;
+            }
+            Ok(eggreplay_core::BodyRef::Blob(
+                BlobRef::new(digest, length).map_err(StoreError::from)?,
+            ))
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(&path);
+        }
+        self.session.active_blobs.fetch_sub(1, Ordering::SeqCst);
+        result
+    }
+}
+
+impl Drop for RecordingBodyWriter {
+    fn drop(&mut self) {
+        // Abort path only: finish takes all Options leaving None, so this is
+        // a no-op after successful finish. On abort, remove staging and
+        // release the reservation.
+        if let Some(path) = self.path.take() {
+            let _ = fs::remove_file(path);
+            self.session.active_blobs.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+}
+
+impl RecordingSession {
+    /// Create a new concurrent session directory.
+    pub fn create(
+        destination: impl AsRef<Path>,
+        metadata: SessionMetadata,
+        limits: StoreLimits,
+    ) -> Result<Self, StoreError> {
+        let destination = destination.as_ref().to_path_buf();
+        if destination.exists() {
+            return Err(StoreError::Invalid(
+                "fixture destination already exists".into(),
+            ));
+        }
+        if metadata.schema_version != SCHEMA_VERSION {
+            return Err(StoreError::UnsupportedSchema(metadata.schema_version));
+        }
+        let parent = destination.parent().unwrap_or_else(|| Path::new("."));
+        fs::create_dir_all(parent)?;
+        let name = destination
+            .file_name()
+            .and_then(|value| value.to_str())
+            .ok_or_else(|| StoreError::Invalid("fixture path has no filename".into()))?;
+        let staging = parent.join(format!(".{name}.incomplete-{}", unique_suffix()));
+        fs::create_dir(&staging)?;
+        fs::create_dir(staging.join("blobs"))?;
+        set_private_permissions(&staging)?;
+        set_private_permissions(&staging.join("blobs"))?;
+        let flows = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(staging.join("flows.jsonl"))?;
+        set_private_permissions(&staging.join("flows.jsonl"))?;
+        Ok(Self {
+            inner: Arc::new(RecordingInner {
+                destination,
+                staging,
+                metadata,
+                limits,
+                flows: std::sync::Mutex::new(flows),
+                flow_count: AtomicUsize::new(0),
+                total_bytes: AtomicU64::new(0),
+                active_blobs: AtomicUsize::new(0),
+                shutdown: AtomicBool::new(false),
+            }),
+        })
+    }
+
+    /// Stop admission of new blobs/flows; in-flight bodies may still finish.
+    ///
+    /// Gateway shutdown policy: call `shutdown`, stop accepting new requests,
+    /// drain active tasks (join), then call `finish`. `begin_blob` and
+    /// `append_flow` fail after shutdown.
+    pub fn shutdown(&self) {
+        self.inner.shutdown.store(true, Ordering::SeqCst);
+    }
+
+    /// Return whether shutdown has been requested.
+    pub fn is_shutdown(&self) -> bool {
+        self.inner.shutdown.load(Ordering::SeqCst)
+    }
+
+    /// Return the number of currently open body sinks.
+    pub fn active_blobs(&self) -> usize {
+        self.inner.active_blobs.load(Ordering::SeqCst)
+    }
+
+    /// Return the number of appended flows.
+    pub fn flow_count(&self) -> usize {
+        self.inner.flow_count.load(Ordering::SeqCst)
+    }
+
+    /// Start a bounded streaming blob write without holding the flow lock.
+    pub fn begin_blob(&self) -> Result<RecordingBodyWriter, StoreError> {
+        if self.inner.shutdown.load(Ordering::SeqCst) {
+            return Err(StoreError::Invalid("session is shutting down".into()));
+        }
+        let path = self
+            .inner
+            .staging
+            .join("blobs")
+            .join(format!(".staging-{}", unique_suffix()));
+        let file = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&path)?;
+        self.inner.active_blobs.fetch_add(1, Ordering::SeqCst);
+        Ok(RecordingBodyWriter {
+            file: Some(file),
+            path: Some(path),
+            hasher: Some(Sha256::new()),
+            length: 0,
+            max_bytes: self.inner.limits.max_blob_bytes,
+            session: self.inner.clone(),
+        })
+    }
+
+    /// Read a finalized staging body (for gateway response streaming).
+    pub fn read_body(&self, body: &eggreplay_core::BodyRef) -> Result<Vec<u8>, StoreError> {
+        match body {
+            eggreplay_core::BodyRef::Absent | eggreplay_core::BodyRef::Empty => Ok(Vec::new()),
+            eggreplay_core::BodyRef::Blob(blob) => {
+                read_blob_from_root(&self.inner.staging, blob, self.inner.limits)
+            }
+        }
+    }
+
+    /// Return the confined staging path for a finalized blob.
+    pub fn body_path(&self, body: &eggreplay_core::BodyRef) -> Result<Option<PathBuf>, StoreError> {
+        match body {
+            eggreplay_core::BodyRef::Absent | eggreplay_core::BodyRef::Empty => Ok(None),
+            eggreplay_core::BodyRef::Blob(blob) => {
+                validate_digest(&blob.sha256)?;
+                verify_blob_file(&self.inner.staging, blob, self.inner.limits)?;
+                Ok(Some(self.inner.staging.join("blobs").join(&blob.sha256)))
+            }
+        }
+    }
+
+    /// Append one flow; serializes only the bounded metadata write.
+    pub fn append_flow(&self, flow: &Flow) -> Result<(), StoreError> {
+        if self.inner.shutdown.load(Ordering::SeqCst) {
+            return Err(StoreError::Invalid("session is shutting down".into()));
+        }
+        flow.validate()?;
+        validate_body_refs(flow, self.inner.limits.max_blob_bytes)?;
+        let new_bytes = flow_body_bytes(flow);
+        let encoded = serde_json::to_vec(flow)?;
+        if encoded.len() as u64 > self.inner.limits.max_line_bytes {
+            return Err(StoreError::Invalid(
+                "flow JSONL line exceeds configured limit".into(),
+            ));
+        }
+        let mut flows = self
+            .inner
+            .flows
+            .lock()
+            .map_err(|_| StoreError::Invalid("flow log poisoned".into()))?;
+        if self.inner.flow_count.load(Ordering::SeqCst) >= self.inner.limits.max_flows {
+            return Err(StoreError::Invalid(
+                "flow count exceeds configured limit".into(),
+            ));
+        }
+        let total = self.inner.total_bytes.load(Ordering::SeqCst);
+        let next = total
+            .checked_add(new_bytes)
+            .ok_or_else(|| StoreError::Invalid("total body length overflow".into()))?;
+        if next > self.inner.limits.max_total_bytes {
+            return Err(StoreError::Invalid(
+                "total body length exceeds configured limit".into(),
+            ));
+        }
+        flows.write_all(&encoded)?;
+        flows.write_all(b"\n")?;
+        self.inner.flow_count.fetch_add(1, Ordering::SeqCst);
+        self.inner
+            .total_bytes
+            .fetch_add(new_bytes, Ordering::SeqCst);
+        Ok(())
+    }
+
+    /// Atomically publish; fails if active sinks remain.
+    ///
+    /// Must be called only after admission stopped and all tasks drained.
+    /// A failed/cancelled transaction leaves no manifest reference because
+    /// flows are appended only after both bodies publish; aborted staging
+    /// files are removed by writer Drop.
+    pub fn finish(self) -> Result<Session, StoreError> {
+        self.inner.shutdown.store(true, Ordering::SeqCst);
+        if self.inner.active_blobs.load(Ordering::SeqCst) != 0 {
+            return Err(StoreError::Invalid(
+                "cannot finalize with active transactions".into(),
+            ));
+        }
+        // Early check for empty active via extra Arc clones? Strong count
+        // includes self + any task clones; if tasks still hold clones they
+        // may still call begin_blob after our shutdown flag, which will fail.
+        // Active blob count is authoritative, not Arc count.
+        let mut flows = self
+            .inner
+            .flows
+            .lock()
+            .map_err(|_| StoreError::Invalid("flow log poisoned".into()))?;
+        flows.flush()?;
+        flows.sync_all()?;
+        drop(flows);
+        let flow_count = self.inner.flow_count.load(Ordering::SeqCst);
+        let manifest = Manifest {
+            metadata: self.inner.metadata.clone(),
+            complete: true,
+            flow_count,
+            blob_count: count_blobs(&self.inner.staging.join("blobs"))?,
+        };
+        let manifest_bytes = serde_json::to_vec_pretty(&manifest)?;
+        let mut manifest_file = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(self.inner.staging.join("manifest.json"))?;
+        set_private_permissions(&self.inner.staging.join("manifest.json"))?;
+        manifest_file.write_all(&manifest_bytes)?;
+        manifest_file.write_all(b"\n")?;
+        manifest_file.sync_all()?;
+        fs::rename(&self.inner.staging, &self.inner.destination)?;
+        Session::open(&self.inner.destination, self.inner.limits)
     }
 }
 
@@ -514,15 +871,15 @@ impl Iterator for FlowIter {
     type Item = Result<Flow, StoreError>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.seen >= self.limits.max_flows {
-            return Some(Err(StoreError::Invalid(
-                "flow count exceeds configured limit".into(),
-            )));
-        }
         let mut line = Vec::new();
         match self.reader.read_until(b'\n', &mut line) {
             Ok(0) => None,
             Ok(_) => {
+                if self.seen >= self.limits.max_flows {
+                    return Some(Err(StoreError::Invalid(
+                        "flow count exceeds configured limit".into(),
+                    )));
+                }
                 self.seen += 1;
                 if line.len() as u64 > self.limits.max_line_bytes {
                     return Some(Err(StoreError::Invalid(
@@ -539,10 +896,13 @@ impl Iterator for FlowIter {
     }
 }
 
-fn unique_suffix() -> u128 {
-    std::time::SystemTime::now()
+fn unique_suffix() -> String {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_nanos())
+        .map_or(0, |duration| duration.as_nanos());
+    let count = COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("{nanos}-{count}-{}", std::process::id())
 }
 
 fn validate_digest(digest: &str) -> Result<(), StoreError> {
@@ -832,5 +1192,231 @@ mod tests {
             std::fs::remove_file(&target).unwrap();
         }
         fs::remove_dir_all(destination).unwrap();
+    }
+
+    fn c002_path(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "eggreplay-c002-{name}-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
+    }
+
+    #[test]
+    fn concurrent_blobs_overlap_without_flow_lock() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        let dir = c002_path("overlap");
+        let session =
+            RecordingSession::create(&dir, SessionMetadata::default(), StoreLimits::default())
+                .unwrap();
+        let first_start = Arc::new(AtomicU64::new(0));
+        let second_start = Arc::new(AtomicU64::new(0));
+        let first_end = Arc::new(AtomicU64::new(0));
+        let now = || {
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as u64
+        };
+        let worker =
+            |session: RecordingSession, start: Arc<AtomicU64>, end: Arc<AtomicU64>, seed: u8| {
+                std::thread::spawn(move || {
+                    let mut writer = session.begin_blob().unwrap();
+                    start.store(now(), Ordering::SeqCst);
+                    // Interleaved chunked writes with sleeps force overlap if the
+                    // flow lock is not held during body streaming.
+                    for chunk in 0..10 {
+                        writer.write_all(&vec![seed; 32 * 1024]).unwrap();
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                        let _ = chunk;
+                    }
+                    let body_ref = writer.finish().unwrap();
+                    end.store(now(), Ordering::SeqCst);
+                    body_ref
+                })
+            };
+        let a_start = first_start.clone();
+        let a_end = first_end.clone();
+        let b_start = second_start.clone();
+        let session_a = session.clone();
+        let session_b = session.clone();
+        let handle_a = worker(session_a, a_start, a_end, 0xA5);
+        // Start second while first is still streaming.
+        std::thread::sleep(std::time::Duration::from_millis(25));
+        let handle_b = worker(session_b, b_start, Arc::new(AtomicU64::new(0)), 0x5A);
+        let body_a = handle_a.join().unwrap();
+        let body_b = handle_b.join().unwrap();
+        assert!(matches!(body_a, BodyRef::Blob(_)));
+        assert!(matches!(body_b, BodyRef::Blob(_)));
+        assert!(
+            second_start.load(Ordering::SeqCst) < first_end.load(Ordering::SeqCst),
+            "second blob must start before first completes"
+        );
+        // Append both flows concurrently; count must be exact.
+        let mut flow_a = sample();
+        flow_a.id = "concurrent-a".into();
+        flow_a.request.body = body_a;
+        let mut flow_b = sample();
+        flow_b.id = "concurrent-b".into();
+        flow_b.request.body = body_b;
+        let s1 = session.clone();
+        let s2 = session.clone();
+        let t1 = std::thread::spawn(move || s1.append_flow(&flow_a).unwrap());
+        let t2 = std::thread::spawn(move || s2.append_flow(&flow_b).unwrap());
+        t1.join().unwrap();
+        t2.join().unwrap();
+        assert_eq!(session.flow_count(), 2);
+        let finalized = session.finish().unwrap();
+        assert_eq!(finalized.manifest().flow_count, 2);
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn concurrent_append_preserves_manifest_count() {
+        let dir = c002_path("append-count");
+        let session =
+            RecordingSession::create(&dir, SessionMetadata::default(), StoreLimits::default())
+                .unwrap();
+        let mut handles = Vec::new();
+        for i in 0..20 {
+            let s = session.clone();
+            handles.push(std::thread::spawn(move || {
+                let mut flow = sample();
+                flow.id = format!("flow-{i}");
+                s.append_flow(&flow).unwrap();
+            }));
+        }
+        for handle in handles {
+            handle.join().unwrap();
+        }
+        assert_eq!(session.flow_count(), 20);
+        let finalized = session.finish().unwrap();
+        assert_eq!(finalized.manifest().flow_count, 20);
+        let loaded: Vec<_> = finalized
+            .iter_flows()
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(loaded.len(), 20);
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn session_limits_enforced_under_concurrency() {
+        let dir = c002_path("limits");
+        let limits = StoreLimits {
+            max_line_bytes: 4 * 1024 * 1024,
+            max_blob_bytes: 4 * 1024,
+            max_flows: 4,
+            max_total_bytes: 8 * 1024,
+        };
+        let session = RecordingSession::create(&dir, SessionMetadata::default(), limits).unwrap();
+        // Oversized blob must fail fast without holding the flow lock.
+        let mut big = session.begin_blob().unwrap();
+        assert!(
+            big.write_all(&vec![0u8; 8 * 1024]).is_err(),
+            "per-body limit must fail"
+        );
+        drop(big);
+        assert_eq!(session.active_blobs(), 0);
+        // Fill to flow limit concurrently; extras must be rejected.
+        let mut handles = Vec::new();
+        for i in 0..8 {
+            let s = session.clone();
+            handles.push(std::thread::spawn(move || {
+                let mut flow = sample();
+                flow.id = format!("limit-{i}");
+                s.append_flow(&flow)
+            }));
+        }
+        let mut ok = 0;
+        for handle in handles {
+            if handle.join().unwrap().is_ok() {
+                ok += 1;
+            }
+        }
+        assert_eq!(ok, 4, "flow limit must be exact under concurrency");
+        assert_eq!(session.flow_count(), 4);
+        let finalized = session.finish().unwrap();
+        assert_eq!(finalized.manifest().flow_count, 4);
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn aborted_body_leaves_no_orphan_and_finish_succeeds() {
+        let dir = c002_path("abort");
+        let session =
+            RecordingSession::create(&dir, SessionMetadata::default(), StoreLimits::default())
+                .unwrap();
+        {
+            let mut writer = session.begin_blob().unwrap();
+            writer.write_all(b"partial").unwrap();
+            // Drop without finish = cancelled transaction.
+        }
+        assert_eq!(session.active_blobs(), 0);
+        // No staging files remain; blob dir must be empty.
+        let blobs: Vec<_> = std::fs::read_dir(dir.join(format!(
+            "{}",
+            session.inner.staging.file_name().unwrap().to_string_lossy()
+        )))
+        .ok()
+        .map(|_| ())
+        .into_iter()
+        .collect();
+        let _ = blobs;
+        let staging_blobs = session.inner.staging.join("blobs");
+        let count = std::fs::read_dir(&staging_blobs)
+            .unwrap()
+            .filter_map(Result::ok)
+            .count();
+        assert_eq!(count, 0, "aborted body must not leave orphan file");
+        let mut flow = sample();
+        flow.id = "after-abort".into();
+        session.append_flow(&flow).unwrap();
+        let finalized = session.finish().unwrap();
+        assert_eq!(finalized.manifest().flow_count, 1);
+        assert_eq!(finalized.manifest().blob_count, 0);
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn shutdown_stops_admission_and_finish_guards_actives() {
+        let dir = c002_path("shutdown");
+        let session =
+            RecordingSession::create(&dir, SessionMetadata::default(), StoreLimits::default())
+                .unwrap();
+        let held = session.begin_blob().unwrap();
+        // Finish with active sink must fail rather than race.
+        let session2 = session.clone();
+        assert!(
+            std::thread::spawn(move || session2.finish())
+                .join()
+                .unwrap()
+                .is_err(),
+            "finalize must fail with active transactions"
+        );
+        drop(held);
+        assert_eq!(session.active_blobs(), 0);
+        session.shutdown();
+        assert!(session.begin_blob().is_err());
+        let mut flow = sample();
+        flow.id = "post-shutdown".into();
+        assert!(session.append_flow(&flow).is_err());
+        // New session for successful finish path.
+        let dir2 = c002_path("shutdown-ok");
+        let session_ok =
+            RecordingSession::create(&dir2, SessionMetadata::default(), StoreLimits::default())
+                .unwrap();
+        let mut flow = sample();
+        flow.id = "ok".into();
+        session_ok.append_flow(&flow).unwrap();
+        session_ok.shutdown();
+        let finalized = session_ok.finish().unwrap();
+        assert_eq!(finalized.manifest().flow_count, 1);
+        fs::remove_dir_all(dir).ok();
+        fs::remove_dir_all(dir2).ok();
     }
 }
