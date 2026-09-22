@@ -143,6 +143,31 @@ If the Stage-A run exposes any real Windows test failure, keep C006 open,
 document the failure in the implementation plan/registry as needed, fix only
 that defect, and repeat Stage A.
 
+### Stage A attempt 1 — result (kept open, defect fix follows)
+
+Run `35769424825` on SHA
+`b59dca11012d618909d34580986249a327fd5bfc` (cfg-hygiene fix):
+
+- `verify (ubuntu-latest, stable)`, `verify (ubuntu-latest, 1.89.0)`,
+  `verify (macos-latest, stable)`, and `dependency-boundary` passed.
+- `verify (windows-latest, stable)` passed fmt/check/Clippy (the original
+  C006 cfg defect is fixed) but failed
+  `cargo test --workspace --all-features --locked` in
+  `eggreplay-cli/tests/cli_contracts.rs`: 6 of 7 CLI contract tests failed
+  at `SessionWriter::finish` with
+  `Io(Os { code: 5, kind: PermissionDenied, message: "Access is denied." })`.
+- Root cause: `SessionWriter::finish` (and the same open-handle pattern in
+  `RecordingSession::finish`, `BodyWriter::finish`, and
+  `RecordingBodyWriter::finish`) renamed the staging directory/blob while
+  the flow-log, manifest, or staging file handle was still open. Unix
+  permits this; Windows denies it.
+- Fix (behavior-preserving, Unix-identical outcome): flush/sync, then close
+  the flow-log, manifest, and staging handles before any staging
+  remove/rename; hold the concurrent flow log as `Mutex<Option<File>>` so
+  finalization takes and closes it; drop test `BlobHandle`s before session
+  directory removal. No schema, fixture, redaction, replay, matcher, route,
+  CLI, or exit-code behavior changes.
+
 ## Expected Windows evidence
 
 At present the portable suites total 56 tests on Linux/macOS. Windows may have

@@ -101,7 +101,10 @@ pub struct Manifest {
 
 /// A streaming body sink owned by a session writer.
 pub struct BodyWriter {
-    file: File,
+    // `Option` so `finish` can close the staging file before the
+    // Windows-hostile rename/remove of an open file. Unix behavior is
+    // unchanged.
+    file: Option<File>,
     path: PathBuf,
     hasher: Sha256,
     length: u64,
@@ -120,14 +123,20 @@ impl Write for BodyWriter {
                 "body exceeds configured limit",
             ));
         }
-        self.file.write_all(buf)?;
+        self.file
+            .as_mut()
+            .ok_or_else(|| io::Error::other("body writer closed"))?
+            .write_all(buf)?;
         self.hasher.update(buf);
         self.length = next;
         Ok(buf.len())
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        self.file.flush()
+        self.file
+            .as_mut()
+            .ok_or_else(|| io::Error::other("body writer closed"))?
+            .flush()
     }
 }
 
@@ -145,7 +154,10 @@ impl BodyWriter {
     /// publish a transformed blob via a new writer or drop this writer
     /// (which cleans staging) on fail-closed errors.
     pub fn read_staging_bounded(&mut self, max_bytes: u64) -> Result<Vec<u8>, StoreError> {
-        self.file.flush()?;
+        self.file
+            .as_mut()
+            .ok_or_else(|| StoreError::Invalid("body writer closed".into()))?
+            .flush()?;
         if self.length > max_bytes {
             return Err(StoreError::Invalid(
                 "staged body exceeds structured redaction limit".into(),
@@ -161,13 +173,23 @@ impl BodyWriter {
     }
 
     /// Finish the stream, hash it, and atomically publish the content-addressed blob.
+    ///
+    /// The staging file is closed before any remove/rename because Windows
+    /// denies those operations on open files. Unix behavior is unchanged.
     pub fn finish(mut self) -> Result<eggreplay_core::BodyRef, StoreError> {
         // Take ownership of staging state so Drop (abort cleanup) becomes a
-        // no-op after successful publish; File is still closed via drop.
+        // no-op after successful publish; the file is closed explicitly
+        // below before any rename/remove.
         let path = std::mem::replace(&mut self.path, PathBuf::from("__finished__"));
         let hasher = std::mem::replace(&mut self.hasher, Sha256::new());
-        self.file.flush()?;
-        self.file.sync_all()?;
+        let file = self
+            .file
+            .take()
+            .ok_or_else(|| StoreError::Invalid("body writer closed".into()))?;
+        let mut file = file;
+        file.flush()?;
+        file.sync_all()?;
+        drop(file);
         if self.length == 0 {
             let _ = fs::remove_file(&path);
             return Ok(eggreplay_core::BodyRef::Empty);
@@ -266,7 +288,7 @@ impl SessionWriter {
             .write(true)
             .open(&path)?;
         Ok(BodyWriter {
-            file,
+            file: Some(file),
             path,
             hasher: Sha256::new(),
             length: 0,
@@ -319,6 +341,10 @@ impl SessionWriter {
     }
 
     /// Atomically publish the complete session directory.
+    ///
+    /// Windows cannot rename a directory that contains open files, so the
+    /// flow-log and manifest handles are flushed, synced, and closed
+    /// before the staging directory is renamed. Unix behavior is unchanged.
     pub fn finish(mut self) -> Result<Session, StoreError> {
         self.flows.flush()?;
         self.flows.sync_all()?;
@@ -329,16 +355,27 @@ impl SessionWriter {
             blob_count: count_blobs(&self.staging.join("blobs"))?,
         };
         let manifest_bytes = serde_json::to_vec_pretty(&manifest)?;
-        let mut manifest_file = OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(self.staging.join("manifest.json"))?;
-        set_private_permissions(&self.staging.join("manifest.json"))?;
-        manifest_file.write_all(&manifest_bytes)?;
-        manifest_file.write_all(b"\n")?;
-        manifest_file.sync_all()?;
-        fs::rename(&self.staging, &self.destination)?;
-        Session::open(&self.destination, self.limits)
+        {
+            let mut manifest_file = OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .open(self.staging.join("manifest.json"))?;
+            set_private_permissions(&self.staging.join("manifest.json"))?;
+            manifest_file.write_all(&manifest_bytes)?;
+            manifest_file.write_all(b"\n")?;
+            manifest_file.sync_all()?;
+        }
+        let Self {
+            destination,
+            staging,
+            flows,
+            metadata: _,
+            limits,
+            flow_count: _,
+        } = self;
+        drop(flows);
+        fs::rename(&staging, &destination)?;
+        Session::open(&destination, limits)
     }
 }
 
@@ -354,7 +391,10 @@ struct RecordingInner {
     staging: PathBuf,
     metadata: SessionMetadata,
     limits: StoreLimits,
-    flows: std::sync::Mutex<File>,
+    // `Option` so `finish` can close the flow log before the
+    // Windows-hostile staging rename. `None` is only observable during
+    // finalization, after which the session is consumed.
+    flows: std::sync::Mutex<Option<File>>,
     flow_count: AtomicUsize,
     total_bytes: AtomicU64,
     active_blobs: AtomicUsize,
@@ -456,6 +496,9 @@ impl RecordingBodyWriter {
     }
 
     /// Finish, publish the blob, and release the active reservation.
+    ///
+    /// The staging file is closed before any remove/rename because Windows
+    /// denies those operations on open files. Unix behavior is unchanged.
     pub fn finish(mut self) -> Result<eggreplay_core::BodyRef, StoreError> {
         let path = self.path.take().expect("body writer path");
         let mut file = self.file.take().expect("body writer file");
@@ -463,11 +506,14 @@ impl RecordingBodyWriter {
         let length = self.length;
         // `self` now holds None fields so Drop becomes a no-op (no double
         // release); explicit release below is the single accounting point.
-        // If any I/O below fails, still release and leave staging cleanup to
-        // Drop-less manual removal to avoid orphans.
+        if let Err(error) = file.flush().and_then(|()| file.sync_all()) {
+            drop(file);
+            let _ = fs::remove_file(&path);
+            self.session.active_blobs.fetch_sub(1, Ordering::SeqCst);
+            return Err(error.into());
+        }
+        drop(file);
         let result: Result<eggreplay_core::BodyRef, StoreError> = (|| {
-            file.flush()?;
-            file.sync_all()?;
             if length == 0 {
                 let _ = fs::remove_file(&path);
                 return Ok(eggreplay_core::BodyRef::Empty);
@@ -499,9 +545,11 @@ impl RecordingBodyWriter {
 impl Drop for RecordingBodyWriter {
     fn drop(&mut self) {
         // Abort path only: finish takes all Options leaving None, so this is
-        // a no-op after successful finish. On abort, remove staging and
-        // release the reservation.
+        // a no-op after successful finish. On abort, close the file before
+        // removing staging (Windows denies removing open files) and release
+        // the reservation.
         if let Some(path) = self.path.take() {
+            drop(self.file.take());
             let _ = fs::remove_file(path);
             self.session.active_blobs.fetch_sub(1, Ordering::SeqCst);
         }
@@ -546,7 +594,7 @@ impl RecordingSession {
                 staging,
                 metadata,
                 limits,
-                flows: std::sync::Mutex::new(flows),
+                flows: std::sync::Mutex::new(Some(flows)),
                 flow_count: AtomicUsize::new(0),
                 total_bytes: AtomicU64::new(0),
                 active_blobs: AtomicUsize::new(0),
@@ -645,6 +693,9 @@ impl RecordingSession {
             .flows
             .lock()
             .map_err(|_| StoreError::Invalid("flow log poisoned".into()))?;
+        let flows = flows
+            .as_mut()
+            .ok_or_else(|| StoreError::Invalid("session is finalizing".into()))?;
         if self.inner.flow_count.load(Ordering::SeqCst) >= self.inner.limits.max_flows {
             return Err(StoreError::Invalid(
                 "flow count exceeds configured limit".into(),
@@ -685,14 +736,23 @@ impl RecordingSession {
         // includes self + any task clones; if tasks still hold clones they
         // may still call begin_blob after our shutdown flag, which will fail.
         // Active blob count is authoritative, not Arc count.
-        let mut flows = self
-            .inner
-            .flows
-            .lock()
-            .map_err(|_| StoreError::Invalid("flow log poisoned".into()))?;
-        flows.flush()?;
-        flows.sync_all()?;
-        drop(flows);
+        // Close the flow log before the staging rename: Windows denies
+        // renaming a directory with open files while Unix permits it.
+        // The manifest handle is likewise scoped so it closes first.
+        let flows_file = {
+            let mut flows = self
+                .inner
+                .flows
+                .lock()
+                .map_err(|_| StoreError::Invalid("flow log poisoned".into()))?;
+            let mut flows_file = flows
+                .take()
+                .ok_or_else(|| StoreError::Invalid("session is already finalizing".into()))?;
+            flows_file.flush()?;
+            flows_file.sync_all()?;
+            flows_file
+        };
+        drop(flows_file);
         let flow_count = self.inner.flow_count.load(Ordering::SeqCst);
         let manifest = Manifest {
             metadata: self.inner.metadata.clone(),
@@ -701,14 +761,16 @@ impl RecordingSession {
             blob_count: count_blobs(&self.inner.staging.join("blobs"))?,
         };
         let manifest_bytes = serde_json::to_vec_pretty(&manifest)?;
-        let mut manifest_file = OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(self.inner.staging.join("manifest.json"))?;
-        set_private_permissions(&self.inner.staging.join("manifest.json"))?;
-        manifest_file.write_all(&manifest_bytes)?;
-        manifest_file.write_all(b"\n")?;
-        manifest_file.sync_all()?;
+        {
+            let mut manifest_file = OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .open(self.inner.staging.join("manifest.json"))?;
+            set_private_permissions(&self.inner.staging.join("manifest.json"))?;
+            manifest_file.write_all(&manifest_bytes)?;
+            manifest_file.write_all(b"\n")?;
+            manifest_file.sync_all()?;
+        }
         fs::rename(&self.inner.staging, &self.inner.destination)?;
         Session::open(&self.inner.destination, self.inner.limits)
     }
@@ -1201,6 +1263,9 @@ mod tests {
         // Oversized bound is rejected.
         let oversized = BlobRef::new(blob.sha256.clone(), u64::MAX).unwrap();
         assert!(session.open_blob(&oversized).is_err());
+        // Close the blob handle before removing the session directory:
+        // Windows denies removing files with open handles.
+        drop(handle);
         fs::remove_dir_all(destination).unwrap();
     }
 
