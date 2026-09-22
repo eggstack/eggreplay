@@ -1,6 +1,6 @@
 # M010 — Streaming Timing, Mid-Body Events, and SSE
 
-Status: blocked
+Status: ready
 Depends on: M009
 Roadmap stage: 6
 

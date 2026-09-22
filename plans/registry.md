@@ -37,8 +37,8 @@ basis for M009–M011.
 
 | ID | Plan | Status | Depends on | Primary result |
 |---|---|---|---|---|
-| M009 | `implementation/stateful/009-stateful-dynamic-replay.md` | **implemented** | C006 | record modes, scenarios, deterministic templates |
-| M010 | `implementation/streaming/010-streaming-timing-and-sse.md` | blocked | M009 | stream events, timing, SSE |
+| M009 | `implementation/stateful/009-stateful-dynamic-replay.md` | closed | C006 | record modes, scenarios, deterministic templates |
+| M010 | `implementation/streaming/010-streaming-timing-and-sse.md` | ready | M009 | stream events, timing, SSE |
 | M011 | `implementation/websocket/011-websocket-semantic-record-replay.md` | blocked | M010 | WebSocket semantic capture/replay |
 | M012 | `implementation/python/012-python-pytest-ecosystem.md` | blocked | M011 | PyO3 + pytest integration |
 | M013 | `implementation/interception/013-explicit-proxy-and-optional-mitm.md` | blocked | M012 | explicit proxy + opt-in HTTP/1.1 MITM |
