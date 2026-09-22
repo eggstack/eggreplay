@@ -27,11 +27,21 @@ qualification was superseded by the corrective workstream.
 | C003 | `implementation/corrective/c003-persistence-redaction-policy.md` | closed | historical M001–M008 baseline | v0.1 requalification |
 | C004 | `implementation/corrective/c004-cli-eggress-contracts.md` | closed | historical M001–M008 baseline | v0.1 requalification |
 | C005 | `implementation/corrective/c005-v0.1-requalification.md` | closed (local qualification artifact) | C001–C004 | superseded by hosted gate C006 |
-| C006 | `implementation/corrective/c006-windows-hosted-ci-qualification.md` | implemented (Stage A pushed; awaiting hosted green — not closed) | C001–C005 implementation baseline | **current v0.1 hosted release gate** |
+| C006 | `implementation/corrective/c006-windows-hosted-ci-qualification.md` | closed | C001–C005 implementation baseline | v0.1 hosted release gate (qualified) |
 
 ### Current release-gate state
 
-The v0.1 hosted release qualification gate is **open**.
+The v0.1 hosted release qualification gate is **closed**.
+
+Qualifying evidence: implementation SHA
+`9b9cc9552c8d1fdee8a64907a666ec2796c2f5d3`, GitHub Actions run
+`35774531684`
+(`https://github.com/eggstack/eggreplay/actions/runs/35774531684`) with
+`verify (ubuntu-latest, stable)`, `verify (ubuntu-latest, 1.89.0)`,
+`verify (macos-latest, stable)`, `verify (windows-latest, stable)`
+(55 Windows tests: Unix symlink-construction test cfg-excluded), and
+`dependency-boundary` all successful on that SHA. Closure record:
+`plans/closure/c006-windows-hosted-ci-qualification.md`.
 
 C005 produced the expanded 56-test qualification suite and local green
 evidence, but its own closure condition required the newly declared hosted
@@ -51,9 +61,10 @@ Linux stable, Linux Rust 1.89 MSRV, macOS stable, and
 `dependency-boundary` passed. Windows tests did not run because the Clippy
 step failed first.
 
-C006 is therefore the only active implementation plan. Do not begin M009–M014
-until C006 is closed unless the work is explicitly being done on a separate
-future-feature branch.
+C006 is closed, so no implementation plan is currently active. M009–M014
+remain deferred (no implementation plan documents exist yet); M009 is
+eligible for future planning as the next milestone now that the v0.1 hosted
+gate is closed.
 
 ## Canonical planning documents
 
