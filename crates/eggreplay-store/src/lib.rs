@@ -1057,6 +1057,9 @@ impl Session {
                     "blob directory may contain only regular files".into(),
                 ));
             }
+            if entry.file_name() == ".gitkeep" && entry.metadata()?.len() == 0 {
+                continue;
+            }
             let digest = entry
                 .file_name()
                 .into_string()
@@ -1278,6 +1281,9 @@ fn copy_blob_namespace(writer: &mut SessionWriter, source: &Session) -> Result<(
             return Err(StoreError::Invalid(
                 "blob directory may contain only regular files".into(),
             ));
+        }
+        if entry.file_name() == ".gitkeep" && entry.metadata()?.len() == 0 {
+            continue;
         }
         let digest = entry
             .file_name()
@@ -1612,6 +1618,9 @@ fn flow_body_bytes(flow: &Flow) -> u64 {
 fn count_blobs(root: &Path) -> Result<usize, StoreError> {
     Ok(fs::read_dir(root)?
         .filter_map(Result::ok)
+        // Git cannot preserve an empty directory. Checked-in empty-session
+        // fixtures carry this marker so their required blobs directory exists.
+        .filter(|entry| entry.file_name() != ".gitkeep")
         .filter(|entry| entry.file_type().map(|ty| ty.is_file()).unwrap_or(false))
         .count())
 }
