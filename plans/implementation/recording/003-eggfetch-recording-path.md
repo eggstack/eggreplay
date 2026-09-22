@@ -1,6 +1,6 @@
 # M003 — EggFetch Recording Path
 
-Status: ready
+Status: closed
 Depends on: M002
 Release gate: v0.1
 
