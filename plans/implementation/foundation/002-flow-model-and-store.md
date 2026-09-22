@@ -1,6 +1,6 @@
 # M002 — Canonical Flow Model and .eggr Store
 
-Status: ready
+Status: closed
 Depends on: M001
 Release gate: foundation
 
