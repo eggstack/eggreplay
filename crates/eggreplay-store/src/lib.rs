@@ -298,6 +298,77 @@ impl SessionWriter {
     }
 }
 
+/// An opened, validated handle to one content-addressed blob.
+///
+/// The handle owns an already-opened read-only file plus the validated
+/// digest/length metadata. It never buffers the full blob: callers stream
+/// from the file in bounded chunks. Digest form, byte bound, symlink
+/// rejection, and exact file-length checks happen at open time; full
+/// content-hash verification must happen incrementally while streaming
+/// (see [`Session::open_blob`]).
+#[derive(Debug)]
+pub struct BlobHandle {
+    file: File,
+    sha256: String,
+    length: u64,
+}
+
+impl BlobHandle {
+    /// Return the validated SHA-256 digest.
+    pub fn sha256(&self) -> &str {
+        &self.sha256
+    }
+
+    /// Return the validated exact byte length.
+    pub fn len(&self) -> u64 {
+        self.length
+    }
+
+    /// Return whether the referenced body is zero-length.
+    pub fn is_empty(&self) -> bool {
+        self.length == 0
+    }
+
+    /// Consume the handle and return the opened file for streaming.
+    ///
+    /// `eggreplay-http` adapts this std file into Tokio async IO. The file
+    /// offset is at the start; callers must stream to the declared length
+    /// and verify the SHA-256 incrementally.
+    pub fn into_file(self) -> File {
+        self.file
+    }
+
+    /// Read the whole blob into memory with the session byte bound.
+    ///
+    /// This is a convenience for small deterministic tests and CLI
+    /// inspection paths with explicit bounds. Streaming replay must not use
+    /// it for selected large responses.
+    pub fn read_all(&mut self) -> Result<Vec<u8>, StoreError> {
+        use std::io::Seek;
+        self.file
+            .seek(std::io::SeekFrom::Start(0))
+            .map_err(StoreError::Io)?;
+        let mut hasher = Sha256::new();
+        let mut bytes = Vec::with_capacity(self.length.min(1024 * 1024) as usize);
+        let mut buf = [0u8; 64 * 1024];
+        loop {
+            let read = self.file.read(&mut buf).map_err(StoreError::Io)?;
+            if read == 0 {
+                break;
+            }
+            hasher.update(&buf[..read]);
+            if bytes.len() as u64 + read as u64 > self.length {
+                return Err(StoreError::Integrity(self.sha256.clone()));
+            }
+            bytes.extend_from_slice(&buf[..read]);
+        }
+        if bytes.len() as u64 != self.length || format!("{:x}", hasher.finalize()) != self.sha256 {
+            return Err(StoreError::Integrity(self.sha256.clone()));
+        }
+        Ok(bytes)
+    }
+}
+
 /// An opened and validated `.eggr` session.
 #[derive(Debug, Clone)]
 pub struct Session {
@@ -390,6 +461,45 @@ impl Session {
             return Err(StoreError::Integrity(blob.sha256.clone()));
         }
         Ok(bytes)
+    }
+
+    /// Open one blob for bounded streaming without allocating its bytes.
+    ///
+    /// Validates digest form, the configured byte bound, symlink rejection,
+    /// and exact file length, then returns an already-opened file. The full
+    /// content hash is intentionally not re-read here so fixture-wide loads
+    /// stay metadata-bounded; the streaming caller must hash incrementally
+    /// and treat any length/hash mismatch as [`StoreError::Integrity`].
+    ///
+    /// Fixture immutability/TOCTOU contract: a session directory must be
+    /// treated as immutable while any [`Session`] or [`BlobHandle`] is open.
+    /// If blobs are replaced between [`Session::open`] and streaming, the
+    /// open-time length check or the incremental hash check fails instead of
+    /// silently serving replaced bytes. Unselected blobs are never opened.
+    pub fn open_blob(&self, blob: &BlobRef) -> Result<BlobHandle, StoreError> {
+        validate_digest(&blob.sha256)?;
+        if blob.length > self.limits.max_blob_bytes {
+            return Err(StoreError::Invalid("blob exceeds configured limit".into()));
+        }
+        let blob_path = self.root.join("blobs").join(&blob.sha256);
+        if fs::symlink_metadata(&blob_path)?.file_type().is_symlink() {
+            return Err(StoreError::Invalid("symlinked blob is not allowed".into()));
+        }
+        let file = File::open(&blob_path)?;
+        let actual_len = file.metadata()?.len();
+        if actual_len != blob.length {
+            return Err(StoreError::Integrity(blob.sha256.clone()));
+        }
+        Ok(BlobHandle {
+            file,
+            sha256: blob.sha256.clone(),
+            length: blob.length,
+        })
+    }
+
+    /// Return the configured validation limits for this session.
+    pub fn limits(&self) -> StoreLimits {
+        self.limits
     }
 }
 
@@ -629,6 +739,98 @@ mod tests {
             _ => unreachable!(),
         };
         assert_eq!(session.read_blob(blob).unwrap(), b"hello");
+        fs::remove_dir_all(destination).unwrap();
+    }
+
+    #[test]
+    fn open_blob_validates_without_allocating_full_body() {
+        let destination = path("open-blob");
+        let mut writer = SessionWriter::create(
+            &destination,
+            SessionMetadata::default(),
+            StoreLimits::default(),
+        )
+        .unwrap();
+        let payload = vec![0xABu8; 256 * 1024];
+        let mut body = writer.begin_blob().unwrap();
+        body.write_all(&payload).unwrap();
+        let reference = body.finish().unwrap();
+        let mut flow = sample();
+        flow.request.body = reference;
+        writer.append_flow(&flow).unwrap();
+        let session = writer.finish().unwrap();
+        let blob = match &flow.request.body {
+            BodyRef::Blob(blob) => blob.clone(),
+            _ => unreachable!(),
+        };
+        // Open validates digest form, bound, symlink, and length without
+        // allocating the full blob.
+        let mut handle = session.open_blob(&blob).unwrap();
+        assert_eq!(handle.len(), payload.len() as u64);
+        assert_eq!(handle.sha256(), blob.sha256);
+        assert!(!handle.is_empty());
+        // Bounded chunked read preserves exact bytes with integrity check.
+        let all = handle.read_all().unwrap();
+        assert_eq!(all, payload);
+        // Invalid digest form is rejected like ordinary validation.
+        let mut bad = blob.clone();
+        bad.sha256 = "not-hex".into();
+        assert!(session.open_blob(&bad).is_err());
+        // Oversized bound is rejected.
+        let oversized = BlobRef::new(blob.sha256.clone(), u64::MAX).unwrap();
+        assert!(session.open_blob(&oversized).is_err());
+        fs::remove_dir_all(destination).unwrap();
+    }
+
+    #[test]
+    fn open_blob_rejects_symlinked_blob() {
+        let destination = path("symlink-blob");
+        let mut writer = SessionWriter::create(
+            &destination,
+            SessionMetadata::default(),
+            StoreLimits::default(),
+        )
+        .unwrap();
+        let mut body = writer.begin_blob().unwrap();
+        body.write_all(b"secret").unwrap();
+        let reference = body.finish().unwrap();
+        let mut flow = sample();
+        flow.request.body = reference.clone();
+        writer.append_flow(&flow).unwrap();
+        let session = writer.finish().unwrap();
+        let blob = match &reference {
+            BodyRef::Blob(blob) => blob.clone(),
+            _ => unreachable!(),
+        };
+        let blob_path = destination.join("blobs").join(&blob.sha256);
+        let target = std::env::temp_dir().join(format!(
+            "eggreplay-symlink-target-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(&target, b"secret").unwrap();
+        let backup = blob_path.with_extension("bak");
+        std::fs::rename(&blob_path, &backup).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&target, &blob_path).unwrap();
+        #[cfg(unix)]
+        {
+            let result = session.open_blob(&blob);
+            assert!(result.is_err(), "symlinked blob must be rejected");
+        }
+        #[cfg(unix)]
+        {
+            std::fs::remove_file(&blob_path).unwrap();
+            std::fs::rename(&backup, &blob_path).unwrap();
+            std::fs::remove_file(&target).unwrap();
+        }
+        #[cfg(not(unix))]
+        {
+            std::fs::rename(&backup, &blob_path).unwrap();
+            std::fs::remove_file(&target).unwrap();
+        }
         fs::remove_dir_all(destination).unwrap();
     }
 }

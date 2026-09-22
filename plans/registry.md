@@ -21,7 +21,7 @@ M001–M008 remain closed as historical execution records. A post-closure audit 
 
 | ID | Plan | Status | Depends on | Corrective gate |
 |---|---|---|---|---|
-| C001 | `implementation/corrective/c001-lazy-replay-streaming.md` | ready | historical M001–M008 baseline | v0.1 requalification |
+| C001 | `implementation/corrective/c001-lazy-replay-streaming.md` | closed | historical M001–M008 baseline | v0.1 requalification |
 | C002 | `implementation/corrective/c002-concurrent-recording-session.md` | ready | historical M001–M008 baseline | v0.1 requalification |
 | C003 | `implementation/corrective/c003-persistence-redaction-policy.md` | ready | historical M001–M008 baseline | v0.1 requalification |
 | C004 | `implementation/corrective/c004-cli-eggress-contracts.md` | ready | historical M001–M008 baseline | v0.1 requalification |

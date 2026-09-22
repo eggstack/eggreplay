@@ -17,8 +17,8 @@ pub use flow::{
     PhysicalRoute, Provenance, QueryPair, RedactionMarker, SessionMetadata, Trailers,
 };
 pub use matching::{
-    BodyMatchMode, ConsumptionMode, MatchCandidate, MatchDimension, MatchResult, Matcher,
-    MatcherSession, NearMiss, NormalizedRequest,
+    BodyMatchMode, CandidateBody, ConsumptionMode, MatchCandidate, MatchDimension, MatchResult,
+    Matcher, MatcherSession, NearMiss, NormalizedRequest,
 };
 pub use report::{
     DiffFinding, DiffKind, RegressionReport, ReportScheduler, TimingAssertion, compare_flows,

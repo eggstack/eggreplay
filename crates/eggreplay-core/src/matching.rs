@@ -44,19 +44,102 @@ pub struct NormalizedRequest {
     pub headers: BTreeMap<String, Vec<String>>,
 }
 
-/// A candidate flow plus its materialized request body.
+/// Semantic request-body descriptor for a match candidate.
+///
+/// `eggreplay-core` stays filesystem-free: digest metadata comes from the
+/// flow's [`crate::BodyRef`] without opening any blob. `Inline` exists for
+/// tests and for the narrowed body a semantic mode explicitly requests via a
+/// loader; fixture-wide loads must use [`CandidateBody::from_body_ref`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CandidateBody {
+    /// No body was present or permitted.
+    Absent,
+    /// A zero-byte body was present.
+    Empty,
+    /// Content-addressed stored bytes described without materialization.
+    Digest {
+        /// Lowercase hex SHA-256.
+        sha256: String,
+        /// Exact byte length.
+        length: u64,
+    },
+    /// Explicitly materialized bytes for a narrowed candidate.
+    Inline(Vec<u8>),
+}
+
+impl CandidateBody {
+    /// Build a metadata-bounded descriptor from a flow body reference.
+    ///
+    /// Never reads blob bytes. `Absent`/`Empty` stay zero-allocation;
+    /// `Blob` becomes `Digest` metadata.
+    pub fn from_body_ref(body: &crate::BodyRef) -> Self {
+        match body {
+            crate::BodyRef::Absent => Self::Absent,
+            crate::BodyRef::Empty => Self::Empty,
+            crate::BodyRef::Blob(blob) => Self::Digest {
+                sha256: blob.sha256.clone(),
+                length: blob.length,
+            },
+        }
+    }
+
+    /// Return the declared length when known without I/O.
+    #[allow(clippy::len_without_is_empty)]
+    pub const fn len(&self) -> Option<u64> {
+        match self {
+            Self::Absent => None,
+            Self::Empty => Some(0),
+            Self::Digest { length, .. } => Some(*length),
+            Self::Inline(bytes) => Some(bytes.len() as u64),
+        }
+    }
+}
+
+/// A candidate flow plus its request-body descriptor.
 #[derive(Debug, Clone)]
 pub struct MatchCandidate {
     /// Original flow record.
     pub flow: Flow,
-    /// Request body bytes, loaded by the store layer.
+    /// Request body descriptor; fixture loads must not materialize blobs.
+    pub body: CandidateBody,
+    /// Legacy materialized request bytes, kept for API compatibility.
+    ///
+    /// Prefer [`MatchCandidate::body`]. This field mirrors `Inline` bytes
+    /// when constructed via [`MatchCandidate::new`]; it is empty for lazy
+    /// descriptors.
     pub request_body: Vec<u8>,
 }
 
 impl MatchCandidate {
-    /// Construct a candidate.
+    /// Construct a candidate with explicitly materialized bytes.
+    ///
+    /// Maps to [`CandidateBody::Inline`]; tests and narrowed semantic-mode
+    /// loaders use this. Fixture-wide replay loads must use
+    /// [`MatchCandidate::from_flow`] instead.
     pub fn new(flow: Flow, request_body: Vec<u8>) -> Self {
-        Self { flow, request_body }
+        let body = CandidateBody::Inline(request_body.clone());
+        Self {
+            flow,
+            body,
+            request_body,
+        }
+    }
+
+    /// Construct a lazy candidate without reading any blob bytes.
+    ///
+    /// The descriptor is derived from `flow.request.body` metadata only.
+    pub fn from_flow(flow: Flow) -> Self {
+        let body = CandidateBody::from_body_ref(&flow.request.body);
+        Self {
+            flow,
+            body,
+            request_body: Vec::new(),
+        }
+    }
+
+    /// Return the descriptor used for matching.
+    pub fn candidate_body(&self) -> &CandidateBody {
+        &self.body
     }
 }
 
@@ -187,6 +270,12 @@ impl Matcher {
     }
 
     /// Select one candidate in stable input order.
+    ///
+    /// Lazy descriptors (`Digest`) are compared via length + SHA-256 for
+    /// `ExactBytes`/`ExactText` without materialization. `SemanticJson`
+    /// candidates backed by `Digest` require a loader and are treated as a
+    /// body mismatch when no loader is supplied; use
+    /// [`Self::select_with_loader`] for the narrowing-load path.
     pub fn select(
         &self,
         actual: &HttpRequest,
@@ -195,20 +284,75 @@ impl Matcher {
         mode: ConsumptionMode,
         session: &mut MatcherSession,
     ) -> MatchResult {
+        let mut no_loader = |_: usize, _: &MatchCandidate| -> Option<Vec<u8>> { None };
+        self.select_with_loader(
+            actual,
+            actual_body,
+            candidates,
+            mode,
+            session,
+            &mut no_loader,
+        )
+    }
+
+    /// Select with an explicit lazy body loader for higher-cost modes.
+    ///
+    /// The loader is invoked at most once per otherwise-matching candidate
+    /// that needs materialization (currently only `SemanticJson` with a
+    /// `Digest` descriptor). Candidates that already differ on method,
+    /// authority, path, query, or headers never trigger a load, so
+    /// fixture-wide request bodies stay metadata-bounded. The HTTP/store
+    /// adapter owns the loader and its bound; core stays filesystem-free.
+    pub fn select_with_loader(
+        &self,
+        actual: &HttpRequest,
+        actual_body: &[u8],
+        candidates: &[MatchCandidate],
+        mode: ConsumptionMode,
+        session: &mut MatcherSession,
+        loader: &mut dyn FnMut(usize, &MatchCandidate) -> Option<Vec<u8>>,
+    ) -> MatchResult {
+        use sha2::{Digest as ShaDigest, Sha256};
         let actual_normalized = self.normalize(actual);
+        let mut hasher = Sha256::new();
+        hasher.update(actual_body);
+        let actual_digest = format!("{:x}", hasher.finalize());
+        let actual_len = actual_body.len() as u64;
         let mut near = Vec::new();
         let mut matching_consumed = false;
         for (index, candidate) in candidates.iter().enumerate() {
-            let (mut dimensions, body_match) = self.differences(
-                &actual_normalized,
-                actual_body,
-                &candidate.flow.request,
-                &candidate.request_body,
-            );
+            let expected_normalized = self.normalize(&candidate.flow.request);
+            let mut dimensions = Vec::new();
+            if actual_normalized.scheme != expected_normalized.scheme
+                || actual_normalized.authority != expected_normalized.authority
+            {
+                dimensions.push(MatchDimension::Authority);
+            }
+            if actual_normalized.path != expected_normalized.path {
+                dimensions.push(MatchDimension::Path);
+            }
+            if actual_normalized.query != expected_normalized.query {
+                dimensions.push(MatchDimension::Query);
+            }
+            if actual_normalized.headers != expected_normalized.headers {
+                dimensions.push(MatchDimension::Headers);
+            }
             if actual.method != candidate.flow.request.method {
                 dimensions.push(MatchDimension::Method);
             }
-            if dimensions.is_empty() && body_match {
+            let narrowed = dimensions.is_empty();
+            let body_match = self.body_matches_lazy(
+                actual_body,
+                &actual_digest,
+                actual_len,
+                &candidate.body,
+                &candidate.request_body,
+                narrowed,
+                index,
+                candidate,
+                loader,
+            );
+            if narrowed && body_match {
                 if session.is_available(index, mode) {
                     session.consume(index, mode);
                     return MatchResult::Matched(index);
@@ -237,36 +381,57 @@ impl Matcher {
         }
     }
 
-    fn differences(
+    #[allow(clippy::too_many_arguments)]
+    fn body_matches_lazy(
         &self,
-        actual: &NormalizedRequest,
-        body: &[u8],
-        expected: &HttpRequest,
-        expected_body: &[u8],
-    ) -> (Vec<MatchDimension>, bool) {
-        let expected = self.normalize(expected);
-        let mut dimensions = Vec::new();
-        if actual.scheme != expected.scheme || actual.authority != expected.authority {
-            dimensions.push(MatchDimension::Authority);
-        }
-        if actual.path != expected.path {
-            dimensions.push(MatchDimension::Path);
-        }
-        if actual.query != expected.query {
-            dimensions.push(MatchDimension::Query);
-        }
-        if actual.headers != expected.headers {
-            dimensions.push(MatchDimension::Headers);
-        }
-        if body_match(
-            self.body_mode,
-            body,
-            expected_body,
-            &self.ignored_json_paths,
-        ) {
-            (dimensions, true)
-        } else {
-            (dimensions, false)
+        actual_body: &[u8],
+        actual_digest: &str,
+        actual_len: u64,
+        descriptor: &CandidateBody,
+        legacy_inline: &[u8],
+        narrowed: bool,
+        index: usize,
+        candidate: &MatchCandidate,
+        loader: &mut dyn FnMut(usize, &MatchCandidate) -> Option<Vec<u8>>,
+    ) -> bool {
+        match descriptor {
+            CandidateBody::Absent | CandidateBody::Empty => actual_body.is_empty(),
+            CandidateBody::Digest { sha256, length } => match self.body_mode {
+                BodyMatchMode::ExactBytes => actual_len == *length && actual_digest == sha256,
+                BodyMatchMode::ExactText => {
+                    actual_len == *length
+                        && actual_digest == sha256
+                        && std::str::from_utf8(actual_body).is_ok()
+                }
+                BodyMatchMode::SemanticJson => {
+                    if !narrowed {
+                        return false;
+                    }
+                    match loader(index, candidate) {
+                        Some(expected) => body_match(
+                            self.body_mode,
+                            actual_body,
+                            &expected,
+                            &self.ignored_json_paths,
+                        ),
+                        None => false,
+                    }
+                }
+            },
+            CandidateBody::Inline(expected) => {
+                let bytes = if expected.is_empty() && !legacy_inline.is_empty() {
+                    legacy_inline
+                } else if !expected.is_empty() {
+                    expected
+                } else {
+                    legacy_inline
+                };
+                // `new(flow, bytes)` stores the same bytes in both places;
+                // `from_flow` leaves both empty for Absent/Empty which is
+                // handled above via the descriptor, so Inline always uses the
+                // non-empty side when they disagree.
+                body_match(self.body_mode, actual_body, bytes, &self.ignored_json_paths)
+            }
         }
     }
 }
@@ -486,5 +651,124 @@ mod tests {
             &mut MatcherSession::new(),
         );
         assert!(matches!(result, MatchResult::NoMatch { near_misses } if near_misses.len() == 1));
+    }
+
+    fn digest_candidate(method: &str, path: &str, body: &[u8]) -> MatchCandidate {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(body);
+        let digest = format!("{:x}", hasher.finalize());
+        let blob = crate::BlobRef::new(digest, body.len() as u64).unwrap();
+        let mut flow = candidate(method, path, b"").flow.clone();
+        flow.request.body = BodyRef::Blob(blob);
+        MatchCandidate::from_flow(flow)
+    }
+
+    #[test]
+    fn exact_matching_uses_digest_length_without_materialization() {
+        let payload = b"exact-payload-123";
+        let cand = digest_candidate("POST", "/digest", payload);
+        assert!(matches!(cand.body, CandidateBody::Digest { .. }));
+        let request = cand.flow.request.clone();
+        let matcher = Matcher::strict(4);
+        let mut loader_calls = 0;
+        let mut loader = |_: usize, _: &MatchCandidate| -> Option<Vec<u8>> {
+            loader_calls += 1;
+            None
+        };
+        assert_eq!(
+            matcher.select_with_loader(
+                &request,
+                payload,
+                std::slice::from_ref(&cand),
+                ConsumptionMode::Unlimited,
+                &mut MatcherSession::new(),
+                &mut loader
+            ),
+            MatchResult::Matched(0)
+        );
+        assert_eq!(loader_calls, 0, "exact bytes must not materialize");
+        // Length mismatch must not match even with identical prefix.
+        assert!(matches!(
+            matcher.select(
+                &request,
+                b"exact-payload-12",
+                std::slice::from_ref(&cand),
+                ConsumptionMode::Unlimited,
+                &mut MatcherSession::new()
+            ),
+            MatchResult::NoMatch { .. }
+        ));
+        // Absent/empty stay zero-allocation and match only empty actual.
+        let empty_flow = candidate("GET", "/empty", b"").flow.clone();
+        let empty_candidate = MatchCandidate::from_flow(empty_flow);
+        assert!(matches!(empty_candidate.body, CandidateBody::Empty));
+        let req = empty_candidate.flow.request.clone();
+        assert_eq!(
+            matcher.select(
+                &req,
+                b"",
+                std::slice::from_ref(&empty_candidate),
+                ConsumptionMode::Unlimited,
+                &mut MatcherSession::new()
+            ),
+            MatchResult::Matched(0)
+        );
+    }
+
+    #[test]
+    fn semantic_json_materializes_only_narrowed_candidates() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let mut matcher = Matcher::new(MatcherProfile::Practical, BodyMatchMode::SemanticJson, 8);
+        matcher.ignore_json_path("/volatile");
+        // Two candidates: first differs on path (never narrowed), second
+        // matches on all non-body dimensions (narrowed).
+        let mut far_body = br#"{"a":1,"volatile":"old"}"#.to_vec();
+        let mut near_body = br#"{"a":1,"volatile":"old"}"#.to_vec();
+        let _ = (&mut far_body, &mut near_body);
+        let far = {
+            let mut flow = candidate("POST", "/far", b"").flow.clone();
+            flow.request.body = {
+                use sha2::{Digest, Sha256};
+                let mut h = Sha256::new();
+                h.update(br#"{"a":1,"volatile":"old"}"#);
+                BodyRef::Blob(crate::BlobRef::new(format!("{:x}", h.finalize()), 24).unwrap())
+            };
+            MatchCandidate::from_flow(flow)
+        };
+        let near = {
+            // Build a Digest descriptor with correct length for the JSON.
+            let raw = br#"{"a":1,"volatile":"old"}"#;
+            use sha2::{Digest, Sha256};
+            let mut h = Sha256::new();
+            h.update(raw);
+            let mut flow = candidate("POST", "/json", b"").flow.clone();
+            flow.request.body = BodyRef::Blob(
+                crate::BlobRef::new(format!("{:x}", h.finalize()), raw.len() as u64).unwrap(),
+            );
+            MatchCandidate::from_flow(flow)
+        };
+        let candidates = vec![far, near];
+        let mut actual = candidates[1].flow.request.clone();
+        actual.method = "POST".into();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let calls_clone = calls.clone();
+        let expected_bytes = br#"{"a":1,"volatile":"old"}"#.to_vec();
+        let mut loader = move |index: usize, _: &MatchCandidate| -> Option<Vec<u8>> {
+            calls_clone.fetch_add(1, Ordering::SeqCst);
+            assert_eq!(index, 1, "only the narrowed candidate may load");
+            Some(expected_bytes.clone())
+        };
+        let result = matcher.select_with_loader(
+            &actual,
+            br#"{"a":1,"volatile":"new"}"#,
+            &candidates,
+            ConsumptionMode::Unlimited,
+            &mut MatcherSession::new(),
+            &mut loader,
+        );
+        assert_eq!(result, MatchResult::Matched(1));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 }
