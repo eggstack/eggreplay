@@ -7,13 +7,18 @@ EggServe. Optional outbound routing is delegated to Eggress.
 
 ## Status
 
-v0.1 is closed via the corrective workstream (`C001`–`C005`) in
-[`plans/registry.md`](plans/registry.md); see
-[`plans/closure/v0.1-corrective-closure.md`](plans/closure/v0.1-corrective-closure.md)
-which supersedes the original foundation qualification. The core and store
-remain usable without a network runtime. Supported transport is direct
-HTTP/1.1 acquisition and EggServe inbound HTTP/1.1 replay with optional
-listener-free Eggress routing; H2/H3 remain deferred (see `docs/non-goals.md`).
+v0.1 is fully qualified through the corrective workstream (`C001`–`C006`).
+The hosted release gate passed Linux stable, Linux Rust 1.89 MSRV, macOS stable,
+Windows stable, and the dependency-boundary lane; see
+[`plans/closure/c006-windows-hosted-ci-qualification.md`](plans/closure/c006-windows-hosted-ci-qualification.md).
+
+Forward roadmap implementation plans M009–M014 are now registered. M009
+(stateful/dynamic replay) is the only dependency-ready next milestone.
+
+The core and store remain usable without a network runtime. Supported transport
+for v0.1 is direct HTTP/1.1 acquisition and EggServe inbound HTTP/1.1 replay
+with optional listener-free Eggress routing; H2/H3 remain outside the v0.1
+support claim.
 
 ## Quickstart routes
 
@@ -24,11 +29,10 @@ eggreplay test --fixture demo.eggr --target http://127.0.0.1:9000 --route socks5
 ```
 
 `direct` is the default; non-direct values use listener-free Eggress routing
-via the `pproxy-compat` grammar only (see `docs/eggress-routing.md` and
-`docs/cli.md` for exit codes and JSON/JUnit contracts).
+via the `pproxy-compat` grammar only.
 
 ## Development
 
-Rust 1.89 is the minimum supported version. Run the fast verification command
-from [`AGENTS.md`](AGENTS.md) before submitting changes. See
-[`CONTRIBUTING.md`](CONTRIBUTING.md) for plan closure and evidence rules.
+Rust 1.89 is the minimum supported version. Run the verification command from
+[`AGENTS.md`](AGENTS.md) before submitting changes. See
+[`plans/registry.md`](plans/registry.md) for the current execution gate.

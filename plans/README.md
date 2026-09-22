@@ -2,7 +2,8 @@
 
 This directory is the source of truth for EggReplay implementation handoff.
 
-EggReplay is a Rust-native semantic HTTP interaction recording, replay, mocking, and network-regression system. Its core must remain useful without TLS interception. The project reuses Eggstack transport authorities rather than reimplementing them:
+EggReplay reuses Eggstack transport authorities rather than reimplementing
+them:
 
 - **eggfetch** owns outbound HTTP/TLS, pooling, streaming bodies, trailers, and network failures.
 - **eggserve** owns inbound HTTP serving/runtime mechanics for replay and mock endpoints.
@@ -11,29 +12,35 @@ EggReplay is a Rust-native semantic HTTP interaction recording, replay, mocking,
 
 ## Planning convention
 
-The planning layout mirrors the conventions used across CodeGG/Eggstack work:
-
-- numbered canonical plans at the root of `plans/`;
+- canonical roadmap/qualification documents at the root of `plans/`;
 - subsystem roadmaps in `plans/subsystems/`;
-- bounded, agent-ready implementation plans in `plans/implementation/<workstream>/`;
+- bounded implementation plans in `plans/implementation/<workstream>/`;
 - architectural decisions in `plans/adrs/`;
 - completion evidence in `plans/closure/`;
 - historical superseded material in `plans/archive/`;
-- `plans/registry.md` is the compact execution/status index.
+- `plans/registry.md` is the execution/status index.
 
-Plans are retained as audit artifacts after implementation. A plan is not complete merely because code exists: its acceptance criteria and required evidence must be satisfied and the registry updated with the implementation/closure commit.
+Plans remain audit artifacts after implementation. Source presence alone never
+closes a plan.
 
 ## Status vocabulary
 
 - **ready** — dependencies satisfied; safe to hand off.
 - **blocked** — dependency or decision gate not satisfied.
 - **active** — implementation in progress.
-- **implemented** — implementation exists but closure evidence is not yet complete.
+- **implemented** — implementation exists but closure evidence is incomplete.
 - **closed** — acceptance criteria and closure evidence are complete.
-- **deferred** — intentionally outside the current execution horizon.
+- **deferred** — intentionally outside the execution horizon.
 
-## Execution rule
+## Current execution
 
-Execute milestones in dependency order. Do not start a blocked milestone by silently duplicating a dependency-owned subsystem. If current repository evidence invalidates a plan assumption, stop that milestone, document the discrepancy, and update the plan/registry before continuing.
+v0.1 and C001–C006 are closed. ADR 0005 defines the versioned extension
+strategy for future fixture semantics.
 
-The first dependency-ready implementation milestone is **M001**. See `registry.md` and `002-long-term-roadmap.md`.
+The first dependency-ready forward milestone is **M009 — Stateful and Dynamic
+Replay**. M010–M014 are planned but blocked in dependency order. See
+`registry.md` for the exact handoff state.
+
+Do not start a blocked milestone by duplicating a dependency-owned subsystem.
+If current repository evidence invalidates a plan assumption, update the plan
+and registry before implementation.

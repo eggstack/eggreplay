@@ -15,56 +15,42 @@ Status source of truth for implementation handoff.
 | M007 | `implementation/integration/007-eggress-routing-and-cli.md` | closed | M003, M004, M006 | v0.1 |
 | M008 | `implementation/security/008-v0.1-hardening-and-qualification.md` | closed (historical) | M001–M007 | v0.1 foundation closure |
 
-M001–M008 remain historical execution records. The original foundation
-qualification was superseded by the corrective workstream.
+## Corrective v0.1 workstream
 
-## Corrective workstream
-
-| ID | Plan | Status | Depends on | Corrective gate |
+| ID | Plan | Status | Depends on | Gate |
 |---|---|---|---|---|
-| C001 | `implementation/corrective/c001-lazy-replay-streaming.md` | closed | historical M001–M008 baseline | v0.1 requalification |
-| C002 | `implementation/corrective/c002-concurrent-recording-session.md` | closed | historical M001–M008 baseline | v0.1 requalification |
-| C003 | `implementation/corrective/c003-persistence-redaction-policy.md` | closed | historical M001–M008 baseline | v0.1 requalification |
-| C004 | `implementation/corrective/c004-cli-eggress-contracts.md` | closed | historical M001–M008 baseline | v0.1 requalification |
-| C005 | `implementation/corrective/c005-v0.1-requalification.md` | closed (local qualification artifact) | C001–C004 | superseded by hosted gate C006 |
-| C006 | `implementation/corrective/c006-windows-hosted-ci-qualification.md` | closed | C001–C005 implementation baseline | v0.1 hosted release gate (qualified) |
+| C001 | `implementation/corrective/c001-lazy-replay-streaming.md` | closed | M001–M008 baseline | v0.1 requalification |
+| C002 | `implementation/corrective/c002-concurrent-recording-session.md` | closed | M001–M008 baseline | v0.1 requalification |
+| C003 | `implementation/corrective/c003-persistence-redaction-policy.md` | closed | M001–M008 baseline | v0.1 requalification |
+| C004 | `implementation/corrective/c004-cli-eggress-contracts.md` | closed | M001–M008 baseline | v0.1 requalification |
+| C005 | `implementation/corrective/c005-v0.1-requalification.md` | closed | C001–C004 | local qualification |
+| C006 | `implementation/corrective/c006-windows-hosted-ci-qualification.md` | closed | C001–C005 | v0.1 hosted qualification |
 
-### Current release-gate state
+v0.1 hosted qualification is closed. Qualifying implementation:
+`9b9cc9552c8d1fdee8a64907a666ec2796c2f5d3`, Actions run
+`35774531684`. The docs-only C006 closure head also passed the full matrix.
 
-The v0.1 hosted release qualification gate is **closed**.
+## Forward implementation queue
 
-Qualifying evidence: implementation SHA
-`9b9cc9552c8d1fdee8a64907a666ec2796c2f5d3`, GitHub Actions run
-`35774531684`
-(`https://github.com/eggstack/eggreplay/actions/runs/35774531684`) with
-`verify (ubuntu-latest, stable)`, `verify (ubuntu-latest, 1.89.0)`,
-`verify (macos-latest, stable)`, `verify (windows-latest, stable)`
-(55 Windows tests: Unix symlink-construction test cfg-excluded), and
-`dependency-boundary` all successful on that SHA. Closure record:
-`plans/closure/c006-windows-hosted-ci-qualification.md`.
+ADR 0005 (`adrs/0005-versioned-session-extensions.md`) is the architecture
+basis for M009–M011.
 
-C005 produced the expanded 56-test qualification suite and local green
-evidence, but its own closure condition required the newly declared hosted
-platform matrix to pass. The first hosted matrix run after C005,
-GitHub Actions run `35763470419` on
-`be5b3d076531a4ead94999eab2988e4c99e3f880`, failed only in
-`verify (windows-latest, stable)`.
+| ID | Plan | Status | Depends on | Primary result |
+|---|---|---|---|---|
+| M009 | `implementation/stateful/009-stateful-dynamic-replay.md` | **ready** | C006 | record modes, scenarios, deterministic templates |
+| M010 | `implementation/streaming/010-streaming-timing-and-sse.md` | blocked | M009 | stream events, timing, SSE |
+| M011 | `implementation/websocket/011-websocket-semantic-record-replay.md` | blocked | M010 | WebSocket semantic capture/replay |
+| M012 | `implementation/python/012-python-pytest-ecosystem.md` | blocked | M011 | PyO3 + pytest integration |
+| M013 | `implementation/interception/013-explicit-proxy-and-optional-mitm.md` | blocked | M012 | explicit proxy + opt-in HTTP/1.1 MITM |
+| M014 | `implementation/compatibility/014-compatibility-program.md` | blocked | M013 | umbrella compatibility stage |
+| M014A | `implementation/compatibility/014a-har-and-migration.md` | blocked | M013 | HAR + migration |
+| M014B | `implementation/compatibility/014b-http2-qualification.md` | blocked | M013, M010 | H2 qualification |
+| M014C | `implementation/compatibility/014c-http3-feasibility-and-qualification.md` | blocked | M014B | H3 architecture/support decision |
+| M014D | `implementation/compatibility/014d-grpc-and-fault-polish.md` | blocked | M014B, M010 | gRPC view + bounded faults |
 
-Observed Windows Clippy failures:
-
-- `eggreplay-store/src/lib.rs:1058`: Unix-only
-  `set_private_permissions(path)` leaves `path` unused on Windows.
-- `eggreplay-store/src/lib.rs:1219`: the Unix-gated symlink test leaves
-  `session` unused on Windows.
-
-Linux stable, Linux Rust 1.89 MSRV, macOS stable, and
-`dependency-boundary` passed. Windows tests did not run because the Clippy
-step failed first.
-
-C006 is closed, so no implementation plan is currently active. M009–M014
-remain deferred (no implementation plan documents exist yet); M009 is
-eligible for future planning as the next milestone now that the v0.1 hosted
-gate is closed.
+Only M009 is dependency-ready. Later plans are intentionally written now for
+handoff clarity but must not be activated early. If implementation evidence
+invalidates a later plan assumption, update that plan before changing code.
 
 ## Canonical planning documents
 
@@ -72,43 +58,16 @@ gate is closed.
 |---|---|
 | `000-project-charter.md` | Product mission, scope, invariants, and non-goals |
 | `001-architecture-and-boundaries.md` | Component topology and Eggstack ownership boundaries |
-| `002-long-term-roadmap.md` | Milestones from bootstrap through optional interception |
+| `002-long-term-roadmap.md` | Milestones from bootstrap through compatibility |
 | `003-qualification-and-release-strategy.md` | Evidence, CI, compatibility, and release gates |
-| `004-research-and-compatibility-baseline.md` | External behavior baseline and current Eggstack seams |
-
-## Subsystem roadmaps
-
-- `subsystems/flow-storage-roadmap.md`
-- `subsystems/matching-replay-roadmap.md`
-- `subsystems/regression-roadmap.md`
-- `subsystems/security-roadmap.md`
-- `subsystems/protocol-interop-roadmap.md`
-
-## Deferred feature milestones
-
-These remain deferred and are not part of C006.
-
-| ID | Scope | State |
-|---|---|---|
-| M009 | record-on-miss/pass-through modes, authored scenarios, deterministic templating | deferred |
-| M010 | streaming timing profiles and SSE-aware inspection/replay | deferred |
-| M011 | WebSocket message recording/replay over upgrade/tunnel seams | deferred |
-| M012 | Python bindings and pytest/VCR-style integration | deferred |
-| M013 | optional explicit-proxy/TLS-interception acquisition adapter | deferred |
-| M014 | broader H2/H3 qualification, HAR import/export, compatibility polish | deferred |
+| `004-research-and-compatibility-baseline.md` | External behavior baseline and Eggstack seams |
 
 ## Registry rules
 
 A plan moves from **blocked** to **ready** only when every dependency is
-closed or the dependent plan explicitly permits an implemented-but-not-closed
+closed or the plan explicitly permits an implemented-but-not-closed
 dependency. A plan moves to **closed** only after implementation, required
-test/evidence commands, documentation updates, and a closure record are
-present.
+tests/evidence, documentation updates, and a closure record are present.
 
-For hosted-CI-gated plans, an implementation commit must remain open until the
-required remote run completes successfully. Do not write a closure record that
-assumes a future hosted run will pass.
-
-Implementation agents must update this registry in the same change that
-activates, blocks, implements, or closes a milestone. Historical closure
-records remain immutable audit artifacts.
+Hosted-CI-gated plans remain open until their required remote evidence is
+green. Historical closure records remain immutable audit artifacts.
