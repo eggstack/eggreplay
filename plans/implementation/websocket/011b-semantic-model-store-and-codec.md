@@ -1,6 +1,6 @@
 # M011B — WebSocket Semantic Model, Store, and Codec Boundary
 
-Status: blocked
+Status: closed
 Depends on: M011A
 Parent milestone: M011
 ADR: 0006
