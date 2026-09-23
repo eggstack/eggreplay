@@ -26,28 +26,35 @@ Outcome: v0.1 hosted release qualification closed.
 
 Record modes analogous to sealed/offline, once, append-new, and re-record;
 explicit pass-through/record-on-miss; authored state-machine scenarios;
-variable extraction; deterministic templates; bounded transforms. Arbitrary
-scripting remains out of scope.
+variable extraction; deterministic templates; bounded transforms.
 
-Executable plan:
-`implementation/stateful/009-stateful-dynamic-replay.md`.
+Status: closed.
 
 ## Stage 6 — Streaming semantics (M010)
 
 Optional stream-event timing, immediate/recorded/scaled replay, mid-body
 failures, SSE-aware views/diffing, and concurrency timeline replay.
 
-Executable plan:
-`implementation/streaming/010-streaming-timing-and-sse.md`.
+Status: closed with M010-C1 corrective qualification.
 
 ## Stage 7 — WebSockets (M011)
 
 Use EggFetch upgraded streams and EggServe tunnel handoff. Preserve the
-initiating HTTP flow and attach ordered semantic messages. No wire-perfect
-claim.
+initiating HTTP flow and attach required ordered semantic conversations. No
+wire-perfect claim.
 
-Executable plan:
-`implementation/websocket/011-websocket-semantic-record-replay.md`.
+ADR: `adrs/0006-websocket-semantic-conversations.md`.
+
+Execution is decomposed:
+
+- M011A — transport dependency and upgrade preflight;
+- M011B — semantic model, store, and codec boundary;
+- M011C — recording gateway;
+- M011D — offline replay;
+- M011E — candidate regression, CLI, and fixture diff;
+- M011F — hardening, hosted qualification, and milestone closure.
+
+See `implementation/websocket/`. Only M011A is initially ready.
 
 ## Stage 8 — Python/test ecosystem (M012)
 
