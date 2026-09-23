@@ -1,8 +1,17 @@
 # M010 — Streaming Timing, Mid-Body Events, and SSE
 
-Status: ready
+Status: implemented (M010-C1 corrective closure pending)
 Depends on: M009
 Roadmap stage: 6
+Corrective plan: `010c-stream-extension-and-regression-corrective.md`
+
+## Implementation state
+
+The main M010 implementation landed at
+`cc4e4a9354dd0f6de25e6f905afcb44a732c8c64`; Actions run
+`35795730877` is green across the declared matrix. Post-implementation audit
+found extension-contract and regression-wiring gaps captured by M010-C1.
+M010 is not closed and M011 remains blocked until that corrective closes.
 
 ## Objective
 
@@ -105,6 +114,6 @@ report ordering across repeated runs.
 
 ## Closure
 
-Create `plans/closure/m010-streaming-timing-and-sse.md`. M011 remains blocked
-until this event/timing model closes because WebSocket message timing must
-reuse it rather than inventing a second scheduler.
+M010 closes only after M010-C1 is closed and
+`plans/closure/m010-streaming-timing-and-sse.md` records the qualifying
+implementation and hosted evidence. M011 remains blocked until then.
