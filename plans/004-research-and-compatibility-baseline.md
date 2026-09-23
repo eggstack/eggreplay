@@ -50,3 +50,28 @@ References:
 - timing of HAR import/export.
 
 Do not resolve these by speculative abstractions in M001.
+
+
+## Baseline resolution update — 2026-09-23
+
+Several original open questions are now resolved and should not be re-opened
+implicitly by later work:
+
+- EggFetch 0.2.0 is the published outbound baseline and exposes owned
+  post-101/CONNECT `UpgradedStream` IO plus caller-owned TLS/dialer seams.
+- EggServe's direct downstream surface is published: `eggserve-server 0.2.1`
+  is registry-qualified and resolves with `eggserve-primitives 0.2.0`.
+  M011A owns EggReplay's migration from the historical Git pin and must prove
+  tunnel/read-ahead/lifecycle behavior locally.
+- Eggress 1.0.9 is not a safe automatic upgrade target while its upstream
+  pooled route-isolation/metadata correctives remain release blockers.
+  EggReplay keeps its narrow `pproxy-compat` feature and M011A selects only a
+  proven published/pinned line.
+- M010 established that body-event timing is optional semantic metadata, not a
+  default timing assertion.
+- M011 WebSocket architecture is governed by ADR 0006 and must qualify direct
+  and routed H1 upgrade ownership before semantic implementation.
+
+The remaining evidence-gated compatibility questions are H2/H3 promotion,
+HAR/migration interoperability, interception, and later protocol-specific
+extensions. Those stay in M013/M014 rather than expanding M011.
