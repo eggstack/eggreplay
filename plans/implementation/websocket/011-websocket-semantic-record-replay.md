@@ -1,112 +1,82 @@
 # M011 — WebSocket Semantic Record, Replay, and Regression
 
-Status: blocked
-Depends on: M010
+Status: ready (decomposed; execute M011A first)
+Depends on: M010 + M010-C1 closure
 Roadmap stage: 7
+Architecture: ADR 0006
 
 ## Objective
 
-Record and replay WebSocket conversations as ordered semantic messages attached
-to their initiating HTTP flow. Do not claim wire-perfect reproduction.
+Record, replay, and regress RFC 6455 WebSocket conversations as ordered
+semantic messages attached to their initiating HTTP Upgrade flow, without
+claiming wire-perfect reproduction or creating another HTTP stack.
 
-Use EggFetch's owned upgraded stream for outbound 101/CONNECT handoff and
-EggServe's generic tunnel capability/TunnelIo for inbound server handoff.
-EggReplay owns the WebSocket semantic codec/orchestration only.
+EggFetch remains outbound HTTP/TLS + owned post-101 stream authority.
+EggServe remains inbound H1 runtime/lifecycle + generic tunnel authority.
+Eggress remains optional listener-free route establishment. EggReplay owns the
+conversation model, fixture storage, handshake semantics, matching, redaction,
+replay state, regression, and CLI orchestration.
 
-## Protocol codec
+## Execution decomposition
 
-Do not hand-roll WebSocket framing. Use a maintained Rust WebSocket codec
-(`tungstenite`/Tokio integration or another reviewed equivalent) over the
-EggFetch/EggServe duplex streams.
+M011 is intentionally split into dependency-ordered handoff plans:
 
-HTTP handshake transport still belongs to EggFetch/EggServe. The codec may
-supply/validate WebSocket-specific handshake values and frame/message parsing,
-but must not create a parallel HTTP client/server implementation.
+| ID | Plan | Result |
+|---|---|---|
+| M011A | `011a-transport-dependency-and-upgrade-preflight.md` | registry/dependency baseline + direct/routed upgrade proof |
+| M011B | `011b-semantic-model-store-and-codec.md` | canonical conversation/store/codec authority |
+| M011C | `011c-recording-gateway.md` | bounded redaction-safe recording |
+| M011D | `011d-offline-replay.md` | deterministic offline replay |
+| M011E | `011e-candidate-regression-cli-and-diff.md` | candidate regression, reports, CLI/diff |
+| M011F | `011f-hardening-qualification-and-closure.md` | security/resource/portable qualification + milestone closure |
 
-Start with RFC 6455 over HTTP/1.1 Upgrade. H2 Extended CONNECT WebSockets are
-M014/H2 qualification work.
+Only M011A is ready initially. Do not begin a later subplan before its
+dependency closes; several plans intentionally touch the same HTTP/store/CLI
+surfaces and are sequenced to avoid conflicting ownership.
 
-## Storage
+## Canonical semantics
 
-Reuse ADR 0005. Add `websocket-messages` / `websockets.jsonl`, keyed by
-initiating flow id.
+ADR 0006 controls M011's storage/matching boundary:
 
-Store ordered records containing:
+- initiating HTTP Upgrade remains a normal EggReplay flow;
+- post-upgrade messages live in required `websocket-messages` /
+  `websockets.jsonl`;
+- payload bytes use content-addressed blobs;
+- text/binary/ping/pong/close are semantic message kinds;
+- fragmentation, masking keys, frame chunking, and packet layout are not
+  canonical;
+- message timing is monotonic and stored in the WebSocket extension while
+  reusing M010 timing policy/limits;
+- volatile key/accept handshake values are regenerated/ignored as literal match
+  authority;
+- negotiated WebSocket extensions, including permessage-deflate, are not
+  supported in initial M011.
 
-- direction (client->server/server->client);
-- semantic kind (text, binary, ping, pong, close);
-- payload body ref where applicable;
-- close code/reason where applicable;
-- relative timing/event reference from M010;
-- stable sequence index.
+## Initial protocol scope
 
-Record reassembled semantic messages, not fragmentation layout. Preserve control
-messages needed for meaningful behavior. No masking key/frame-boundary claim.
+Target support after M011F qualification:
 
-## Recording gateway
+- RFC 6455 over HTTP/1.1 Upgrade;
+- inbound EggReplay `ws://`;
+- outbound direct/routed `ws://`;
+- outbound `wss://` only if local EggFetch trust-root qualification succeeds;
+- semantic message fidelity, not wire fidelity.
 
-For a validated WebSocket upgrade:
+Deferred:
 
-1. accept inbound upgrade through EggServe;
-2. establish upstream handshake through EggFetch;
-3. obtain both post-upgrade streams;
-4. run bounded bidirectional message relay;
-5. write message payloads through the existing content-addressed blob store;
-6. append the initiating HTTP flow plus WebSocket extension records atomically.
-
-Backpressure must be direct/bounded. No unbounded channel between directions.
-
-Cancellation, peer close, abnormal EOF, and shutdown must finalize a truthful
-conversation record without inventing a clean close.
-
-## Offline replay
-
-A recorded WebSocket replay endpoint:
-
-- matches the initiating HTTP request using the ordinary matcher;
-- performs the validated WebSocket handshake;
-- checks expected client messages in order according to an explicit policy;
-- emits recorded server messages;
-- uses immediate timing by default and M010 timing modes when requested;
-- returns bounded near-miss diagnostics for message mismatches.
-
-Allow a clearly named permissive policy only if it is explicit; strict ordered
-message matching is the default.
-
-## Regression
-
-Replay recorded client messages against a candidate WebSocket endpoint and
-capture candidate messages through the same semantic model. Compare direction,
-message kind, text/binary payload, close semantics, and optional timing.
-
-Reports remain redaction-safe and versioned.
-
-## Security/limits
-
-Enforce caps for handshake headers, messages per conversation, message bytes,
-aggregate conversation bytes, duration, ping/pong flood, close reason length,
-and diagnostics.
-
-Apply configured redaction to recognized text/JSON messages before durable
-publication. Opaque binary messages receive only whole-payload treatment unless
-a later explicit decoder exists.
-
-Do not support permessage-deflate initially unless the chosen codec can expose
-deterministic decompressed message semantics without compromising limits; if
-not, reject/decline the extension explicitly.
-
-## Tests
-
-Local deterministic echo/scripted servers must cover text, binary, ping/pong,
-close, abnormal EOF, leading post-101 data, concurrent directions,
-backpressure, large bounded messages, cancellation, replay mismatch, candidate
-regression, redaction, and exact fixture reopen/validation.
-
-Include at least one test proving the HTTP flow remains usable independently of
-the WebSocket extension metadata.
+- H2 Extended CONNECT WebSockets;
+- H3 WebSockets;
+- inbound WSS unless separately composed/qualified;
+- compression extensions;
+- arbitrary scripting/reconnect policy.
 
 ## Closure
 
-Create `plans/closure/m011-websocket-semantic-record-replay.md`. M012 stays
-blocked until the Rust surface is stable enough to bind rather than duplicating
-it in Python.
+M011 closes only through M011F after all subplans have closure evidence and one
+qualifying hosted matrix supports the declared protocol/support tier.
+
+Final closure:
+`plans/closure/m011-websocket-semantic-record-replay.md`.
+
+M012 remains blocked until M011 closes so Python binds a stable Rust authority
+instead of duplicating an evolving implementation.
