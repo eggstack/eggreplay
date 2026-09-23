@@ -37,3 +37,16 @@ Benchmarks are decision evidence, not universal claims. Explicit limits are requ
 ## Release gate
 
 M008 must create a closure record with implementation commits, exact verification results, protocol/platform support matrix, schema version, dependency versions, known limitations, and deferred work. Source presence alone never establishes support.
+
+
+## Post-v0.1 milestone discipline
+
+M009 and later milestones use the same evidence rule as v0.1: implementation
+presence is not support evidence. A decomposed milestone closes only after its
+subplans have closure records and the final gate records one qualifying
+implementation SHA, hosted platform/MSRV results, exact dependency versions,
+resource/security evidence, and an explicit support/limitation matrix.
+
+For M011 specifically, M011F owns final hosted qualification. WebSocket support
+must not be advertised before that closure, even if earlier subplans compile or
+pass focused tests.
