@@ -75,6 +75,6 @@ candidate flow -> diff -> report
 
 EggReplay owns request head/body/trailers, response head/body/trailers or semantic error, logical origin vs physical route, timestamps, protocol/capture provenance, annotations, and redaction markers.
 
-Application-visible HTTP body events are not TCP packet boundaries. Future WebSocket messages attach to the initiating HTTP flow. Future interception feeds the same flow writer rather than creating a second model.
+Application-visible HTTP body events are not TCP packet boundaries. M011 WebSocket messages attach to the initiating HTTP Upgrade flow through the required ADR-0006 conversation extension; EggFetch/EggServe retain transport ownership and the WebSocket codec remains an `eggreplay-http` adapter concern. Future interception feeds the same flow writer rather than creating a second model.
 
 No plugin ABI or scripting engine is required for v0.1.
