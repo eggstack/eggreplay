@@ -34,12 +34,14 @@ closes a plan.
 
 ## Current execution
 
-v0.1 and C001–C006 are closed. ADR 0005 defines the versioned extension
+v0.1/C001–C006 and M009 are closed. ADR 0005 defines the versioned extension
 strategy for future fixture semantics.
 
-The first dependency-ready forward milestone is **M009 — Stateful and Dynamic
-Replay**. M010–M014 are planned but blocked in dependency order. See
-`registry.md` for the exact handoff state.
+M010's primary implementation is present and its initial hosted matrix is
+green, but post-implementation audit found extension-contract and candidate
+regression wiring gaps. **M010-C1 — Stream Extension and Regression Corrective
+Closure** is the only dependency-ready task. M011–M014 remain blocked in
+dependency order. See `registry.md` for the exact handoff state.
 
 Do not start a blocked milestone by duplicating a dependency-owned subsystem.
 If current repository evidence invalidates a plan assumption, update the plan
