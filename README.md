@@ -7,21 +7,18 @@ EggServe. Optional outbound routing is delegated to Eggress.
 
 ## Status
 
-v0.1 is fully qualified through the corrective workstream (`C001`–`C006`).
-The hosted release gate passed Linux stable, Linux Rust 1.89 MSRV, macOS stable,
-Windows stable, and the dependency-boundary lane; see
-[`plans/closure/c006-windows-hosted-ci-qualification.md`](plans/closure/c006-windows-hosted-ci-qualification.md).
+v0.1 is fully qualified through C001–C006. M009 stateful/dynamic replay and
+M010 streaming timing/SSE (including M010-C1) are closed with hosted
+cross-platform evidence.
 
-M009 stateful/dynamic replay is closed. M010 streaming timing/SSE is closed
-with its M010-C1 corrective (required-extension semantics, candidate response
-stream observation, and opt-in stream/cadence/SSE regression); see
-[`plans/closure/m010-streaming-timing-and-sse.md`](plans/closure/m010-streaming-timing-and-sse.md).
-M011 WebSocket semantic record/replay is ready; M012–M014D remain blocked.
+M011 WebSocket semantic record/replay is decomposed into M011A–M011F under ADR
+0006. M011A transport/dependency/upgrade preflight is the only ready task;
+later WebSocket subplans and M012–M014D remain blocked by dependency order.
 
-The core and store remain usable without a network runtime. Supported transport
-for v0.1 is direct HTTP/1.1 acquisition and EggServe inbound HTTP/1.1 replay
-with optional listener-free Eggress routing; H2/H3 remain outside the v0.1
-support claim.
+The v0.1 support baseline remains direct HTTP/1.1 acquisition and EggServe
+inbound HTTP/1.1 replay with optional listener-free Eggress routing. WebSocket,
+H2/H3, and interception support are not part of the v0.1 claim until their
+later milestones close.
 
 ## Quickstart routes
 
