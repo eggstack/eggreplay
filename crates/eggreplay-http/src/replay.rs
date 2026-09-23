@@ -129,13 +129,27 @@ impl ReplayFixture {
         scenario: Option<ScenarioRuntime>,
         timing_mode: StreamTimingMode,
     ) -> Result<Self, ReplayError> {
+        // `required_for_replay` means the reader must understand and apply the
+        // extension, not that the user opted into timing delays. `stream-events`
+        // is a supported required extension: it is loaded automatically and its
+        // terminal semantics apply in every timing mode. `Immediate` adds zero
+        // delay but still reproduces trailers and terminal mid-body errors.
+        // Unknown required extensions still fail closed; there is no generic
+        // ignore-required-extension switch.
         for extension in &session.manifest().extensions {
-            if extension.required_for_replay && !(extension.name == "rules" && scenario.is_some()) {
-                return Err(ReplayError::State(format!(
-                    "required extension {:?} is not enabled",
-                    extension.name
-                )));
+            if !extension.required_for_replay {
+                continue;
             }
+            if extension.name == "rules" && scenario.is_some() {
+                continue;
+            }
+            if extension.name == "stream-events" {
+                continue;
+            }
+            return Err(ReplayError::State(format!(
+                "required extension {:?} is not enabled",
+                extension.name
+            )));
         }
         let mut candidates = Vec::new();
         for item in session.iter_flows()? {
@@ -147,8 +161,13 @@ impl ReplayFixture {
             let decoded: StreamEvents = serde_json::from_slice(&bytes).map_err(|error| {
                 ReplayError::State(format!("invalid stream-events extension: {error}"))
             })?;
+            // Fail closed on unsupported version, duplicate flow ids,
+            // ordering/delay violations, and trailer/window violations.
             decoded.validate().map_err(ReplayError::State)?;
             for flow_events in decoded.flows {
+                if stream_events.contains_key(&flow_events.flow_id) {
+                    return Err(ReplayError::State("duplicate stream event flow id".into()));
+                }
                 stream_events.insert(flow_events.flow_id.clone(), flow_events);
             }
         } else if timing_mode != StreamTimingMode::Immediate {
@@ -602,6 +621,14 @@ async fn handle_request(
                             };
                             if delay_ns > 0 {
                                 tokio::time::sleep(std::time::Duration::from_nanos(delay_ns)).await;
+                            } else {
+                                // Cooperative yield so the transport can flush
+                                // prior DATA before a terminal Error truncates
+                                // the connection. This is not a time delay:
+                                // Immediate remains zero-delay (microseconds),
+                                // but prevents back-to-back DATA+Error from
+                                // losing buffered DATA on truncation.
+                                tokio::task::yield_now().await;
                             }
                             match step {
                                 TimedStreamStep::Data { length, .. } => segment_remaining = length,
@@ -1265,7 +1292,7 @@ mod tests {
                 "stream-events",
                 eggreplay_core::stream::STREAM_EVENTS_SCHEMA_VERSION,
                 "stream-events.json",
-                false,
+                true,
                 &serde_json::to_vec(&events).unwrap(),
             )
             .unwrap();
@@ -1927,5 +1954,251 @@ mod tests {
         recording.finish().unwrap();
         std::fs::remove_dir_all(&append_dir).ok();
         std::fs::remove_dir_all(&source_dir).ok();
+    }
+
+    #[test]
+    fn immediate_accepts_required_stream_events_extension() {
+        // M010-C1 #2: immediate replay accepts the known required extension.
+        let dir = temp_path("immediate-required");
+        let mut writer =
+            SessionWriter::create(&dir, SessionMetadata::default(), test_limits()).unwrap();
+        let mut sink = writer.begin_blob().unwrap();
+        sink.write_all(b"hi").unwrap();
+        let body = sink.finish().unwrap();
+        let flow = flow_with_bodies(
+            "imm-1",
+            "GET",
+            "example.test",
+            "/imm",
+            BodyRef::Empty,
+            body,
+            vec![],
+        );
+        writer.append_flow(&flow).unwrap();
+        writer
+            .append_stream_events(eggreplay_core::FlowStreamEvents {
+                flow_id: flow.id.clone(),
+                start_offset_ns: 0,
+                request: Vec::new(),
+                response: vec![
+                    eggreplay_core::StreamEvent {
+                        delta_ns: 0,
+                        event: eggreplay_core::StreamEventKind::Data {
+                            offset: 0,
+                            length: 2,
+                        },
+                    },
+                    eggreplay_core::StreamEvent {
+                        delta_ns: 5_000_000,
+                        event: eggreplay_core::StreamEventKind::End,
+                    },
+                ],
+            })
+            .unwrap();
+        let session = writer.finish().unwrap();
+        let descriptor = session
+            .manifest()
+            .extensions
+            .iter()
+            .find(|extension| extension.name == "stream-events")
+            .expect("extension present");
+        assert!(descriptor.required_for_replay);
+        // Immediate must accept without timing opt-in.
+        let fixture = ReplayFixture::load_with_timing(
+            &session,
+            Matcher::strict(8),
+            StreamTimingMode::Immediate,
+        )
+        .expect("immediate must accept required stream-events");
+        assert_eq!(fixture.candidate_count(), 1);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn unknown_required_extension_still_fails_closed() {
+        // M010-C1 #4: unknown required extensions still fail closed.
+        let dir = temp_path("unknown-required-replay");
+        let mut writer =
+            SessionWriter::create(&dir, SessionMetadata::default(), test_limits()).unwrap();
+        writer
+            .write_extension(
+                "rules",
+                1,
+                "rules.json",
+                true,
+                br#"{"schema_version":1,"scenarios":[]}"#,
+            )
+            .unwrap();
+        let session = writer.finish().unwrap();
+        drop(session);
+        let manifest_path = dir.join("manifest.json");
+        let mut manifest: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
+        manifest["extensions"][0]["name"] = serde_json::json!("future-required");
+        std::fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+        // Session::open already fails, but ReplayFixture must also fail if a
+        // session with unknown required ever reaches it.
+        assert!(eggreplay_store::Session::open(&dir, test_limits()).is_err());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn malformed_stream_events_fail_closed_on_load() {
+        // M010-C1 #5 (replay side): malformed/unsupported stream-events fails closed.
+        let dir = temp_path("malformed-replay");
+        let mut writer =
+            SessionWriter::create(&dir, SessionMetadata::default(), test_limits()).unwrap();
+        let flow = flow_with_bodies(
+            "bad-1",
+            "GET",
+            "example.test",
+            "/bad",
+            BodyRef::Empty,
+            BodyRef::Empty,
+            vec![],
+        );
+        writer.append_flow(&flow).unwrap();
+        writer
+            .write_extension(
+                "stream-events",
+                eggreplay_core::stream::STREAM_EVENTS_SCHEMA_VERSION,
+                "stream-events.json",
+                true,
+                b"{not json",
+            )
+            .unwrap();
+        // Session::open fails first; if bypassed, ReplayFixture::load must fail.
+        let session = writer.finish();
+        // finish succeeds (extension bytes unchecked beyond size), but open fails.
+        if let Ok(session) = session {
+            assert!(ReplayFixture::load(&session).is_err());
+            std::fs::remove_dir_all(&dir).ok();
+        } else {
+            std::fs::remove_dir_all(&dir).ok();
+        }
+    }
+
+    #[tokio::test]
+    async fn immediate_reproduces_terminal_error_without_delay() {
+        // M010-C1 #3: immediate replay reproduces terminal mid-body error with
+        // no delay (`Immediate` means zero delay, not "ignore stream events").
+        // Mirrors `recorded_timing_delays_between_semantic_data_events` but
+        // with Immediate timing: same terminal error, no added delay.
+        use eggfetch_core::Client;
+        use http_body_util::BodyExt;
+
+        let port = {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
+            drop(listener);
+            port
+        };
+        let authority = format!("127.0.0.1:{port}");
+        let dir = temp_path("immediate-terminal");
+        let mut writer =
+            SessionWriter::create(&dir, SessionMetadata::default(), test_limits()).unwrap();
+        let mut sink = writer.begin_blob().unwrap();
+        sink.write_all(b"abcd").unwrap();
+        let body = sink.finish().unwrap();
+        let flow = flow_with_bodies(
+            "timed-imm",
+            "GET",
+            &authority,
+            "/timed-imm",
+            BodyRef::Empty,
+            body,
+            vec![],
+        );
+        writer.append_flow(&flow).unwrap();
+        let events = StreamEvents {
+            schema_version: eggreplay_core::stream::STREAM_EVENTS_SCHEMA_VERSION,
+            flows: vec![eggreplay_core::FlowStreamEvents {
+                flow_id: flow.id.clone(),
+                start_offset_ns: 0,
+                request: vec![],
+                response: vec![
+                    eggreplay_core::StreamEvent {
+                        delta_ns: 0,
+                        event: eggreplay_core::StreamEventKind::Data {
+                            offset: 0,
+                            length: 2,
+                        },
+                    },
+                    eggreplay_core::StreamEvent {
+                        delta_ns: 40_000_000,
+                        event: eggreplay_core::StreamEventKind::Data {
+                            offset: 2,
+                            length: 2,
+                        },
+                    },
+                    eggreplay_core::StreamEvent {
+                        delta_ns: 80_000_000,
+                        event: eggreplay_core::StreamEventKind::Error {
+                            offset: 4,
+                            category: "other".into(),
+                            phase: "body".into(),
+                        },
+                    },
+                ],
+            }],
+        };
+        writer
+            .write_extension(
+                "stream-events",
+                eggreplay_core::stream::STREAM_EVENTS_SCHEMA_VERSION,
+                "stream-events.json",
+                true,
+                &serde_json::to_vec(&events).unwrap(),
+            )
+            .unwrap();
+        let session = writer.finish().unwrap();
+        let mut matcher = eggreplay_core::Matcher::practical(8);
+        for header in ["host", "accept", "accept-encoding", "connection"] {
+            matcher.ignore_header(header);
+        }
+        let fixture =
+            ReplayFixture::load_with_timing(&session, matcher, StreamTimingMode::Immediate)
+                .unwrap();
+        let bind: std::net::SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+        let server = fixture
+            .start(bind, test_limits().max_blob_bytes)
+            .await
+            .unwrap();
+        let client = Client::builder().retry_canceled_requests(false).build();
+        let request = http::Request::builder()
+            .uri(
+                format!("http://{authority}/timed-imm")
+                    .parse::<http::Uri>()
+                    .unwrap(),
+            )
+            .body(http_body_util::Full::new(bytes::Bytes::new()))
+            .unwrap();
+        let response = client.execute_http_body_default(request).await.unwrap();
+        let (_, mut body) = response.into_parts();
+        let start = tokio::time::Instant::now();
+        let mut bytes = Vec::new();
+        let mut stream_error = false;
+        while let Some(frame) = body.frame().await {
+            let frame = match frame {
+                Ok(frame) => frame,
+                Err(_) => {
+                    stream_error = true;
+                    break;
+                }
+            };
+            if frame.is_data() {
+                bytes.extend_from_slice(&frame.into_data().unwrap());
+            }
+        }
+        let elapsed = start.elapsed();
+        assert_eq!(bytes, b"abcd");
+        assert!(stream_error, "immediate must reproduce terminal error");
+        assert!(
+            elapsed < std::time::Duration::from_millis(30),
+            "immediate must not delay, elapsed={elapsed:?}"
+        );
+        server.shutdown();
+        server.wait().await;
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

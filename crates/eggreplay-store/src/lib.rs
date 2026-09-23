@@ -465,7 +465,7 @@ impl SessionWriter {
                 "stream-events",
                 eggreplay_core::stream::STREAM_EVENTS_SCHEMA_VERSION,
                 "stream-events.json",
-                false,
+                true,
                 &bytes,
             )?;
             self.metadata.schema_version = eggreplay_core::SESSION_SCHEMA_VERSION;
@@ -1023,7 +1023,7 @@ impl RecordingSession {
                     "stream-events",
                     eggreplay_core::stream::STREAM_EVENTS_SCHEMA_VERSION,
                     "stream-events.json",
-                    false,
+                    true,
                     &bytes,
                 )?;
             }
@@ -2002,6 +2002,201 @@ mod tests {
         parsed.validate().unwrap();
         assert_eq!(parsed.flows[0].flow_id, "stream-1");
         fs::remove_dir_all(destination).unwrap();
+    }
+
+    #[test]
+    fn writer_emits_stream_events_as_required() {
+        // M010-C1 #1: writers that emit `stream-events` register it with
+        // `required_for_replay=true`.
+        let destination = path("stream-required");
+        let mut writer = SessionWriter::create(
+            &destination,
+            SessionMetadata::default(),
+            StoreLimits::default(),
+        )
+        .unwrap();
+        let mut flow = sample();
+        flow.id = "required-1".into();
+        writer.append_flow(&flow).unwrap();
+        writer
+            .append_stream_events(eggreplay_core::FlowStreamEvents {
+                flow_id: flow.id.clone(),
+                start_offset_ns: 0,
+                request: Vec::new(),
+                response: vec![eggreplay_core::StreamEvent {
+                    delta_ns: 0,
+                    event: eggreplay_core::StreamEventKind::End,
+                }],
+            })
+            .unwrap();
+        let session = writer.finish().unwrap();
+        let descriptor = session
+            .manifest()
+            .extensions
+            .iter()
+            .find(|extension| extension.name == "stream-events")
+            .expect("stream-events extension must be present");
+        assert!(
+            descriptor.required_for_replay,
+            "stream-events must be required_for_replay=true"
+        );
+        fs::remove_dir_all(destination).unwrap();
+
+        // Concurrent session path must also mark required.
+        let concurrent = path("stream-required-concurrent");
+        let recording = RecordingSession::create(
+            &concurrent,
+            SessionMetadata::default(),
+            StoreLimits::default(),
+        )
+        .unwrap();
+        recording.append_flow(&flow).unwrap();
+        recording
+            .append_stream_events(eggreplay_core::FlowStreamEvents {
+                flow_id: flow.id.clone(),
+                start_offset_ns: 0,
+                request: Vec::new(),
+                response: vec![eggreplay_core::StreamEvent {
+                    delta_ns: 0,
+                    event: eggreplay_core::StreamEventKind::End,
+                }],
+            })
+            .unwrap();
+        recording.shutdown();
+        let finished = recording.finish().unwrap();
+        let descriptor = finished
+            .manifest()
+            .extensions
+            .iter()
+            .find(|extension| extension.name == "stream-events")
+            .expect("concurrent stream-events must be present");
+        assert!(descriptor.required_for_replay);
+        fs::remove_dir_all(concurrent).unwrap();
+    }
+
+    #[test]
+    fn malformed_and_unsupported_stream_events_fail_closed() {
+        // M010-C1 #5: malformed, unsupported-version, duplicate-flow, and
+        // body-length inconsistent stream metadata fail closed.
+        // Unsupported descriptor schema version: finalization fails closed
+        // via Session::open validation inside finish.
+        {
+            let destination = path("stream-unsupported-schema");
+            let mut writer = SessionWriter::create(
+                &destination,
+                SessionMetadata::default(),
+                StoreLimits::default(),
+            )
+            .unwrap();
+            writer.append_flow(&sample()).unwrap();
+            writer
+                .write_extension("stream-events", 999, "stream-events.json", true, b"{}")
+                .unwrap();
+            assert!(writer.finish().is_err());
+            // Staging remains; clean up parent-tracked destination attempt.
+            // `finish` consumes writer, so on failure the staging dir remains
+            // under a temp incomplete name; remove destination if created.
+            fs::remove_dir_all(&destination).ok();
+        }
+        // Malformed JSON payload fails closed at finalization.
+        {
+            let destination = path("stream-malformed");
+            let mut writer = SessionWriter::create(
+                &destination,
+                SessionMetadata::default(),
+                StoreLimits::default(),
+            )
+            .unwrap();
+            writer.append_flow(&sample()).unwrap();
+            writer
+                .write_extension(
+                    "stream-events",
+                    eggreplay_core::stream::STREAM_EVENTS_SCHEMA_VERSION,
+                    "stream-events.json",
+                    true,
+                    b"{not json",
+                )
+                .unwrap();
+            assert!(writer.finish().is_err());
+            fs::remove_dir_all(&destination).ok();
+        }
+        // Duplicate flow ids fail at append time and at validation.
+        {
+            let destination = path("stream-duplicate");
+            let mut writer = SessionWriter::create(
+                &destination,
+                SessionMetadata::default(),
+                StoreLimits::default(),
+            )
+            .unwrap();
+            let mut flow = sample();
+            flow.id = "dup".into();
+            writer.append_flow(&flow).unwrap();
+            let events = eggreplay_core::FlowStreamEvents {
+                flow_id: "dup".into(),
+                start_offset_ns: 0,
+                request: Vec::new(),
+                response: vec![eggreplay_core::StreamEvent {
+                    delta_ns: 0,
+                    event: eggreplay_core::StreamEventKind::End,
+                }],
+            };
+            writer.append_stream_events(events.clone()).unwrap();
+            assert!(writer.append_stream_events(events).is_err());
+            let session = writer.finish().unwrap();
+            // Body-length mismatch: stream DATA length disagrees with response
+            // body (Empty expects 0, DATA claims bytes).
+            drop(session);
+            fs::remove_dir_all(destination).unwrap();
+        }
+        // Body-length inconsistent: Session::open must reject when DATA bytes
+        // disagree with the flow response body.
+        {
+            // `sample` has Empty response body (0 bytes) but we claim 4 DATA bytes.
+            let bad = eggreplay_core::StreamEvents {
+                schema_version: eggreplay_core::stream::STREAM_EVENTS_SCHEMA_VERSION,
+                flows: vec![eggreplay_core::FlowStreamEvents {
+                    flow_id: "mismatch".into(),
+                    start_offset_ns: 0,
+                    request: Vec::new(),
+                    response: vec![
+                        eggreplay_core::StreamEvent {
+                            delta_ns: 0,
+                            event: eggreplay_core::StreamEventKind::Data {
+                                offset: 0,
+                                length: 4,
+                            },
+                        },
+                        eggreplay_core::StreamEvent {
+                            delta_ns: 1,
+                            event: eggreplay_core::StreamEventKind::End,
+                        },
+                    ],
+                }],
+            };
+            let mismatch_dir = path("stream-body-mismatch-2");
+            let mut flow = sample();
+            flow.id = "mismatch".into();
+            let mut writer2 = SessionWriter::create(
+                &mismatch_dir,
+                SessionMetadata::default(),
+                StoreLimits::default(),
+            )
+            .unwrap();
+            writer2.append_flow(&flow).unwrap();
+            writer2
+                .write_extension(
+                    "stream-events",
+                    eggreplay_core::stream::STREAM_EVENTS_SCHEMA_VERSION,
+                    "stream-events.json",
+                    true,
+                    &serde_json::to_vec(&bad).unwrap(),
+                )
+                .unwrap();
+            // Body-length mismatch fails closed at finalization.
+            assert!(writer2.finish().is_err());
+            fs::remove_dir_all(&mismatch_dir).ok();
+        }
     }
 
     #[test]

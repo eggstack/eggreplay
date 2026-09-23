@@ -53,7 +53,10 @@ policy remains separate:
 - `scaled` applies bounded scaled relative delays.
 
 This distinction preserves backwards safety without making recorded timing the
-ordinary-test default.
+ordinary-test default. Unknown required extensions still fail closed, and
+missing, malformed, unsupported-version, duplicate-flow, or body-length
+inconsistent stream metadata fails closed. There is no generic
+ignore-required-extension switch.
 
 Initial names:
 

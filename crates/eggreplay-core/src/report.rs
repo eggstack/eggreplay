@@ -61,6 +61,58 @@ pub struct TimingAssertion {
     pub max_elapsed_ms: u64,
 }
 
+/// Shared typed policy for opt-in stream/SSE regression.
+///
+/// Default preserves the old contract: ordinary status/header/trailer/raw-body
+/// regression with no stream/SSE-only findings. Stream findings require
+/// explicit opt-in; cadence tolerance implies stream comparison; SSE ignore
+/// fields imply SSE comparison.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ComparisonPolicy {
+    /// Enable ordered response event comparison.
+    pub compare_stream_events: bool,
+    /// Enable cadence comparison with tolerance in nanoseconds; implies
+    /// stream event comparison.
+    pub cadence_tolerance_ns: Option<u64>,
+    /// Enable derived SSE semantic comparison.
+    pub compare_sse: bool,
+    /// SSE fields to ignore; only `data,event,id,retry,comments` are
+    /// supported and implying SSE comparison when non-empty.
+    pub sse_ignored: Vec<String>,
+}
+
+impl ComparisonPolicy {
+    /// Default policy preserving the historical regression contract.
+    pub fn default_preserving() -> Self {
+        Self::default()
+    }
+
+    /// Return whether ordered stream comparison is enabled, explicitly or via
+    /// cadence tolerance.
+    pub fn is_stream_enabled(&self) -> bool {
+        self.compare_stream_events || self.cadence_tolerance_ns.is_some()
+    }
+
+    /// Return whether SSE semantic comparison is enabled, explicitly or via
+    /// ignored fields.
+    pub fn is_sse_enabled(&self) -> bool {
+        self.compare_sse || !self.sse_ignored.is_empty()
+    }
+
+    /// Validate ignored-field vocabulary.
+    pub fn validate(&self) -> Result<(), String> {
+        for field in &self.sse_ignored {
+            if !matches!(
+                field.as_str(),
+                "data" | "event" | "id" | "retry" | "comments"
+            ) {
+                return Err(format!("unsupported sse-ignore field {field:?}"));
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Versioned semantic comparison report.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RegressionReport {
@@ -82,6 +134,10 @@ impl RegressionReport {
 }
 
 /// Compare one baseline flow and one candidate observation.
+///
+/// Default preserves the historical contract: ordinary status/header/trailer/
+/// raw-body regression with no stream/SSE-only findings. Use
+/// [`compare_flows_with_policy`] for opt-in stream/SSE semantics.
 pub fn compare_flows(
     baseline: &Flow,
     candidate: &Flow,
@@ -100,6 +156,8 @@ pub fn compare_flows(
 }
 
 /// Compare flows and optionally apply an explicit timing assertion.
+///
+/// Preserves the default contract with no stream/SSE-only findings.
 pub fn compare_flows_with_timing(
     baseline: &Flow,
     candidate: &Flow,
@@ -107,6 +165,49 @@ pub fn compare_flows_with_timing(
     candidate_body: &[u8],
     scheduler: ReportScheduler,
     timing: Option<TimingAssertion>,
+) -> RegressionReport {
+    compare_flows_with_timing_and_policy(
+        baseline,
+        candidate,
+        baseline_body,
+        candidate_body,
+        scheduler,
+        timing,
+        &ComparisonPolicy::default(),
+    )
+}
+
+/// Compare flows with an explicit opt-in stream/SSE policy.
+pub fn compare_flows_with_policy(
+    baseline: &Flow,
+    candidate: &Flow,
+    baseline_body: &[u8],
+    candidate_body: &[u8],
+    scheduler: ReportScheduler,
+    policy: &ComparisonPolicy,
+) -> RegressionReport {
+    compare_flows_with_timing_and_policy(
+        baseline,
+        candidate,
+        baseline_body,
+        candidate_body,
+        scheduler,
+        None,
+        policy,
+    )
+}
+
+/// Compare flows with both an explicit timing assertion and an opt-in
+/// stream/SSE policy. This is the single flow-diff authority; callers must not
+/// fork separate evaluators for JSON/JUnit projections.
+pub fn compare_flows_with_timing_and_policy(
+    baseline: &Flow,
+    candidate: &Flow,
+    baseline_body: &[u8],
+    candidate_body: &[u8],
+    scheduler: ReportScheduler,
+    timing: Option<TimingAssertion>,
+    policy: &ComparisonPolicy,
 ) -> RegressionReport {
     let mut findings = Vec::new();
     match (&baseline.outcome, &candidate.outcome) {
@@ -151,9 +252,15 @@ pub fn compare_flows_with_timing(
                     ),
                 });
             }
-            if is_sse(&expected.headers) && is_sse(&actual.headers) {
-                let baseline_sse = crate::parse_sse(baseline_body, false);
-                let candidate_sse = crate::parse_sse(candidate_body, false);
+            // Raw body comparison above remains authoritative; SSE semantic
+            // findings occur only when explicitly enabled via policy. Ignored
+            // fields pass through the existing `compare_sse` authority.
+            // Malformed SSE yields a bounded `Sse` finding when enabled.
+            if policy.is_sse_enabled() && is_sse(&expected.headers) && is_sse(&actual.headers) {
+                // Include comments so `comments` ignore semantics are
+                // meaningful; comparison ignores selected fields.
+                let baseline_sse = crate::parse_sse(baseline_body, true);
+                let candidate_sse = crate::parse_sse(candidate_body, true);
                 let finding = match (&baseline_sse.error, &candidate_sse.error) {
                     (Some(_), _) => Some(("baseline SSE is malformed", "candidate SSE inspected")),
                     (_, Some(_)) => Some(("baseline SSE parsed", "candidate SSE is malformed")),
@@ -161,7 +268,7 @@ pub fn compare_flows_with_timing(
                         if !crate::compare_sse(
                             &baseline_sse.events,
                             &candidate_sse.events,
-                            &[],
+                            &policy.sse_ignored,
                         ) =>
                     {
                         Some(("SSE event sequence", "SSE event sequence"))
@@ -450,12 +557,39 @@ mod tests {
         };
         let mut baseline = Flow::new(request.clone(), FlowOutcome::Response(response.clone()), 1);
         let candidate = Flow::new(request, FlowOutcome::Response(response), 1);
-        let report = compare_flows(
+        // Default preserves the old contract: no SSE-only findings.
+        let default_report = compare_flows(
             &baseline,
             &candidate,
             b"data: old\n\n",
             b"data: new\n\n",
             ReportScheduler::Sequential,
+        );
+        assert!(
+            default_report
+                .findings
+                .iter()
+                .any(|finding| finding.kind == DiffKind::Body)
+        );
+        assert!(
+            !default_report
+                .findings
+                .iter()
+                .any(|finding| finding.kind == DiffKind::Sse),
+            "SSE must be opt-in"
+        );
+        // Explicit opt-in reports SSE alongside raw body without suppressing it.
+        let policy = ComparisonPolicy {
+            compare_sse: true,
+            ..ComparisonPolicy::default()
+        };
+        let report = compare_flows_with_policy(
+            &baseline,
+            &candidate,
+            b"data: old\n\n",
+            b"data: new\n\n",
+            ReportScheduler::Sequential,
+            &policy,
         );
         assert!(
             report
@@ -480,15 +614,379 @@ mod tests {
                 _ => unreachable!(),
             }
         });
-        let opaque = compare_flows(
+        let opaque = compare_flows_with_policy(
             &baseline,
             &candidate,
             b"data: old\n\n",
             b"data: new\n\n",
             ReportScheduler::Sequential,
+            &policy,
         );
         assert!(
             !opaque
+                .findings
+                .iter()
+                .any(|finding| finding.kind == DiffKind::Sse)
+        );
+    }
+
+    #[test]
+    fn default_regression_emits_no_stream_or_sse_findings() {
+        // M010-C1 #9: default preserves the old contract.
+        let request = HttpRequest {
+            method: "GET".into(),
+            scheme: "http".into(),
+            authority: "example.test".into(),
+            path: "/".into(),
+            query: Vec::new(),
+            headers: Vec::new(),
+            body: BodyRef::Empty,
+            trailers: Vec::new(),
+        };
+        let response = HttpResponse {
+            status: 200,
+            headers: vec![HeaderEntry {
+                name: "content-type".into(),
+                value: "text/event-stream".into(),
+            }],
+            body: BodyRef::Empty,
+            trailers: Vec::new(),
+        };
+        let baseline = Flow::new(request.clone(), FlowOutcome::Response(response.clone()), 1);
+        let candidate = Flow::new(request, FlowOutcome::Response(response), 1);
+        // Differing SSE bodies but identical raw bytes? Use differing bodies to
+        // prove default has Body but no Sse; use identical bodies to prove no
+        // findings at all even though stream events would differ if enabled.
+        let report = compare_flows(
+            &baseline,
+            &candidate,
+            b"data: a\n\n",
+            b"data: b\n\n",
+            ReportScheduler::Sequential,
+        );
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|finding| finding.kind == DiffKind::Body)
+        );
+        assert!(
+            !report
+                .findings
+                .iter()
+                .any(|finding| finding.kind == DiffKind::Sse)
+        );
+        assert!(
+            !report
+                .findings
+                .iter()
+                .any(|finding| finding.kind == DiffKind::StreamEvent)
+        );
+        assert!(
+            !report
+                .findings
+                .iter()
+                .any(|finding| finding.kind == DiffKind::Timing)
+        );
+        // Identical bodies: no findings even with SSE content-type.
+        let clean = compare_flows(
+            &baseline,
+            &candidate,
+            b"data: same\n\n",
+            b"data: same\n\n",
+            ReportScheduler::Sequential,
+        );
+        assert!(clean.is_success());
+    }
+
+    #[test]
+    fn stream_comparison_detects_shape_and_terminal_differences() {
+        // M010-C1 #10: event-shape/terminal differences.
+        let make = |terminal: StreamEventKind| FlowStreamEvents {
+            flow_id: "flow".into(),
+            start_offset_ns: 0,
+            request: Vec::new(),
+            response: vec![
+                crate::StreamEvent {
+                    delta_ns: 0,
+                    event: StreamEventKind::Data {
+                        offset: 0,
+                        length: 2,
+                    },
+                },
+                crate::StreamEvent {
+                    delta_ns: 10,
+                    event: terminal,
+                },
+            ],
+        };
+        let baseline = make(StreamEventKind::End);
+        let error_terminal = make(StreamEventKind::Error {
+            offset: 2,
+            category: "other".into(),
+            phase: "body".into(),
+        });
+        let findings = compare_stream_events(&baseline, &error_terminal, None);
+        assert!(
+            findings
+                .iter()
+                .any(|finding| finding.kind == DiffKind::StreamEvent)
+        );
+        // Different DATA length is also shape difference.
+        let different_length = FlowStreamEvents {
+            flow_id: "flow".into(),
+            start_offset_ns: 0,
+            request: Vec::new(),
+            response: vec![
+                crate::StreamEvent {
+                    delta_ns: 0,
+                    event: StreamEventKind::Data {
+                        offset: 0,
+                        length: 3,
+                    },
+                },
+                crate::StreamEvent {
+                    delta_ns: 10,
+                    event: StreamEventKind::End,
+                },
+            ],
+        };
+        let findings = compare_stream_events(&baseline, &different_length, None);
+        assert!(
+            findings
+                .iter()
+                .any(|finding| finding.kind == DiffKind::StreamEvent)
+        );
+    }
+
+    #[test]
+    fn cadence_tolerance_passes_and_fails_deterministic_thresholds() {
+        // M010-C1 #11: cadence tolerance is deterministic.
+        let make = |second_delta| FlowStreamEvents {
+            flow_id: "flow".into(),
+            start_offset_ns: 0,
+            request: Vec::new(),
+            response: vec![
+                crate::StreamEvent {
+                    delta_ns: 0,
+                    event: StreamEventKind::Data {
+                        offset: 0,
+                        length: 1,
+                    },
+                },
+                crate::StreamEvent {
+                    delta_ns: second_delta,
+                    event: StreamEventKind::Data {
+                        offset: 1,
+                        length: 1,
+                    },
+                },
+                crate::StreamEvent {
+                    delta_ns: second_delta + 1,
+                    event: StreamEventKind::End,
+                },
+            ],
+        };
+        let baseline = make(100);
+        let candidate = make(1000);
+        // Same shape, so no StreamEvent finding without tolerance.
+        assert!(compare_stream_events(&baseline, &candidate, None).is_empty());
+        // Tight tolerance fails, loose passes; repeated runs agree.
+        let tight = compare_stream_events(&baseline, &candidate, Some(10));
+        assert!(tight.iter().any(|finding| finding.kind == DiffKind::Timing));
+        let loose = compare_stream_events(&baseline, &candidate, Some(10_000));
+        assert!(!loose.iter().any(|finding| finding.kind == DiffKind::Timing));
+        let tight_again = compare_stream_events(&baseline, &candidate, Some(10));
+        assert_eq!(
+            tight, tight_again,
+            "cadence comparison must be deterministic"
+        );
+    }
+
+    #[test]
+    fn sse_ordered_differences_are_detected() {
+        // M010-C1 #13: ordered semantic differences.
+        let request = HttpRequest {
+            method: "GET".into(),
+            scheme: "http".into(),
+            authority: "example.test".into(),
+            path: "/events".into(),
+            query: Vec::new(),
+            headers: Vec::new(),
+            body: BodyRef::Absent,
+            trailers: Vec::new(),
+        };
+        let response = HttpResponse {
+            status: 200,
+            headers: vec![HeaderEntry {
+                name: "content-type".into(),
+                value: "text/event-stream".into(),
+            }],
+            body: BodyRef::Absent,
+            trailers: Vec::new(),
+        };
+        let baseline = Flow::new(request.clone(), FlowOutcome::Response(response.clone()), 1);
+        let candidate = Flow::new(request, FlowOutcome::Response(response), 1);
+        let policy = ComparisonPolicy {
+            compare_sse: true,
+            ..ComparisonPolicy::default()
+        };
+        // Same events in different order must differ (ordered comparison).
+        let ordered = compare_flows_with_policy(
+            &baseline,
+            &candidate,
+            b"data: one\n\ndata: two\n\n",
+            b"data: two\n\ndata: one\n\n",
+            ReportScheduler::Sequential,
+            &policy,
+        );
+        assert!(
+            ordered
+                .findings
+                .iter()
+                .any(|finding| finding.kind == DiffKind::Sse)
+        );
+        // Identical order passes SSE (raw bodies identical, so no findings).
+        let same = compare_flows_with_policy(
+            &baseline,
+            &candidate,
+            b"data: one\n\ndata: two\n\n",
+            b"data: one\n\ndata: two\n\n",
+            ReportScheduler::Sequential,
+            &policy,
+        );
+        assert!(
+            !same
+                .findings
+                .iter()
+                .any(|finding| finding.kind == DiffKind::Sse)
+        );
+    }
+
+    #[test]
+    fn each_sse_ignore_field_only_ignores_that_field() {
+        // M010-C1 #14: each supported ignore field only ignores that field.
+        let baseline = crate::parse_sse(
+            b"event: update\nid: 1\nretry: 100\ndata: hello\n: comment-a\n\n",
+            true,
+        );
+        assert!(baseline.error.is_none());
+        let cases: &[(&[u8], &str)] = &[
+            (
+                b"event: update\nid: 1\nretry: 100\ndata: changed\n: comment-a\n\n",
+                "data",
+            ),
+            (
+                b"event: other\nid: 1\nretry: 100\ndata: hello\n: comment-a\n\n",
+                "event",
+            ),
+            (
+                b"event: update\nid: 2\nretry: 100\ndata: hello\n: comment-a\n\n",
+                "id",
+            ),
+            (
+                b"event: update\nid: 1\nretry: 200\ndata: hello\n: comment-a\n\n",
+                "retry",
+            ),
+            (
+                b"event: update\nid: 1\nretry: 100\ndata: hello\n: comment-b\n\n",
+                "comments",
+            ),
+        ];
+        for (candidate_bytes, ignored) in cases {
+            let candidate = crate::parse_sse(candidate_bytes, true);
+            assert!(candidate.error.is_none());
+            // Without ignore, they differ.
+            assert!(
+                !crate::compare_sse(&baseline.events, &candidate.events, &[]),
+                "field {ignored} change must differ without ignore"
+            );
+            // Ignoring exactly that field passes.
+            assert!(
+                crate::compare_sse(
+                    &baseline.events,
+                    &candidate.events,
+                    &[(*ignored).to_owned()]
+                ),
+                "ignoring {ignored} must pass"
+            );
+            // Ignoring a different field still fails.
+            let other = if *ignored == "data" { "event" } else { "data" };
+            assert!(
+                !crate::compare_sse(&baseline.events, &candidate.events, &[other.to_owned()]),
+                "ignoring {other} must not hide {ignored} difference"
+            );
+        }
+        // Unsupported ignore field fails validation.
+        let bad = ComparisonPolicy {
+            sse_ignored: vec!["bogus".into()],
+            ..ComparisonPolicy::default()
+        };
+        assert!(bad.validate().is_err());
+    }
+
+    #[test]
+    fn malformed_sse_yields_bounded_finding_when_enabled() {
+        // M010-C1 #15: malformed SSE produces a bounded Sse finding when enabled.
+        let request = HttpRequest {
+            method: "GET".into(),
+            scheme: "http".into(),
+            authority: "example.test".into(),
+            path: "/events".into(),
+            query: Vec::new(),
+            headers: Vec::new(),
+            body: BodyRef::Absent,
+            trailers: Vec::new(),
+        };
+        let response = HttpResponse {
+            status: 200,
+            headers: vec![HeaderEntry {
+                name: "content-type".into(),
+                value: "text/event-stream".into(),
+            }],
+            body: BodyRef::Absent,
+            trailers: Vec::new(),
+        };
+        let baseline = Flow::new(request.clone(), FlowOutcome::Response(response.clone()), 1);
+        let candidate = Flow::new(request, FlowOutcome::Response(response), 1);
+        let policy = ComparisonPolicy {
+            compare_sse: true,
+            ..ComparisonPolicy::default()
+        };
+        // Candidate is non-UTF8, so SSE parsing fails.
+        let malformed = compare_flows_with_policy(
+            &baseline,
+            &candidate,
+            b"data: ok\n\n",
+            &[0xff, 0xfe],
+            ReportScheduler::Sequential,
+            &policy,
+        );
+        assert!(
+            malformed
+                .findings
+                .iter()
+                .any(|finding| finding.kind == DiffKind::Sse)
+        );
+        // Bounded: baseline/candidate summaries are short, not raw bodies.
+        for finding in malformed
+            .findings
+            .iter()
+            .filter(|finding| finding.kind == DiffKind::Sse)
+        {
+            assert!(finding.baseline.len() < 256);
+            assert!(finding.candidate.len() < 256);
+        }
+        // Default (no opt-in) has no Sse finding even when malformed.
+        let default_report = compare_flows(
+            &baseline,
+            &candidate,
+            b"data: ok\n\n",
+            &[0xff, 0xfe],
+            ReportScheduler::Sequential,
+        );
+        assert!(
+            !default_report
                 .findings
                 .iter()
                 .any(|finding| finding.kind == DiffKind::Sse)

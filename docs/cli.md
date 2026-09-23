@@ -49,9 +49,16 @@ per flow. Dropping a response cancels its pending sleep.
 
 `inspect --sse` adds a derived view for `text/event-stream` response bodies.
 The view is bounded by `--max-body-bytes` and the 16 MiB parser cap; raw body
-bytes remain authoritative. `diff` compares ordered SSE fields whenever both
-responses declare `text/event-stream`, alongside the ordinary raw-body
-comparison.
+bytes remain authoritative. `replay`, `test`, and fixture `diff` compare
+ordered response stream events only with `--compare-stream-events`, cadence
+only with `--cadence-tolerance-ms <N>` (which implies stream comparison), and
+derived SSE semantics only with `--compare-sse` or repeatable
+`--sse-ignore <field>` (`data,event,id,retry,comments`, which implies SSE
+comparison). Raw body comparison remains authoritative; SSE findings never
+suppress raw-body findings. Requested stream comparison requires valid metadata
+on both sides; missing metadata is an explicit fixture/configuration error.
+Candidate response stream observation uses monotonic deltas; request cadence is
+not recorded.
 
 `replay` and `test` keep sequential candidate execution by default. Add
 `--scheduler timeline` to start candidate requests at their recorded monotonic

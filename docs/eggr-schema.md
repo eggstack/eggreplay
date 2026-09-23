@@ -9,11 +9,14 @@ Schema-1 fixtures remain readable.
 
 Bodies distinguish `absent`, `empty`, and a blob reference with SHA-256 and
 length. Headers, query pairs, and trailers preserve order and duplicates.
-Unknown required extensions and future session schemas are rejected. Schema-2
-extensions use confined single-filename paths, reject symlinks, and are bounded
-to 16 MiB each and 32 MiB total. Extension payload files are written before
-the manifest publication marker. `Session::copy_to` streams and revalidates
-all blobs while upgrading/copying a session; it never mutates its source.
+`required_for_replay` means the reader must understand and apply the extension,
+not that the user opted into timing delays. Unknown required extensions and
+future session schemas are rejected; there is no generic
+ignore-required-extension switch. Schema-2 extensions use confined
+single-filename paths, reject symlinks, and are bounded to 16 MiB each and
+32 MiB total. Extension payload files are written before the manifest
+publication marker. `Session::copy_to` streams and revalidates all blobs while
+upgrading/copying a session; it never mutates its source.
 
 ## Authored scenarios (M009)
 
@@ -30,19 +33,29 @@ transition matches.
 
 ## Stream events and SSE views (M010)
 
-The optional `stream-events` extension stores bounded JSON metadata keyed by
-flow id. It records relative monotonic DATA boundaries, trailers, clean EOF, or
-a typed mid-body error and byte offset. It never duplicates DATA bytes; body
-blobs remain authoritative. Event capture is limited to 2,048 entries per
-direction, 4,096 per flow, and 16 MiB serialized metadata per session. Fixture
-opening validates offsets, order, schema, and delays.
+The required-when-used `stream-events` extension stores bounded JSON metadata
+keyed by flow id. It records relative monotonic DATA boundaries, trailers,
+clean EOF, or a typed mid-body error and byte offset. It never duplicates DATA
+bytes; body blobs remain authoritative. Event capture is limited to 2,048
+entries per direction, 4,096 per flow, and 16 MiB serialized metadata per
+session. Fixture opening validates offsets, order, schema, and delays; missing,
+malformed, unsupported-version, duplicate-flow, or body-length inconsistent
+stream metadata fails closed.
 
-Replay is immediate by default. `serve --timing-mode recorded` reproduces
-relative delays; `scaled:<factor>` scales them within the documented bounds.
-These modes reproduce semantic body event cadence rather than TCP packet
-timing. `inspect --sse` and `diff` derive ordered SSE event views from
-`text/event-stream`; malformed SSE is reported while the original body remains
-unchanged.
+Replay is immediate by default. Immediate applies semantic event and terminal
+mid-body error behavior with zero added delay; `serve --timing-mode recorded`
+reproduces relative delays and `scaled:<factor>` scales them within the
+documented bounds. These modes reproduce semantic body event cadence rather
+than TCP packet timing. `inspect --sse` remains an independent explicit
+inspection option. `replay`, `test`, and fixture `diff` compare ordered
+response stream events only when `--compare-stream-events` is given,
+cadence only when `--cadence-tolerance-ms <N>` is given (which implies stream
+comparison), and derived SSE semantics only when `--compare-sse` or
+`--sse-ignore <field>` is given (supported fields:
+`data,event,id,retry,comments`). Raw body comparison remains authoritative;
+SSE findings never suppress raw-body findings. Candidate response stream
+observation is authoritative; candidate request cadence is not recorded because
+the candidate path materializes the baseline request into one body.
 
 ## Lazy replay (C001)
 

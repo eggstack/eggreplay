@@ -1,6 +1,7 @@
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use eggreplay_core::{
-    FlowOutcome, Matcher, PhysicalRoute, ReportScheduler, SessionMetadata, compare_flows,
+    ComparisonPolicy, FlowOutcome, Matcher, PhysicalRoute, ReportScheduler, SessionMetadata,
+    compare_flows_with_policy,
 };
 use eggreplay_http::{EggressDialer, ReplayFixture, execute_candidate};
 use eggreplay_store::{RecordingSession, Session, StoreLimits};
@@ -156,6 +157,46 @@ impl From<ServeRecordMode> for eggreplay_core::RecordMode {
     }
 }
 #[derive(Debug, Args)]
+struct ComparisonArgs {
+    /// Enable ordered response event comparison.
+    #[arg(long, default_value_t = false)]
+    compare_stream_events: bool,
+    /// Enable cadence comparison with tolerance in milliseconds; implies
+    /// stream event comparison.
+    #[arg(long)]
+    cadence_tolerance_ms: Option<u64>,
+    /// Enable derived SSE semantic comparison.
+    #[arg(long, default_value_t = false)]
+    compare_sse: bool,
+    /// SSE field to ignore (`data,event,id,retry,comments`); repeatable and
+    /// implies SSE comparison.
+    #[arg(long = "sse-ignore")]
+    sse_ignore: Vec<String>,
+}
+
+fn comparison_policy(args: &ComparisonArgs) -> Result<ComparisonPolicy, (String, String)> {
+    let cadence_tolerance_ns = match args.cadence_tolerance_ms {
+        Some(ms) => Some(ms.checked_mul(1_000_000).ok_or_else(|| {
+            (
+                "configuration".to_owned(),
+                "cadence tolerance overflows".to_owned(),
+            )
+        })?),
+        None => None,
+    };
+    let policy = ComparisonPolicy {
+        compare_stream_events: args.compare_stream_events,
+        cadence_tolerance_ns,
+        compare_sse: args.compare_sse,
+        sse_ignored: args.sse_ignore.clone(),
+    };
+    policy
+        .validate()
+        .map_err(|message| ("configuration".to_owned(), message))?;
+    Ok(policy)
+}
+
+#[derive(Debug, Args)]
 struct ReplayArgs {
     #[arg(long)]
     fixture: PathBuf,
@@ -170,6 +211,8 @@ struct ReplayArgs {
     /// Maximum concurrent candidate requests for timeline scheduling.
     #[arg(long, default_value_t = 8)]
     max_concurrency: usize,
+    #[command(flatten)]
+    comparison: ComparisonArgs,
     #[command(flatten)]
     output: OutputArgs,
 }
@@ -188,6 +231,8 @@ struct TestArgs {
     /// Maximum concurrent candidate requests for timeline scheduling.
     #[arg(long, default_value_t = 8)]
     max_concurrency: usize,
+    #[command(flatten)]
+    comparison: ComparisonArgs,
     #[command(flatten)]
     output: OutputArgs,
 }
@@ -208,6 +253,8 @@ struct DiffArgs {
     baseline: PathBuf,
     #[arg(long)]
     candidate: PathBuf,
+    #[command(flatten)]
+    comparison: ComparisonArgs,
     #[command(flatten)]
     output: OutputArgs,
 }
@@ -274,6 +321,7 @@ async fn run(cli: Cli) -> Result<(), (String, String)> {
         Command::Record(args) => record(args).await,
         Command::Serve(args) => serve(args).await,
         Command::Replay(args) => {
+            let policy = comparison_policy(&args.comparison)?;
             regression(
                 args.fixture,
                 args.target,
@@ -285,10 +333,12 @@ async fn run(cli: Cli) -> Result<(), (String, String)> {
                     choice: args.scheduler,
                     max_concurrency: args.max_concurrency,
                 },
+                policy,
             )
             .await
         }
         Command::Test(args) => {
+            let policy = comparison_policy(&args.comparison)?;
             regression(
                 args.fixture,
                 args.target,
@@ -300,6 +350,7 @@ async fn run(cli: Cli) -> Result<(), (String, String)> {
                     choice: args.scheduler,
                     max_concurrency: args.max_concurrency,
                 },
+                policy,
             )
             .await
         }
@@ -763,6 +814,7 @@ fn recover_fixture_transactionally(target: &std::path::Path) -> Result<(), Strin
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn regression(
     fixture: PathBuf,
     target: String,
@@ -771,6 +823,7 @@ async fn regression(
     output: OutputArgs,
     enforce: bool,
     scheduler: SchedulerOptions,
+    policy: ComparisonPolicy,
 ) -> Result<(), (String, String)> {
     let session = Session::open(&fixture, StoreLimits::default()).map_err(|error| {
         emit_reports(
@@ -817,6 +870,40 @@ async fn regression(
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| ("fixture".into(), error.to_string()))?;
     let flow_ids = flows.iter().map(|flow| flow.id.clone()).collect::<Vec<_>>();
+    // Load baseline stream events by flow id when requested. Missing requested
+    // metadata is an explicit fixture/configuration error, not fallback.
+    let baseline_streams: Option<
+        std::collections::HashMap<String, eggreplay_core::FlowStreamEvents>,
+    > = if policy.is_stream_enabled() {
+        let bytes = session
+                .read_extension("stream-events")
+                .map_err(|error| ("fixture".into(), error.to_string()))?
+                .ok_or_else(|| {
+                    (
+                        "fixture".to_owned(),
+                        "stream comparison requested but baseline fixture has no stream-events extension".to_owned(),
+                    )
+                })?;
+        let decoded: eggreplay_core::StreamEvents =
+            serde_json::from_slice(&bytes).map_err(|error| {
+                (
+                    "fixture".to_owned(),
+                    format!("invalid stream-events extension: {error}"),
+                )
+            })?;
+        decoded
+            .validate()
+            .map_err(|error| ("fixture".to_owned(), error))?;
+        Some(
+            decoded
+                .flows
+                .into_iter()
+                .map(|flow| (flow.flow_id.clone(), flow))
+                .collect(),
+        )
+    } else {
+        None
+    };
     let mut reports = vec![None; flows.len()];
     match scheduler.choice {
         SchedulerChoice::Sequential => {
@@ -829,6 +916,8 @@ async fn regression(
                         &physical_route,
                         baseline.clone(),
                         ReportScheduler::Sequential,
+                        &policy,
+                        baseline_streams.as_ref(),
                     )
                     .await
                     .map_err(|error| ("runtime".into(), error))?,
@@ -895,6 +984,8 @@ async fn regression(
                     let client = client.clone();
                     let target_uri = target_uri.clone();
                     let physical_route = physical_route.clone();
+                    let policy = policy.clone();
+                    let baseline_streams = baseline_streams.clone();
                     tasks.spawn(async move {
                         tokio::time::sleep_until(origin + std::time::Duration::from_nanos(offset))
                             .await;
@@ -905,6 +996,8 @@ async fn regression(
                             &physical_route,
                             baseline,
                             ReportScheduler::Timeline,
+                            &policy,
+                            baseline_streams.as_ref(),
                         )
                         .await?;
                         Ok::<_, String>((index, report))
@@ -964,6 +1057,7 @@ async fn regression(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn compare_candidate_flow(
     session: &Session,
     client: &eggfetch_core::Client,
@@ -971,6 +1065,8 @@ async fn compare_candidate_flow(
     physical_route: &PhysicalRoute,
     baseline: eggreplay_core::Flow,
     scheduler: ReportScheduler,
+    policy: &ComparisonPolicy,
+    baseline_streams: Option<&std::collections::HashMap<String, eggreplay_core::FlowStreamEvents>>,
 ) -> Result<eggreplay_core::RegressionReport, String> {
     let request_body = body(session, &baseline.request.body).map_err(|error| error.to_string())?;
     let candidate = execute_candidate(
@@ -989,16 +1085,59 @@ async fn compare_candidate_flow(
         }
         FlowOutcome::Error(_) => Vec::new(),
     };
-    Ok(compare_flows(
+    let mut report = compare_flows_with_policy(
         &baseline,
         &candidate.flow,
         &baseline_response,
         &candidate.response_body,
         scheduler,
-    ))
+        policy,
+    );
+    // Live candidate regression, response-direction authoritative:
+    // 1. load baseline stream events by flow id when requested;
+    // 2. compare candidate response events from the observation;
+    // 3. report event-shape/terminal differences;
+    // 4. apply cadence tolerance only when configured;
+    // 5. merge findings into the existing RegressionReport authority;
+    // 6. keep deterministic fixture/report ordering.
+    if policy.is_stream_enabled() {
+        let streams = baseline_streams.ok_or_else(|| {
+            "stream comparison requested but baseline stream metadata is missing".to_owned()
+        })?;
+        let baseline_events = streams.get(&baseline.id).ok_or_else(|| {
+            format!(
+                "stream comparison requested but baseline metadata is missing for flow {}",
+                baseline.id
+            )
+        })?;
+        let baseline_response_only = eggreplay_core::FlowStreamEvents {
+            flow_id: baseline.id.clone(),
+            start_offset_ns: 0,
+            request: Vec::new(),
+            response: baseline_events.response.clone(),
+        };
+        let candidate_response_only = eggreplay_core::FlowStreamEvents {
+            flow_id: baseline.id.clone(),
+            start_offset_ns: 0,
+            request: Vec::new(),
+            response: candidate.response_events.clone(),
+        };
+        let mut stream_findings = eggreplay_core::compare_stream_events(
+            &baseline_response_only,
+            &candidate_response_only,
+            policy.cadence_tolerance_ns,
+        );
+        report.findings.append(&mut stream_findings);
+        report.findings.sort_by(|left, right| {
+            (format!("{:?}", left.kind), &left.field)
+                .cmp(&(format!("{:?}", right.kind), &right.field))
+        });
+    }
+    Ok(report)
 }
 
 async fn diff(args: DiffArgs) -> Result<(), (String, String)> {
+    let policy = comparison_policy(&args.comparison)?;
     let baseline = Session::open(&args.baseline, StoreLimits::default())
         .map_err(|error| ("fixture".into(), error.to_string()))?;
     let candidate = Session::open(&args.candidate, StoreLimits::default())
@@ -1013,31 +1152,145 @@ async fn diff(args: DiffArgs) -> Result<(), (String, String)> {
         .map_err(|error| ("fixture".into(), error.to_string()))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| ("fixture".into(), error.to_string()))?;
-    let reports = left
-        .iter()
-        .zip(right.iter())
-        .map(|(left, right)| {
-            let left_body = match &left.outcome {
-                FlowOutcome::Response(response) => {
-                    body(&baseline, &response.body).unwrap_or_default()
-                }
-                FlowOutcome::Error(_) => Vec::new(),
+    // Requested stream comparison requires valid metadata on both sides.
+    // Missing requested metadata is an explicit fixture/configuration error,
+    // not fallback. Comparison is response-direction authoritative and
+    // deterministic in fixture order.
+    let baseline_streams = if policy.is_stream_enabled() {
+        let bytes = baseline
+            .read_extension("stream-events")
+            .map_err(|error| ("fixture".into(), error.to_string()))?
+            .ok_or_else(|| {
+                (
+                    "fixture".to_owned(),
+                    "stream comparison requested but baseline fixture has no stream-events extension".to_owned(),
+                )
+            })?;
+        let decoded: eggreplay_core::StreamEvents =
+            serde_json::from_slice(&bytes).map_err(|error| {
+                (
+                    "fixture".to_owned(),
+                    format!("invalid baseline stream-events extension: {error}"),
+                )
+            })?;
+        decoded
+            .validate()
+            .map_err(|error| ("fixture".to_owned(), error))?;
+        Some(
+            decoded
+                .flows
+                .into_iter()
+                .map(|flow| (flow.flow_id.clone(), flow))
+                .collect::<std::collections::HashMap<_, _>>(),
+        )
+    } else {
+        None
+    };
+    let candidate_streams = if policy.is_stream_enabled() {
+        let bytes = candidate
+            .read_extension("stream-events")
+            .map_err(|error| ("fixture".into(), error.to_string()))?
+            .ok_or_else(|| {
+                (
+                    "fixture".to_owned(),
+                    "stream comparison requested but candidate fixture has no stream-events extension".to_owned(),
+                )
+            })?;
+        let decoded: eggreplay_core::StreamEvents =
+            serde_json::from_slice(&bytes).map_err(|error| {
+                (
+                    "fixture".to_owned(),
+                    format!("invalid candidate stream-events extension: {error}"),
+                )
+            })?;
+        decoded
+            .validate()
+            .map_err(|error| ("fixture".to_owned(), error))?;
+        Some(
+            decoded
+                .flows
+                .into_iter()
+                .map(|flow| (flow.flow_id.clone(), flow))
+                .collect::<std::collections::HashMap<_, _>>(),
+        )
+    } else {
+        None
+    };
+    let mut reports = Vec::with_capacity(left.len().min(right.len()));
+    for (left_flow, right_flow) in left.iter().zip(right.iter()) {
+        let left_body = match &left_flow.outcome {
+            FlowOutcome::Response(response) => body(&baseline, &response.body).unwrap_or_default(),
+            FlowOutcome::Error(_) => Vec::new(),
+        };
+        let right_body = match &right_flow.outcome {
+            FlowOutcome::Response(response) => body(&candidate, &response.body).unwrap_or_default(),
+            FlowOutcome::Error(_) => Vec::new(),
+        };
+        let mut report = compare_flows_with_policy(
+            left_flow,
+            right_flow,
+            &left_body,
+            &right_body,
+            ReportScheduler::Sequential,
+            &policy,
+        );
+        if policy.is_stream_enabled() {
+            let baseline_map = baseline_streams.as_ref().ok_or_else(|| {
+                (
+                    "fixture".to_owned(),
+                    "stream comparison requested but baseline stream metadata is missing"
+                        .to_owned(),
+                )
+            })?;
+            let candidate_map = candidate_streams.as_ref().ok_or_else(|| {
+                (
+                    "fixture".to_owned(),
+                    "stream comparison requested but candidate stream metadata is missing"
+                        .to_owned(),
+                )
+            })?;
+            let left_events = baseline_map.get(&left_flow.id).ok_or_else(|| {
+                (
+                    "fixture".to_owned(),
+                    format!(
+                        "stream comparison requested but baseline metadata is missing for flow {}",
+                        left_flow.id
+                    ),
+                )
+            })?;
+            let right_events = candidate_map.get(&right_flow.id).ok_or_else(|| {
+                (
+                    "fixture".to_owned(),
+                    format!(
+                        "stream comparison requested but candidate metadata is missing for flow {}",
+                        right_flow.id
+                    ),
+                )
+            })?;
+            let left_response_only = eggreplay_core::FlowStreamEvents {
+                flow_id: left_flow.id.clone(),
+                start_offset_ns: 0,
+                request: Vec::new(),
+                response: left_events.response.clone(),
             };
-            let right_body = match &right.outcome {
-                FlowOutcome::Response(response) => {
-                    body(&candidate, &response.body).unwrap_or_default()
-                }
-                FlowOutcome::Error(_) => Vec::new(),
+            let right_response_only = eggreplay_core::FlowStreamEvents {
+                flow_id: left_flow.id.clone(),
+                start_offset_ns: 0,
+                request: Vec::new(),
+                response: right_events.response.clone(),
             };
-            compare_flows(
-                left,
-                right,
-                &left_body,
-                &right_body,
-                ReportScheduler::Sequential,
-            )
-        })
-        .collect::<Vec<_>>();
+            let mut stream_findings = eggreplay_core::compare_stream_events(
+                &left_response_only,
+                &right_response_only,
+                policy.cadence_tolerance_ns,
+            );
+            report.findings.append(&mut stream_findings);
+            report.findings.sort_by(|a, b| {
+                (format!("{:?}", a.kind), &a.field).cmp(&(format!("{:?}", b.kind), &b.field))
+            });
+        }
+        reports.push(report);
+    }
     let success = left.len() == right.len() && reports.iter().all(|report| report.is_success());
     let flow_ids = left.iter().map(|flow| flow.id.clone()).collect::<Vec<_>>();
     emit_reports(

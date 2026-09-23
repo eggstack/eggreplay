@@ -595,3 +595,325 @@ fn inspect_bodies_bounded_and_redacted() {
     assert!(text.contains("1024") || text.contains("102400"), "{text}");
     std::fs::remove_dir_all(dir).ok();
 }
+
+fn write_stream_fixture(dir: &Path, name: &str, terminal_error: bool) -> PathBuf {
+    use eggreplay_core::{
+        BodyRef, Flow, FlowOutcome, HttpRequest, HttpResponse, Provenance, SCHEMA_VERSION,
+        SessionMetadata,
+    };
+    use eggreplay_store::{SessionWriter, StoreLimits};
+    use std::io::Write as IoWrite;
+    let fixture = dir.join(name);
+    let mut writer =
+        SessionWriter::create(&fixture, SessionMetadata::default(), StoreLimits::default())
+            .unwrap();
+    let mut sink = writer.begin_blob().unwrap();
+    sink.write_all(b"ab").unwrap();
+    let body_ref = sink.finish().unwrap();
+    let flow = Flow {
+        schema_version: SCHEMA_VERSION,
+        id: "stream-flow".into(),
+        started_at_ms: 1,
+        completed_at_ms: Some(2),
+        request: HttpRequest {
+            method: "GET".into(),
+            scheme: "http".into(),
+            authority: "example.test".into(),
+            path: "/stream".into(),
+            query: vec![],
+            headers: vec![],
+            body: BodyRef::Empty,
+            trailers: vec![],
+        },
+        outcome: FlowOutcome::Response(HttpResponse {
+            status: 200,
+            headers: vec![],
+            body: body_ref,
+            trailers: vec![],
+        }),
+        physical_route: None,
+        provenance: Provenance {
+            mode: "test".into(),
+            observer: "test".into(),
+        },
+        annotations: vec![],
+        redactions: vec![],
+    };
+    writer.append_flow(&flow).unwrap();
+    let terminal = if terminal_error {
+        eggreplay_core::StreamEventKind::Error {
+            offset: 2,
+            category: "other".into(),
+            phase: "body".into(),
+        }
+    } else {
+        eggreplay_core::StreamEventKind::End
+    };
+    writer
+        .append_stream_events(eggreplay_core::FlowStreamEvents {
+            flow_id: flow.id.clone(),
+            start_offset_ns: 0,
+            request: Vec::new(),
+            response: vec![
+                eggreplay_core::StreamEvent {
+                    delta_ns: 0,
+                    event: eggreplay_core::StreamEventKind::Data {
+                        offset: 0,
+                        length: 2,
+                    },
+                },
+                eggreplay_core::StreamEvent {
+                    delta_ns: 10,
+                    event: terminal,
+                },
+            ],
+        })
+        .unwrap();
+    let _ = writer.finish().unwrap();
+    fixture
+}
+
+#[test]
+fn requested_stream_comparison_with_missing_metadata_fails_explicitly() {
+    // M010-C1 #12: missing requested metadata is an explicit
+    // fixture/configuration error, not fallback.
+    let dir = temp_dir("stream-missing");
+    let fixture = write_minimal_fixture(&dir, 1);
+    let output = run_cli(&[
+        "diff",
+        "--baseline",
+        fixture.to_str().unwrap(),
+        "--candidate",
+        fixture.to_str().unwrap(),
+        "--compare-stream-events",
+        "--output",
+        "json",
+    ]);
+    // Fixture error (exit 3), not silent success.
+    assert_eq!(
+        output.status.code(),
+        Some(3),
+        "missing stream metadata must fail explicitly: stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("fixture"), "{stderr}");
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn fixture_stream_comparison_is_deterministic_and_json_junit_agree() {
+    // M010-C1 #16 and #17: deterministic fixture-vs-fixture comparison with a
+    // single authority projecting to both JSON and JUnit.
+    let dir = temp_dir("stream-deterministic");
+    let baseline = write_stream_fixture(&dir, "baseline.eggr", false);
+    let candidate = write_stream_fixture(&dir, "candidate.eggr", true);
+    // Same pair twice must produce identical JSON (deterministic ordering).
+    let first = run_cli(&[
+        "diff",
+        "--baseline",
+        baseline.to_str().unwrap(),
+        "--candidate",
+        candidate.to_str().unwrap(),
+        "--compare-stream-events",
+        "--output",
+        "json",
+    ]);
+    let second = run_cli(&[
+        "diff",
+        "--baseline",
+        baseline.to_str().unwrap(),
+        "--candidate",
+        candidate.to_str().unwrap(),
+        "--compare-stream-events",
+        "--output",
+        "json",
+    ]);
+    assert_eq!(
+        first.status.code(),
+        Some(1),
+        "stream terminal diff must fail"
+    );
+    assert_eq!(
+        first.stdout, second.stdout,
+        "fixture diff must be deterministic"
+    );
+    let envelope: serde_json::Value = serde_json::from_slice(&first.stdout).unwrap();
+    let finding_count = envelope["payload"]["finding_count"].as_u64().unwrap_or(0);
+    assert!(finding_count > 0, "must have stream findings");
+    let payload = envelope["payload"].to_string();
+    // JSON uses snake_case `stream_event`; JUnit uses Debug `StreamEvent`.
+    assert!(payload.contains("stream_event"), "{payload}");
+    // JUnit projects the same findings (same failure, same flow).
+    let junit = run_cli(&[
+        "diff",
+        "--baseline",
+        baseline.to_str().unwrap(),
+        "--candidate",
+        candidate.to_str().unwrap(),
+        "--compare-stream-events",
+        "--output",
+        "junit",
+    ]);
+    let junit_stdout = String::from_utf8_lossy(&junit.stdout);
+    assert!(junit_stdout.contains("failures=\"1\""), "{junit_stdout}");
+    assert!(junit_stdout.contains("stream-flow"), "{junit_stdout}");
+    assert!(junit_stdout.contains("StreamEvent"), "{junit_stdout}");
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn default_diff_emits_no_stream_findings_without_opt_in() {
+    // M010-C1 #9 (CLI side): default emits no stream/SSE-only findings.
+    let dir = temp_dir("stream-default");
+    let baseline = write_stream_fixture(&dir, "baseline.eggr", false);
+    let candidate = write_stream_fixture(&dir, "candidate.eggr", true);
+    // Same bodies, only terminal differs; without opt-in, diff must succeed
+    // (raw bodies identical, no stream findings).
+    let output = run_cli(&[
+        "diff",
+        "--baseline",
+        baseline.to_str().unwrap(),
+        "--candidate",
+        candidate.to_str().unwrap(),
+        "--output",
+        "json",
+    ]);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "default must not emit stream-only findings: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    std::fs::remove_dir_all(dir).ok();
+}
+
+fn write_sse_fixture(dir: &Path, name: &str, body: &[u8]) -> PathBuf {
+    use eggreplay_core::{
+        BodyRef, Flow, FlowOutcome, HeaderEntry, HttpRequest, HttpResponse, Provenance,
+        SCHEMA_VERSION, SessionMetadata,
+    };
+    use eggreplay_store::{SessionWriter, StoreLimits};
+    use std::io::Write as IoWrite;
+    let fixture = dir.join(name);
+    let mut writer =
+        SessionWriter::create(&fixture, SessionMetadata::default(), StoreLimits::default())
+            .unwrap();
+    let mut sink = writer.begin_blob().unwrap();
+    sink.write_all(body).unwrap();
+    let body_ref = sink.finish().unwrap();
+    let flow = Flow {
+        schema_version: SCHEMA_VERSION,
+        id: "sse-flow".into(),
+        started_at_ms: 1,
+        completed_at_ms: Some(2),
+        request: HttpRequest {
+            method: "GET".into(),
+            scheme: "http".into(),
+            authority: "example.test".into(),
+            path: "/events".into(),
+            query: vec![],
+            headers: vec![],
+            body: BodyRef::Empty,
+            trailers: vec![],
+        },
+        outcome: FlowOutcome::Response(HttpResponse {
+            status: 200,
+            headers: vec![HeaderEntry {
+                name: "content-type".into(),
+                value: "text/event-stream".into(),
+            }],
+            body: body_ref,
+            trailers: vec![],
+        }),
+        physical_route: None,
+        provenance: Provenance {
+            mode: "test".into(),
+            observer: "test".into(),
+        },
+        annotations: vec![],
+        redactions: vec![],
+    };
+    writer.append_flow(&flow).unwrap();
+    let _ = writer.finish().unwrap();
+    fixture
+}
+
+#[test]
+fn sse_comparison_is_opt_in_and_ignore_is_field_specific() {
+    // M010-C1 #13/#14 (CLI side): SSE semantic comparison only when enabled,
+    // and each ignore field only ignores that field.
+    let dir = temp_dir("sse-optin");
+    let baseline = write_sse_fixture(&dir, "baseline.eggr", b"data: old\n\n");
+    let candidate = write_sse_fixture(&dir, "candidate.eggr", b"data: new\n\n");
+    // Default: raw body differs, but no Sse finding.
+    let default = run_cli(&[
+        "diff",
+        "--baseline",
+        baseline.to_str().unwrap(),
+        "--candidate",
+        candidate.to_str().unwrap(),
+        "--output",
+        "json",
+    ]);
+    let envelope: serde_json::Value = serde_json::from_slice(&default.stdout).unwrap();
+    let payload = envelope["payload"].to_string();
+    // JSON uses snake_case `body`/`sse`.
+    assert!(payload.contains("\"body\""), "{payload}");
+    assert!(
+        !payload.contains("\"sse\""),
+        "SSE must be opt-in: {payload}"
+    );
+    // Opt-in: both Body and Sse findings (raw not suppressed).
+    let enabled = run_cli(&[
+        "diff",
+        "--baseline",
+        baseline.to_str().unwrap(),
+        "--candidate",
+        candidate.to_str().unwrap(),
+        "--compare-sse",
+        "--output",
+        "json",
+    ]);
+    let envelope: serde_json::Value = serde_json::from_slice(&enabled.stdout).unwrap();
+    let payload = envelope["payload"].to_string();
+    assert!(payload.contains("\"body\""), "{payload}");
+    assert!(payload.contains("\"sse\""), "{payload}");
+    // Ignore data: SSE finding suppressed, Body remains.
+    let ignored = run_cli(&[
+        "diff",
+        "--baseline",
+        baseline.to_str().unwrap(),
+        "--candidate",
+        candidate.to_str().unwrap(),
+        "--sse-ignore",
+        "data",
+        "--output",
+        "json",
+    ]);
+    let envelope: serde_json::Value = serde_json::from_slice(&ignored.stdout).unwrap();
+    let payload = envelope["payload"].to_string();
+    assert!(
+        payload.contains("\"body\""),
+        "raw body must remain: {payload}"
+    );
+    assert!(
+        !payload.contains("\"sse\""),
+        "ignored data must suppress SSE: {payload}"
+    );
+    // Invalid ignore field is a configuration error.
+    let bad = run_cli(&[
+        "diff",
+        "--baseline",
+        baseline.to_str().unwrap(),
+        "--candidate",
+        candidate.to_str().unwrap(),
+        "--sse-ignore",
+        "bogus",
+        "--output",
+        "json",
+    ]);
+    assert_eq!(bad.status.code(), Some(2));
+    std::fs::remove_dir_all(dir).ok();
+}

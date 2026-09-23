@@ -25,8 +25,9 @@ pub use matching::{
     Matcher, MatcherSession, NearMiss, NormalizedRequest,
 };
 pub use report::{
-    DiffFinding, DiffKind, RegressionReport, ReportScheduler, TimingAssertion, compare_flows,
-    compare_flows_with_timing, compare_stream_events,
+    ComparisonPolicy, DiffFinding, DiffKind, RegressionReport, ReportScheduler, TimingAssertion,
+    compare_flows, compare_flows_with_policy, compare_flows_with_timing,
+    compare_flows_with_timing_and_policy, compare_stream_events,
 };
 pub use scenario::{
     ExtractionFailureBehavior, JsonPointerReplacement, RULES_SCHEMA_VERSION,
