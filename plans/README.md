@@ -5,10 +5,10 @@ This directory is the source of truth for EggReplay implementation handoff.
 EggReplay reuses Eggstack transport authorities rather than reimplementing
 them:
 
-- **eggfetch** owns outbound HTTP/TLS, pooling, streaming bodies, trailers, and network failures.
-- **eggserve** owns inbound HTTP serving/runtime mechanics for replay and mock endpoints.
+- **eggfetch** owns outbound HTTP/TLS, pooling, streaming bodies, trailers, and upgraded connection IO.
+- **eggserve** owns inbound HTTP serving/runtime mechanics and generic tunnel handoff.
 - **eggress** owns optional listener-free outbound routing/proxy chains.
-- **eggreplay** owns the flow model, storage format, normalization, matching, replay semantics, redaction, scenarios, diff/regression logic, and CLI orchestration.
+- **eggreplay** owns the flow/conversation model, storage format, normalization, matching, replay semantics, redaction, scenarios, diff/regression logic, and CLI orchestration.
 
 ## Planning convention
 
@@ -34,15 +34,16 @@ closes a plan.
 
 ## Current execution
 
-v0.1/C001–C006 and M009 are closed. ADR 0005 defines the versioned extension
-strategy for future fixture semantics.
+v0.1/C001–C006, M009, and M010/M010-C1 are closed.
 
-M010's primary implementation is present and its initial hosted matrix is
-green, but post-implementation audit found extension-contract and candidate
-regression wiring gaps. **M010-C1 — Stream Extension and Regression Corrective
-Closure** is the only dependency-ready task. M011–M014 remain blocked in
-dependency order. See `registry.md` for the exact handoff state.
+M011 is now decomposed under ADR 0006 into M011A–M011F. **M011A — Transport
+Dependency and Upgrade Preflight** is the only dependency-ready task. It
+qualifies the published EggServe baseline, EggFetch 0.2.0 upgrade handoff, and
+the narrow Eggress route path before WebSocket semantic/storage work begins.
+
+M011B–M011F and M012–M014 remain blocked in dependency order. See
+`registry.md` for the exact handoff state.
 
 Do not start a blocked milestone by duplicating a dependency-owned subsystem.
-If current repository evidence invalidates a plan assumption, update the plan
-and registry before implementation.
+If repository evidence invalidates a plan assumption, update the plan and
+registry before implementation.
