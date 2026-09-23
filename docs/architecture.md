@@ -58,8 +58,10 @@ post-101 stream and EggServe's generic tunnel IO; a maintained WebSocket codec
 may parse messages over those already-owned streams but must not create its own
 HTTP/TCP/TLS connection stack.
 
-M011A is the dependency/upgrade gate. It must prove the substrate before M011B
-adds semantic types.
+M011A closed after qualifying registry EggServe 0.2.1, EggFetch 0.2.0 direct
+and Eggress-routed HTTP/1.1 101 upgrades, and the no-direct-fallback path.
+M011B owns transport-neutral conversation semantics and an optional
+`eggreplay-http/websocket` codec adapter over already-owned streams.
 
 ## Dependency state
 

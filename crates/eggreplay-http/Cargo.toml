@@ -11,12 +11,14 @@ description = "HTTP recording, replay, matching, and regression adapters"
 default = ["direct"]
 direct = []
 eggserve = ["dep:eggserve-primitives", "dep:eggserve-server"]
+websocket = ["dep:base64", "dep:tokio-tungstenite"]
 # Narrow Eggress feature: only pproxy-compat grammar for listener-free routing.
 # Do not enable extended, SSH, QUIC, listener, or server surfaces.
 eggress = ["dep:eggress-outbound", "eggress-outbound/pproxy-compat"]
 
 [dependencies]
 bytes.workspace = true
+base64 = { workspace = true, optional = true }
 chrono.workspace = true
 sha2.workspace = true
 eggreplay-core = { path = "../eggreplay-core" }
@@ -30,6 +32,7 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+tokio-tungstenite = { workspace = true, optional = true }
 url.workspace = true
 eggserve-primitives = { workspace = true, optional = true }
 eggserve-server = { workspace = true, optional = true }

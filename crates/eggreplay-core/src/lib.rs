@@ -11,6 +11,7 @@ pub mod report;
 pub mod scenario;
 pub mod security;
 pub mod stream;
+pub mod websocket;
 
 pub use config::{
     Config, Limits, MatcherProfile, OutputFormat, RecordMode, RecordPolicy, RedactionProfile,
@@ -43,6 +44,12 @@ pub use security::{
 pub use stream::{
     FlowStreamEvents, SseEvent, SseParseResult, StreamDirection, StreamEvent, StreamEventKind,
     StreamEvents, StreamTimingMode, compare_sse, parse_sse, timeline_order_offsets,
+};
+pub use websocket::{
+    WEBSOCKET_SCHEMA_VERSION, WebSocketConversation, WebSocketDirection, WebSocketLimits,
+    WebSocketMessage, WebSocketMessageKind, WebSocketRedaction, WebSocketTerminal,
+    WebSocketTranscript, normalize_websocket_handshake_headers,
+    validate_websocket_handshake_headers,
 };
 
 /// Legacy flow-schema constant retained for downstream source compatibility.

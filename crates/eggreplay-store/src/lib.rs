@@ -470,6 +470,12 @@ impl SessionWriter {
             )?;
             self.metadata.schema_version = eggreplay_core::SESSION_SCHEMA_VERSION;
         }
+        validate_websocket_fixture(
+            &self.staging,
+            &self.extensions,
+            self.limits.max_line_bytes,
+            self.limits.max_blob_bytes,
+        )?;
         let manifest = Manifest {
             metadata: self.metadata.clone(),
             complete: true,
@@ -1028,6 +1034,18 @@ impl RecordingSession {
                 )?;
             }
         }
+        let extensions = self
+            .inner
+            .extensions
+            .lock()
+            .map_err(|_| StoreError::Invalid("extension registry poisoned".into()))?
+            .clone();
+        validate_websocket_fixture(
+            &self.inner.staging,
+            &extensions,
+            self.inner.limits.max_line_bytes,
+            self.inner.limits.max_blob_bytes,
+        )?;
         let manifest = Manifest {
             metadata: {
                 let mut metadata = self.inner.metadata.clone();
@@ -1163,6 +1181,16 @@ impl Session {
         if !manifest.complete {
             return Err(StoreError::Invalid("fixture manifest is incomplete".into()));
         }
+        if manifest
+            .extensions
+            .iter()
+            .any(|extension| extension.name == "websocket-messages")
+            && manifest.metadata.schema_version != eggreplay_core::SESSION_SCHEMA_VERSION
+        {
+            return Err(StoreError::Invalid(
+                "WebSocket conversations require current session schema 2".into(),
+            ));
+        }
         let session = Self {
             root,
             manifest,
@@ -1198,6 +1226,12 @@ impl Session {
         if count != session.manifest.flow_count {
             return Err(StoreError::Invalid("manifest flow count mismatch".into()));
         }
+        validate_websocket_fixture(
+            &session.root,
+            &session.manifest.extensions,
+            limits.max_line_bytes,
+            limits.max_blob_bytes,
+        )?;
         if let Some(extension) = session
             .manifest
             .extensions
@@ -1764,9 +1798,134 @@ fn validate_extensions(root: &Path, extensions: &[ExtensionDescriptor]) -> Resul
                     extension.schema_version
                 )));
             }
-            let events: eggreplay_core::StreamEvents = serde_json::from_reader(File::open(path)?)?;
+            let events: eggreplay_core::StreamEvents = serde_json::from_reader(File::open(&path)?)?;
             events.validate().map_err(StoreError::Invalid)?;
         }
+        if extension.name == "websocket-messages" {
+            if extension.schema_version != eggreplay_core::WEBSOCKET_SCHEMA_VERSION {
+                return Err(StoreError::Invalid(format!(
+                    "unsupported websocket-messages extension schema {}",
+                    extension.schema_version
+                )));
+            }
+            if !extension.required_for_replay || extension.path != "websockets.jsonl" {
+                return Err(StoreError::Invalid(
+                    "websocket-messages must be required and stored at websockets.jsonl".into(),
+                ));
+            }
+            let transcript: eggreplay_core::WebSocketTranscript =
+                serde_json::from_reader(File::open(path)?)?;
+            transcript
+                .validate(eggreplay_core::WebSocketLimits::default())
+                .map_err(StoreError::Invalid)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_websocket_fixture(
+    root: &Path,
+    extensions: &[ExtensionDescriptor],
+    max_line_bytes: u64,
+    max_blob_bytes: u64,
+) -> Result<(), StoreError> {
+    use std::io::BufRead;
+
+    let mut websocket_101 = std::collections::HashSet::new();
+    let file = File::open(root.join("flows.jsonl"))?;
+    let mut reader = BufReader::new(file);
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        let read = reader.read_until(b'\n', &mut line)?;
+        if read == 0 {
+            break;
+        }
+        if read as u64 > max_line_bytes {
+            return Err(StoreError::Invalid(
+                "flow JSONL line exceeds configured limit".into(),
+            ));
+        }
+        let flow: eggreplay_core::Flow = serde_json::from_slice(&line)?;
+        let websocket_upgrade = flow.request.headers.iter().any(|header| {
+            header.name.eq_ignore_ascii_case("upgrade")
+                && header
+                    .value
+                    .split(',')
+                    .any(|token| token.trim().eq_ignore_ascii_case("websocket"))
+        });
+        if websocket_upgrade
+            && matches!(
+                &flow.outcome,
+                eggreplay_core::FlowOutcome::Response(response) if response.status == 101
+            )
+        {
+            websocket_101.insert(flow.id);
+        }
+    }
+
+    let Some(extension) = extensions
+        .iter()
+        .find(|extension| extension.name == "websocket-messages")
+    else {
+        if !websocket_101.is_empty() {
+            return Err(StoreError::Invalid(
+                "WebSocket 101 flow is missing required conversation metadata".into(),
+            ));
+        }
+        return Ok(());
+    };
+    if !extension.required_for_replay {
+        return Err(StoreError::Invalid(
+            "websocket-messages extension must be required for replay".into(),
+        ));
+    }
+    if extension.path != "websockets.jsonl"
+        || extension.schema_version != eggreplay_core::WEBSOCKET_SCHEMA_VERSION
+    {
+        return Err(StoreError::Invalid(
+            "websocket-messages extension descriptor is inconsistent".into(),
+        ));
+    }
+    let transcript: eggreplay_core::WebSocketTranscript =
+        serde_json::from_reader(File::open(root.join(&extension.path))?)?;
+    transcript
+        .validate(eggreplay_core::WebSocketLimits::default())
+        .map_err(StoreError::Invalid)?;
+    let mut referenced = std::collections::HashSet::new();
+    for conversation in &transcript.conversations {
+        if !websocket_101.contains(&conversation.flow_id) {
+            return Err(StoreError::Invalid(
+                "WebSocket conversation must reference an initiating 101 flow".into(),
+            ));
+        }
+        referenced.insert(conversation.flow_id.as_str());
+        for message in &conversation.messages {
+            if let Some(eggreplay_core::BodyRef::Blob(blob)) = &message.payload {
+                let limits = StoreLimits {
+                    max_blob_bytes,
+                    ..StoreLimits::default()
+                };
+                verify_blob_file(root, blob, limits)?;
+                if message.kind == eggreplay_core::WebSocketMessageKind::Text {
+                    let mut payload = Vec::with_capacity(blob.length.min(1024 * 1024) as usize);
+                    File::open(root.join("blobs").join(&blob.sha256))?
+                        .take(max_blob_bytes.saturating_add(1))
+                        .read_to_end(&mut payload)?;
+                    if payload.len() as u64 != blob.length || std::str::from_utf8(&payload).is_err()
+                    {
+                        return Err(StoreError::Invalid(
+                            "WebSocket text payload must be valid UTF-8".into(),
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    if referenced.len() != websocket_101.len() {
+        return Err(StoreError::Invalid(
+            "WebSocket 101 flow is missing conversation metadata".into(),
+        ));
     }
     Ok(())
 }
@@ -1961,6 +2120,188 @@ mod tests {
         );
         assert!(session.read_extension("missing").unwrap().is_none());
         fs::remove_dir_all(destination).unwrap();
+    }
+
+    #[test]
+    fn websocket_101_requires_required_transcript_before_publication() {
+        let destination = path("websocket-missing");
+        let mut writer = SessionWriter::create(
+            &destination,
+            SessionMetadata::default(),
+            StoreLimits::default(),
+        )
+        .unwrap();
+        let mut flow = sample();
+        flow.request.headers.push(eggreplay_core::HeaderEntry {
+            name: "Upgrade".into(),
+            value: "websocket".into(),
+        });
+        if let FlowOutcome::Response(response) = &mut flow.outcome {
+            response.status = 101;
+        }
+        writer.append_flow(&flow).unwrap();
+        assert!(writer.finish().is_err());
+        assert!(!destination.exists());
+    }
+
+    #[test]
+    fn concurrent_recording_session_accepts_one_aggregate_websocket_extension() {
+        let destination = path("websocket-recording-session");
+        let recording = RecordingSession::create(
+            &destination,
+            SessionMetadata::default(),
+            StoreLimits::default(),
+        )
+        .unwrap();
+        let mut flow = sample();
+        flow.request.headers.push(eggreplay_core::HeaderEntry {
+            name: "Upgrade".into(),
+            value: "websocket".into(),
+        });
+        if let FlowOutcome::Response(response) = &mut flow.outcome {
+            response.status = 101;
+        }
+        recording.append_flow(&flow).unwrap();
+        let transcript = eggreplay_core::WebSocketTranscript {
+            schema_version: eggreplay_core::WEBSOCKET_SCHEMA_VERSION,
+            conversations: vec![eggreplay_core::WebSocketConversation {
+                id: "conversation-one".into(),
+                flow_id: flow.id,
+                offered_subprotocols: vec![],
+                selected_subprotocol: None,
+                messages: vec![],
+                terminal: eggreplay_core::WebSocketTerminal::Abnormal {
+                    cause: "reset".into(),
+                },
+            }],
+        };
+        recording
+            .write_extension(
+                "websocket-messages",
+                eggreplay_core::WEBSOCKET_SCHEMA_VERSION,
+                "websockets.jsonl",
+                true,
+                &serde_json::to_vec(&transcript).unwrap(),
+            )
+            .unwrap();
+        let session = recording.finish().unwrap();
+        assert_eq!(session.manifest().flow_count, 1);
+        assert_eq!(session.manifest().extensions.len(), 1);
+        fs::remove_dir_all(destination).unwrap();
+    }
+
+    #[test]
+    fn websocket_transcript_references_existing_101_and_validates_text_utf8() {
+        let destination = path("websocket-valid");
+        let mut writer = SessionWriter::create(
+            &destination,
+            SessionMetadata::default(),
+            StoreLimits::default(),
+        )
+        .unwrap();
+        let mut payload = writer.begin_blob().unwrap();
+        payload.write_all(b"hello").unwrap();
+        let payload_ref = payload.finish().unwrap();
+        let mut flow = sample();
+        flow.request.headers.push(eggreplay_core::HeaderEntry {
+            name: "Upgrade".into(),
+            value: "websocket".into(),
+        });
+        if let FlowOutcome::Response(response) = &mut flow.outcome {
+            response.status = 101;
+        }
+        writer.append_flow(&flow).unwrap();
+        let transcript = eggreplay_core::WebSocketTranscript {
+            schema_version: eggreplay_core::WEBSOCKET_SCHEMA_VERSION,
+            conversations: vec![eggreplay_core::WebSocketConversation {
+                id: "conversation-one".into(),
+                flow_id: flow.id.clone(),
+                offered_subprotocols: vec!["chat".into()],
+                selected_subprotocol: Some("chat".into()),
+                messages: vec![eggreplay_core::WebSocketMessage {
+                    sequence: 0,
+                    direction: eggreplay_core::WebSocketDirection::ClientToServer,
+                    delta_ns: 0,
+                    kind: eggreplay_core::WebSocketMessageKind::Text,
+                    payload: Some(payload_ref),
+                    close_code: None,
+                    close_reason: None,
+                    redactions: vec![],
+                }],
+                terminal: eggreplay_core::WebSocketTerminal::Abnormal {
+                    cause: "eof".into(),
+                },
+            }],
+        };
+        writer
+            .write_extension(
+                "websocket-messages",
+                eggreplay_core::WEBSOCKET_SCHEMA_VERSION,
+                "websockets.jsonl",
+                true,
+                &serde_json::to_vec(&transcript).unwrap(),
+            )
+            .unwrap();
+        let session = writer.finish().unwrap();
+        assert_eq!(session.manifest().metadata.schema_version, 2);
+        assert_eq!(session.manifest().extensions[0].name, "websocket-messages");
+        fs::remove_dir_all(destination).unwrap();
+    }
+
+    #[test]
+    fn websocket_invalid_utf8_text_payload_fails_before_manifest_publication() {
+        let destination = path("websocket-invalid-text");
+        let mut writer = SessionWriter::create(
+            &destination,
+            SessionMetadata::default(),
+            StoreLimits::default(),
+        )
+        .unwrap();
+        let mut payload = writer.begin_blob().unwrap();
+        payload.write_all(&[0xff, 0xfe]).unwrap();
+        let payload_ref = payload.finish().unwrap();
+        let mut flow = sample();
+        flow.request.headers.push(eggreplay_core::HeaderEntry {
+            name: "Upgrade".into(),
+            value: "websocket".into(),
+        });
+        if let FlowOutcome::Response(response) = &mut flow.outcome {
+            response.status = 101;
+        }
+        writer.append_flow(&flow).unwrap();
+        let transcript = eggreplay_core::WebSocketTranscript {
+            schema_version: eggreplay_core::WEBSOCKET_SCHEMA_VERSION,
+            conversations: vec![eggreplay_core::WebSocketConversation {
+                id: "conversation-one".into(),
+                flow_id: flow.id,
+                offered_subprotocols: vec![],
+                selected_subprotocol: None,
+                messages: vec![eggreplay_core::WebSocketMessage {
+                    sequence: 0,
+                    direction: eggreplay_core::WebSocketDirection::ClientToServer,
+                    delta_ns: 0,
+                    kind: eggreplay_core::WebSocketMessageKind::Text,
+                    payload: Some(payload_ref),
+                    close_code: None,
+                    close_reason: None,
+                    redactions: vec![],
+                }],
+                terminal: eggreplay_core::WebSocketTerminal::Abnormal {
+                    cause: "eof".into(),
+                },
+            }],
+        };
+        writer
+            .write_extension(
+                "websocket-messages",
+                eggreplay_core::WEBSOCKET_SCHEMA_VERSION,
+                "websockets.jsonl",
+                true,
+                &serde_json::to_vec(&transcript).unwrap(),
+            )
+            .unwrap();
+        assert!(writer.finish().is_err());
+        assert!(!destination.exists());
     }
 
     #[test]

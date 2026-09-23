@@ -36,13 +36,10 @@ closes a plan.
 
 v0.1/C001–C006, M009, and M010/M010-C1 are closed.
 
-M011 is now decomposed under ADR 0006 into M011A–M011F. **M011A — Transport
-Dependency and Upgrade Preflight** is the only dependency-ready task. It
-qualifies the published EggServe baseline, EggFetch 0.2.0 upgrade handoff, and
-the narrow Eggress route path before WebSocket semantic/storage work begins.
-
-M011B–M011F and M012–M014 remain blocked in dependency order. See
-`registry.md` for the exact handoff state.
+M011 is decomposed under ADR 0006 into M011A–M011F. M011A is closed with
+hosted matrix evidence. M011B — Semantic Model, Store, and Codec — is active;
+later subplans remain blocked in dependency order. See `registry.md` for the
+exact handoff state.
 
 Do not start a blocked milestone by duplicating a dependency-owned subsystem.
 If repository evidence invalidates a plan assumption, update the plan and

@@ -18,6 +18,21 @@ single-filename paths, reject symlinks, and are bounded to 16 MiB each and
 publication marker. `Session::copy_to` streams and revalidates all blobs while
 upgrading/copying a session; it never mutates its source.
 
+## WebSocket conversations (M011)
+
+The required `websocket-messages` extension is stored as one bounded
+`websockets.jsonl` transcript when an initiating HTTP flow completes a
+WebSocket 101 upgrade. It requires session schema 2. Each conversation refers
+to exactly one existing WebSocket 101 flow and is validated before the
+manifest is published. Message payloads remain content-addressed blobs;
+opening a fixture validates their confinement, lengths, digests, and UTF-8
+for text messages. Conversation metadata validates contiguous global sequence
+numbers, monotonic deltas, terminal close state, selected subprotocols,
+control payloads, and configured count/size/duration limits. Frame masking,
+fragment boundaries, and packet layout are not stored. Volatile
+`Sec-WebSocket-Key` and `Sec-WebSocket-Accept` values are excluded from
+WebSocket-specific matching authority.
+
 ## Authored scenarios (M009)
 
 The optional required-when-used `rules` extension contains named finite state

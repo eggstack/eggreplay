@@ -11,6 +11,8 @@ pub mod eggress;
 pub mod recording;
 pub mod regression;
 pub mod replay;
+#[cfg(feature = "websocket")]
+pub mod websocket;
 
 #[cfg(feature = "eggress")]
 pub use eggress::{EggressDialer, parse_route, physical_route_for, redact_route_credentials};

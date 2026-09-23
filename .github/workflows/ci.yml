@@ -36,10 +36,13 @@ jobs:
         with:
           toolchain: stable
       # Core/store must not pull transport runtimes.
-      - run: cargo tree -p eggreplay-core --no-default-features --edges normal --prefix none | grep -Ei "eggfetch|eggserve|eggress|tokio|hyper" && exit 1 || echo "core clean"
-      - run: cargo tree -p eggreplay-store --no-default-features --edges normal --prefix none | grep -Ei "eggfetch|eggserve|eggress|tokio|hyper" && exit 1 || echo "store clean"
+      - run: cargo tree -p eggreplay-core --no-default-features --edges normal --prefix none | grep -Ei "eggfetch|eggserve|eggress|tokio|hyper|tungstenite|base64" && exit 1 || echo "core clean"
+      - run: cargo tree -p eggreplay-store --no-default-features --edges normal --prefix none | grep -Ei "eggfetch|eggserve|eggress|tokio|hyper|tungstenite|base64" && exit 1 || echo "store clean"
       # Direct HTTP build must not require Eggress routing.
       - run: cargo check -p eggreplay-http --no-default-features --features direct
+      # The codec is opt-in and belongs only to the HTTP adapter crate.
+      - run: cargo check -p eggreplay-http --no-default-features --features websocket
+      - run: cargo tree -p eggreplay-http --no-default-features --features direct --edges normal --prefix none | grep -Ei "tungstenite|base64" && exit 1 || echo "direct build has no WebSocket codec"
       # CLI Eggress grammar enables only the narrow pproxy-compat set.
       - run: cargo tree -p eggreplay-http --features eggress --edges normal --prefix none | grep -i "eggress-outbound" | head -n 5
       - run: cargo tree -p eggreplay-http --features eggress -i eggress-outbound --prefix none | grep -Ei "ssh|quic|extended" && exit 1 || echo "eggress narrow ok"
