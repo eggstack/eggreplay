@@ -34,6 +34,27 @@ Separate session schema from flow schema before M009.
 - Unknown optional extensions may be preserved/ignored only when doing so cannot
   change replay behavior.
 
+### M010 clarification — required semantic data vs optional timing behavior
+
+`required_for_replay` means a reader must understand and apply the semantic
+extension when serving the fixture. It does **not** mean every presentation or
+timing behavior is enabled by default.
+
+For M010, any emitted `stream-events` extension is required because it may
+encode terminal mid-body failure and trailer/event structure. A reader that
+does not understand it could otherwise turn a partial failed interaction into a
+successful complete response.
+
+A supported reader therefore loads `stream-events` automatically. The timing
+policy remains separate:
+
+- `immediate` applies semantic event/terminal behavior with zero added delay;
+- `recorded` applies captured relative delays;
+- `scaled` applies bounded scaled relative delays.
+
+This distinction preserves backwards safety without making recorded timing the
+ordinary-test default.
+
 Initial names:
 
 - `rules` / `rules.json` — M009 scenarios and deterministic templates.
