@@ -62,7 +62,7 @@ Initial names:
 
 - `rules` / `rules.json` — M009 scenarios and deterministic templates.
 - `stream-events` / `stream-events.jsonl` — M010 timing/SSE/mid-body events.
-- `websocket-messages` / `websockets.jsonl` — M011 message semantics.
+- `websocket-messages` / `websockets.jsonl` — M011 message semantics; detailed by ADR 0006.
 - `interop-provenance` — M014 lossy import/export metadata when needed.
 
 ## Migration
