@@ -12,11 +12,11 @@ The hosted release gate passed Linux stable, Linux Rust 1.89 MSRV, macOS stable,
 Windows stable, and the dependency-boundary lane; see
 [`plans/closure/c006-windows-hosted-ci-qualification.md`](plans/closure/c006-windows-hosted-ci-qualification.md).
 
-M009 stateful/dynamic replay is closed. M010 streaming timing/SSE is
-implemented and its initial hosted matrix is green, but M010 remains open
-pending M010-C1, a narrow corrective for required-extension semantics and live
-candidate stream-regression/SSE policy wiring. M011 remains blocked until that
-closure.
+M009 stateful/dynamic replay is closed. M010 streaming timing/SSE is closed
+with its M010-C1 corrective (required-extension semantics, candidate response
+stream observation, and opt-in stream/cadence/SSE regression); see
+[`plans/closure/m010-streaming-timing-and-sse.md`](plans/closure/m010-streaming-timing-and-sse.md).
+M011 WebSocket semantic record/replay is ready; M012–M014D remain blocked.
 
 The core and store remain usable without a network runtime. Supported transport
 for v0.1 is direct HTTP/1.1 acquisition and EggServe inbound HTTP/1.1 replay

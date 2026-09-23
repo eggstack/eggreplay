@@ -1,8 +1,10 @@
 # M010-C1 — Stream Extension and Regression Corrective Closure
 
-Status: ready
+Status: closed
 Depends on: M010 implementation at `cc4e4a9354dd0f6de25e6f905afcb44a732c8c64`
 Corrective gate: M010 closure / M011 unblock
+Closure: `plans/closure/m010-streaming-timing-and-sse.md`
+Qualifying implementation: `3bdd1359e00736737dd1610035d7e9f3e49822f1`, Actions run `35864247624`
 
 ## Trigger
 

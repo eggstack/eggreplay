@@ -38,9 +38,9 @@ basis for M009–M011.
 | ID | Plan | Status | Depends on | Primary result |
 |---|---|---|---|---|
 | M009 | `implementation/stateful/009-stateful-dynamic-replay.md` | closed | C006 | record modes, scenarios, deterministic templates |
-| M010 | `implementation/streaming/010-streaming-timing-and-sse.md` | implemented (corrective pending) | M009 | stream events, timing, SSE |
-| M010-C1 | `implementation/streaming/010c-stream-extension-and-regression-corrective.md` | **ready** | M010 implementation | extension contract + candidate stream regression closure |
-| M011 | `implementation/websocket/011-websocket-semantic-record-replay.md` | blocked | M010 + M010-C1 closure | WebSocket semantic capture/replay |
+| M010 | `implementation/streaming/010-streaming-timing-and-sse.md` | closed | M009 | stream events, timing, SSE |
+| M010-C1 | `implementation/streaming/010c-stream-extension-and-regression-corrective.md` | closed | M010 implementation | extension contract + candidate stream regression closure |
+| M011 | `implementation/websocket/011-websocket-semantic-record-replay.md` | **ready** | M010 + M010-C1 closure | WebSocket semantic capture/replay |
 | M012 | `implementation/python/012-python-pytest-ecosystem.md` | blocked | M011 | PyO3 + pytest integration |
 | M013 | `implementation/interception/013-explicit-proxy-and-optional-mitm.md` | blocked | M012 | explicit proxy + opt-in HTTP/1.1 MITM |
 | M014 | `implementation/compatibility/014-compatibility-program.md` | blocked | M013 | umbrella compatibility stage |
@@ -53,15 +53,15 @@ basis for M009–M011.
 
 M009 is closed.
 
-M010 implementation landed at
-`cc4e4a9354dd0f6de25e6f905afcb44a732c8c64`; Actions run
-`35795730877` is green across Linux stable, Linux Rust 1.89, macOS stable,
-Windows stable, and dependency-boundary. M010 is not closed because audit found
-a required-extension contract mismatch plus missing live candidate
-stream-regression/SSE policy wiring.
+M010 streaming timing/SSE is closed with its M010-C1 corrective. Qualifying
+corrective implementation `3bdd1359e00736737dd1610035d7e9f3e49822f1`, Actions
+run `35864247624`, is green across Linux stable (106 tests), Linux Rust 1.89
+MSRV (106 tests), macOS stable (106 tests), Windows stable (104 tests, two
+Unix-only symlink-construction tests excluded), and dependency-boundary. See
+`plans/closure/m010-streaming-timing-and-sse.md`.
 
-M010-C1 is the only dependency-ready task. M011 must not begin until M010-C1
-and M010 close.
+M011 is the only dependency-ready task. M012–M014D remain blocked by their
+unclosed dependencies.
 
 ## Canonical planning documents
 

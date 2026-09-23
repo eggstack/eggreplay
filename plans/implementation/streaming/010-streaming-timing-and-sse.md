@@ -1,9 +1,10 @@
 # M010 — Streaming Timing, Mid-Body Events, and SSE
 
-Status: implemented (M010-C1 corrective closure pending)
+Status: closed
 Depends on: M009
 Roadmap stage: 6
-Corrective plan: `010c-stream-extension-and-regression-corrective.md`
+Corrective plan: `010c-stream-extension-and-regression-corrective.md` (closed)
+Closure: `plans/closure/m010-streaming-timing-and-sse.md`
 
 ## Implementation state
 
