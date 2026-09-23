@@ -40,14 +40,14 @@ conversation storage/matching.
 | M009 | `implementation/stateful/009-stateful-dynamic-replay.md` | closed | C006 | record modes, scenarios, deterministic templates |
 | M010 | `implementation/streaming/010-streaming-timing-and-sse.md` | closed | M009 | stream events, timing, SSE |
 | M010-C1 | `implementation/streaming/010c-stream-extension-and-regression-corrective.md` | closed | M010 implementation | extension contract + candidate stream regression closure |
-| M011 | `implementation/websocket/011-websocket-semantic-record-replay.md` | ready (decomposed) | M010 + M010-C1 | WebSocket milestone umbrella |
+| M011 | `implementation/websocket/011-websocket-semantic-record-replay.md` | closed | M010 + M010-C1 | WebSocket milestone umbrella |
 | M011A | `implementation/websocket/011a-transport-dependency-and-upgrade-preflight.md` | closed | M010 + M010-C1 | dependency/upgrade substrate qualification |
 | M011B | `implementation/websocket/011b-semantic-model-store-and-codec.md` | closed | M011A | semantic/store/codec authority |
-| M011C | `implementation/websocket/011c-recording-gateway.md` | implemented | M011B | recording gateway |
-| M011D | `implementation/websocket/011d-offline-replay.md` | implemented | M011C | deterministic offline replay |
-| M011E | `implementation/websocket/011e-candidate-regression-cli-and-diff.md` | implemented | M011D | regression/report/CLI/diff |
-| M011F | `implementation/websocket/011f-hardening-qualification-and-closure.md` | active | M011E | hardening + M011 closure |
-| M012 | `implementation/python/012-python-pytest-ecosystem.md` | blocked | M011 closure | PyO3 + pytest integration |
+| M011C | `implementation/websocket/011c-recording-gateway.md` | closed | M011B | recording gateway |
+| M011D | `implementation/websocket/011d-offline-replay.md` | closed | M011C | deterministic offline replay |
+| M011E | `implementation/websocket/011e-candidate-regression-cli-and-diff.md` | closed | M011D | regression/report/CLI/diff |
+| M011F | `implementation/websocket/011f-hardening-qualification-and-closure.md` | closed | M011E | hardening + M011 closure |
+| M012 | `implementation/python/012-python-pytest-ecosystem.md` | ready | M011 closure | PyO3 + pytest integration |
 | M013 | `implementation/interception/013-explicit-proxy-and-optional-mitm.md` | blocked | M012 | explicit proxy + opt-in HTTP/1.1 MITM |
 | M014 | `implementation/compatibility/014-compatibility-program.md` | blocked | M013 | umbrella compatibility stage |
 | M014A | `implementation/compatibility/014a-har-and-migration.md` | blocked | M013 | HAR + migration |
@@ -61,9 +61,9 @@ M009 and M010/M010-C1 are closed. M010's qualifying corrective implementation
 is `3bdd1359e00736737dd1610035d7e9f3e49822f1`, Actions run
 `35864247624`.
 
-M011A and M011B are closed. M011C–M011E are implemented pending their closure
-records and hosted evidence. M011F is active for cross-platform hosted
-qualification. M012–M014D remain blocked until M011F closes.
+M011 and M011A–M011F are closed by their closure records and hosted
+qualification. The qualifying run is 35880303725 on revision `63d9e6c`.
+M012 is ready. M013–M014D remain blocked by dependency order.
 
 ## Canonical planning documents
 

@@ -140,4 +140,4 @@ directions to M010 `StreamEvents`.
 ## Closure
 
 Create `plans/closure/m011b-websocket-semantic-model-store-and-codec.md`.
-M011C becomes ready only after the store and codec authority are stable.
+M011C is closed; see its recording-gateway closure record.

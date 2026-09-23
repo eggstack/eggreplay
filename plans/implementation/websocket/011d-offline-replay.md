@@ -1,6 +1,6 @@
 # M011D — Offline WebSocket Replay
 
-Status: implemented
+Status: closed
 Depends on: M011C
 Parent milestone: M011
 
@@ -119,4 +119,4 @@ payload reads/sleeps promptly.
 ## Closure
 
 Create `plans/closure/m011d-websocket-offline-replay.md`.
-M011E becomes ready only after offline semantics are stable.
+M011E is closed; see its candidate-regression closure record.

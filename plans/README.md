@@ -36,9 +36,10 @@ closes a plan.
 
 v0.1/C001–C006, M009, and M010/M010-C1 are closed.
 
-M011 is decomposed under ADR 0006 into M011A–M011F. M011A–M011E are closed;
-M011F is active for final security, resource, and hosted qualification. See
-`registry.md` for the exact handoff state.
+M011 and M011A–M011F are closed under ADR 0006. Hosted qualification passed on
+Ubuntu stable, Ubuntu Rust 1.89, macOS stable, Windows stable, and the
+dependency-boundary job. M012 is ready; see `registry.md` for the exact
+handoff state.
 
 Do not start a blocked milestone by duplicating a dependency-owned subsystem.
 If repository evidence invalidates a plan assumption, update the plan and

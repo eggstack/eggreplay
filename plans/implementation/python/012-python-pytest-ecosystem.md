@@ -1,6 +1,6 @@
 # M012 — Python Bindings and Pytest/VCR-Style Integration
 
-Status: blocked
+Status: ready
 Depends on: M011
 Roadmap stage: 8
 

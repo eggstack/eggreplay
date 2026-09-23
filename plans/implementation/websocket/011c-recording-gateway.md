@@ -1,6 +1,6 @@
 # M011C — WebSocket Recording Gateway
 
-Status: implemented
+Status: closed
 Depends on: M011B
 Parent milestone: M011
 
@@ -146,4 +146,4 @@ Local deterministic scripted peers must cover:
 ## Closure
 
 Create `plans/closure/m011c-websocket-recording-gateway.md`.
-M011D remains blocked until recording produces stable canonical fixtures.
+M011D is closed; see its offline-replay closure record.

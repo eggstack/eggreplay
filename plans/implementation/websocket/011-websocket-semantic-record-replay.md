@@ -1,6 +1,6 @@
 # M011 — WebSocket Semantic Record, Replay, and Regression
 
-Status: ready (decomposed; execute M011A first)
+Status: closed
 Depends on: M010 + M010-C1 closure
 Roadmap stage: 7
 Architecture: ADR 0006
@@ -78,5 +78,4 @@ qualifying hosted matrix supports the declared protocol/support tier.
 Final closure:
 `plans/closure/m011-websocket-semantic-record-replay.md`.
 
-M012 remains blocked until M011 closes so Python binds a stable Rust authority
-instead of duplicating an evolving implementation.
+M012 is ready now that M011's Rust authority is stable.

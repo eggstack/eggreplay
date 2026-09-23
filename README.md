@@ -11,14 +11,15 @@ v0.1 is fully qualified through C001–C006. M009 stateful/dynamic replay and
 M010 streaming timing/SSE (including M010-C1) are closed with hosted
 cross-platform evidence.
 
-M011 WebSocket semantic record/replay is decomposed into M011A–M011F under ADR
-0006. The implementation is being qualified; consult `plans/registry.md` for
-milestone closure and hosted evidence before relying on WebSocket support.
+M011 WebSocket semantic record/replay is closed under ADR 0006 with hosted
+cross-platform qualification. Recording is opt-in with `--websockets`;
+transcripts replay and participate in candidate regression automatically.
 
-The v0.1 support baseline remains direct HTTP/1.1 acquisition and EggServe
-inbound HTTP/1.1 replay with optional listener-free Eggress routing. WebSocket
-recording is opt-in with `--websockets`; see the plans registry for its current
-qualification status. H2/H3 and interception support remain outside the claim.
+The support baseline includes direct HTTP/1.1 acquisition and EggServe inbound
+HTTP/1.1 replay with optional listener-free Eggress routing. WebSocket support
+covers RFC 6455 over cleartext HTTP/1.1 Upgrade (`ws://`) with bounded semantic
+text, binary, ping, pong, and close messages. WSS, inbound TLS, H2/H3, negotiated
+extensions, and wire-frame fidelity remain outside the claim.
 
 ## Quickstart routes
 

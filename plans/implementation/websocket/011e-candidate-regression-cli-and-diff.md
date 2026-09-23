@@ -1,6 +1,6 @@
 # M011E — WebSocket Candidate Regression, CLI, and Fixture Diff
 
-Status: implemented
+Status: closed
 Depends on: M011D
 Parent milestone: M011
 
@@ -121,4 +121,4 @@ No public Internet.
 ## Closure
 
 Create `plans/closure/m011e-websocket-candidate-regression-cli-and-diff.md`.
-M011F remains blocked until product surfaces are complete.
+M011F and the M011 umbrella are closed; see the M011 closure record.
