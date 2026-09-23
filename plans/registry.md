@@ -38,8 +38,9 @@ basis for M009–M011.
 | ID | Plan | Status | Depends on | Primary result |
 |---|---|---|---|---|
 | M009 | `implementation/stateful/009-stateful-dynamic-replay.md` | closed | C006 | record modes, scenarios, deterministic templates |
-| M010 | `implementation/streaming/010-streaming-timing-and-sse.md` | ready | M009 | stream events, timing, SSE |
-| M011 | `implementation/websocket/011-websocket-semantic-record-replay.md` | blocked | M010 | WebSocket semantic capture/replay |
+| M010 | `implementation/streaming/010-streaming-timing-and-sse.md` | implemented (corrective pending) | M009 | stream events, timing, SSE |
+| M010-C1 | `implementation/streaming/010c-stream-extension-and-regression-corrective.md` | **ready** | M010 implementation | extension contract + candidate stream regression closure |
+| M011 | `implementation/websocket/011-websocket-semantic-record-replay.md` | blocked | M010 + M010-C1 closure | WebSocket semantic capture/replay |
 | M012 | `implementation/python/012-python-pytest-ecosystem.md` | blocked | M011 | PyO3 + pytest integration |
 | M013 | `implementation/interception/013-explicit-proxy-and-optional-mitm.md` | blocked | M012 | explicit proxy + opt-in HTTP/1.1 MITM |
 | M014 | `implementation/compatibility/014-compatibility-program.md` | blocked | M013 | umbrella compatibility stage |
@@ -48,9 +49,19 @@ basis for M009–M011.
 | M014C | `implementation/compatibility/014c-http3-feasibility-and-qualification.md` | blocked | M014B | H3 architecture/support decision |
 | M014D | `implementation/compatibility/014d-grpc-and-fault-polish.md` | blocked | M014B, M010 | gRPC view + bounded faults |
 
-Only M009 is dependency-ready. Later plans are intentionally written now for
-handoff clarity but must not be activated early. If implementation evidence
-invalidates a later plan assumption, update that plan before changing code.
+### Current execution gate
+
+M009 is closed.
+
+M010 implementation landed at
+`cc4e4a9354dd0f6de25e6f905afcb44a732c8c64`; Actions run
+`35795730877` is green across Linux stable, Linux Rust 1.89, macOS stable,
+Windows stable, and dependency-boundary. M010 is not closed because audit found
+a required-extension contract mismatch plus missing live candidate
+stream-regression/SSE policy wiring.
+
+M010-C1 is the only dependency-ready task. M011 must not begin until M010-C1
+and M010 close.
 
 ## Canonical planning documents
 
