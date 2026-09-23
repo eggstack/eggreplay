@@ -52,10 +52,10 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"]
 url = { version = "2", features = ["serde"] }
 uuid = { version = "1", features = ["serde", "v4"] }
 
-# Published and temporary sibling seams. EggServe and Eggress do not yet
-# publish the required embeddable crates; keep exact revisions until the
-# removal gate in docs/architecture.md is satisfied.
-eggfetch-core = { version = "0.2.0", default-features = false, features = ["native-http1", "tls-rustls", "tls-native-roots"] }
-eggserve-primitives = { git = "https://github.com/eggstack/eggserve.git", rev = "859a2bc2fe1d9e6215c122d19cd50f2f070d2da6" }
-eggserve-server = { git = "https://github.com/eggstack/eggserve.git", rev = "859a2bc2fe1d9e6215c122d19cd50f2f070d2da6" }
-eggress-outbound = { git = "https://github.com/eggstack/eggress.git", rev = "c493eab803654d1316150a9837fd01ee46b9b87d", default-features = false }
+# Published and temporary sibling seams. Keep these pre-1.0 APIs deliberately
+# bounded; Eggress remains on the last qualified release until upstream fixes
+# its pooled route-isolation and metadata blockers.
+eggfetch-core = { version = "0.2.0", default-features = false, features = ["native-http1", "high-level-url", "tls-rustls", "tls-native-roots"] }
+eggserve-primitives = { version = "=0.2.0" }
+eggserve-server = { version = "=0.2.1" }
+eggress-outbound = { version = "=1.0.8", default-features = false }

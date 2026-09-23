@@ -66,18 +66,16 @@ adds semantic types.
 EggFetch 0.2.0 is consumed from crates.io and exposes the owned
 `UpgradedStream` API needed for 101/CONNECT handoff.
 
-EggServe's previous Git-pin rationale is stale: `eggserve-server 0.2.1` is now
-published and registry-qualified for direct downstream embedding, resolving
-with `eggserve-primitives 0.2.0`. M011A owns migration from the historical
-EggReplay Git revision and must requalify tunnel/read-ahead/lifecycle behavior
-from registry artifacts.
+EggServe uses the published `eggserve-server 0.2.1` and
+`eggserve-primitives 0.2.0` artifacts, pinned exactly while their APIs remain
+pre-1.0. M011A qualifies tunnel/read-ahead/lifecycle behavior from these
+registry artifacts.
 
 Eggress remains intentionally narrow. EggReplay enables only
-`eggress-outbound/pproxy-compat`. Eggress 1.0.9 is currently upstream-blocked
-on pooled route-isolation/metadata correctness work, so M011 must not adopt it
-until that release is requalified. M011A may migrate the historical pin to a
-safe published line (currently expected 1.0.8) only after existing route tests
-and an upgraded-101 smoke pass with no direct fallback.
+`eggress-outbound/pproxy-compat`. Eggress 1.0.8 is pinned exactly as the
+published qualified baseline. Eggress 1.0.9 is currently upstream-blocked on
+pooled route-isolation/metadata correctness work, so M011 must not adopt it
+until that release is requalified.
 
 No default library feature enables Eggress, WebSocket codec, or TLS
 interception. Direct HTTP remains the default acquisition route.

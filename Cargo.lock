@@ -306,6 +306,7 @@ dependencies = [
  "hyper-rustls",
  "hyper-util",
  "pem-rfc7468",
+ "percent-encoding",
  "pin-project-lite",
  "rustls",
  "rustls-native-certs",
@@ -313,6 +314,7 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tower-service",
+ "url",
  "webpki-roots 0.26.11",
 ]
 
@@ -401,8 +403,9 @@ dependencies = [
 
 [[package]]
 name = "eggress-config"
-version = "1.0.7"
-source = "git+https://github.com/eggstack/eggress.git?rev=c493eab803654d1316150a9837fd01ee46b9b87d#c493eab803654d1316150a9837fd01ee46b9b87d"
+version = "1.0.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a9d6a1788134bc40f8ee3cf13737d43e0aef6699a004d478d2791ef0ab7edac4"
 dependencies = [
  "eggress-core",
  "eggress-routing",
@@ -420,8 +423,9 @@ dependencies = [
 
 [[package]]
 name = "eggress-core"
-version = "1.0.7"
-source = "git+https://github.com/eggstack/eggress.git?rev=c493eab803654d1316150a9837fd01ee46b9b87d#c493eab803654d1316150a9837fd01ee46b9b87d"
+version = "1.0.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b60c0f191c351fd9814190b4b18c20b3e93cda2c014a4a9b2ccc4d463b77cb22"
 dependencies = [
  "bytes",
  "eggress-relay",
@@ -439,8 +443,9 @@ dependencies = [
 
 [[package]]
 name = "eggress-outbound"
-version = "1.0.7"
-source = "git+https://github.com/eggstack/eggress.git?rev=c493eab803654d1316150a9837fd01ee46b9b87d#c493eab803654d1316150a9837fd01ee46b9b87d"
+version = "1.0.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fcafe5aff5f17439ff8baabf8458c390a7df31ac4859c90340f54fa88835b104"
 dependencies = [
  "bytes",
  "eggress-core",
@@ -463,8 +468,9 @@ dependencies = [
 
 [[package]]
 name = "eggress-pproxy-compat"
-version = "1.0.7"
-source = "git+https://github.com/eggstack/eggress.git?rev=c493eab803654d1316150a9837fd01ee46b9b87d#c493eab803654d1316150a9837fd01ee46b9b87d"
+version = "1.0.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "db7c6e3ba19b15b17c545aeab4a0d463f31749caf96a0107e594df90331db9c1"
 dependencies = [
  "eggress-config",
  "eggress-uri",
@@ -478,8 +484,9 @@ dependencies = [
 
 [[package]]
 name = "eggress-protocol-http"
-version = "1.0.7"
-source = "git+https://github.com/eggstack/eggress.git?rev=c493eab803654d1316150a9837fd01ee46b9b87d#c493eab803654d1316150a9837fd01ee46b9b87d"
+version = "1.0.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f3d5cf7962e39d8b4951c5ebfc2e3c32a3583a85c92e9a7f1c622cc1f3907bf8"
 dependencies = [
  "base64",
  "bytes",
@@ -499,8 +506,9 @@ dependencies = [
 
 [[package]]
 name = "eggress-protocol-socks"
-version = "1.0.7"
-source = "git+https://github.com/eggstack/eggress.git?rev=c493eab803654d1316150a9837fd01ee46b9b87d#c493eab803654d1316150a9837fd01ee46b9b87d"
+version = "1.0.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a570ea8456428d0c4e18b4f7cf6b98979f8c0e056101efaf341150cd397f3c63"
 dependencies = [
  "bytes",
  "eggress-core",
@@ -512,16 +520,18 @@ dependencies = [
 
 [[package]]
 name = "eggress-relay"
-version = "1.0.7"
-source = "git+https://github.com/eggstack/eggress.git?rev=c493eab803654d1316150a9837fd01ee46b9b87d#c493eab803654d1316150a9837fd01ee46b9b87d"
+version = "1.0.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a041efae61fefdd9f32350f918896f982d663298eda4739b3fe5fbf9d87a4586"
 dependencies = [
  "tokio",
 ]
 
 [[package]]
 name = "eggress-routing"
-version = "1.0.7"
-source = "git+https://github.com/eggstack/eggress.git?rev=c493eab803654d1316150a9837fd01ee46b9b87d#c493eab803654d1316150a9837fd01ee46b9b87d"
+version = "1.0.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "34a05dc558deb4ecb043bfe55f6aea353f8456a2fb20fc68c1b1d004b56ad377"
 dependencies = [
  "arc-swap",
  "eggress-core",
@@ -540,8 +550,9 @@ dependencies = [
 
 [[package]]
 name = "eggress-transport-tls"
-version = "1.0.7"
-source = "git+https://github.com/eggstack/eggress.git?rev=c493eab803654d1316150a9837fd01ee46b9b87d#c493eab803654d1316150a9837fd01ee46b9b87d"
+version = "1.0.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7473274e70ba449bd64eedb156bfb2cb6d87a917ca0cededc6239ef73a9324ff"
 dependencies = [
  "bytes",
  "eggress-core",
@@ -556,8 +567,9 @@ dependencies = [
 
 [[package]]
 name = "eggress-udp"
-version = "1.0.7"
-source = "git+https://github.com/eggstack/eggress.git?rev=c493eab803654d1316150a9837fd01ee46b9b87d#c493eab803654d1316150a9837fd01ee46b9b87d"
+version = "1.0.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1e4c11626d783d5d6617adb3581cd5a907beaad3cdef122a67139f7f0faf1a1b"
 dependencies = [
  "bytes",
  "eggress-core",
@@ -575,8 +587,9 @@ dependencies = [
 
 [[package]]
 name = "eggress-uri"
-version = "1.0.7"
-source = "git+https://github.com/eggstack/eggress.git?rev=c493eab803654d1316150a9837fd01ee46b9b87d#c493eab803654d1316150a9837fd01ee46b9b87d"
+version = "1.0.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0703337615177ae5533a7e222d291c5fdf95201c0ce896859968f94f435975eb"
 dependencies = [
  "serde",
  "thiserror",
@@ -585,7 +598,8 @@ dependencies = [
 [[package]]
 name = "eggserve-primitives"
 version = "0.2.0"
-source = "git+https://github.com/eggstack/eggserve.git?rev=859a2bc2fe1d9e6215c122d19cd50f2f070d2da6#859a2bc2fe1d9e6215c122d19cd50f2f070d2da6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8732e77fae06b395f992cb1dd163ca30750e2f44d1fed3824eb8fc4650dafc03"
 dependencies = [
  "bytes",
  "futures-util",
@@ -593,8 +607,9 @@ dependencies = [
 
 [[package]]
 name = "eggserve-server"
-version = "0.2.0"
-source = "git+https://github.com/eggstack/eggserve.git?rev=859a2bc2fe1d9e6215c122d19cd50f2f070d2da6#859a2bc2fe1d9e6215c122d19cd50f2f070d2da6"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "255c1e95d0e6c6f7db8c26ea128267b3a1851dafe0f13a8229cdbec38a630feb"
 dependencies = [
  "bytes",
  "eggserve-primitives",

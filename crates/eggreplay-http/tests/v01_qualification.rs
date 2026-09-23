@@ -67,6 +67,232 @@ fn test_flow(id: &str, request: HttpRequest, status: u16) -> Flow {
     }
 }
 
+#[tokio::test]
+async fn eggfetch_high_level_101_exposes_owned_stream_and_preserves_leading_data() {
+    use eggfetch_core::{HttpVersionPolicy, NetworkStream};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut request = Vec::new();
+        let mut byte = [0u8; 1];
+        while !request.ends_with(b"\r\n\r\n") {
+            stream.read_exact(&mut byte).await.unwrap();
+            request.push(byte[0]);
+            assert!(request.len() < 8192, "request headers are bounded");
+        }
+        assert!(request.starts_with(b"GET /socket HTTP/1.1\r\n"));
+        stream
+            .write_all(b"HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\nlead")
+            .await
+            .unwrap();
+        let mut payload = [0u8; 4];
+        stream.read_exact(&mut payload).await.unwrap();
+        assert_eq!(&payload, b"pong");
+    });
+
+    let client = eggfetch_core::Client::builder()
+        .http_version_policy(HttpVersionPolicy::Http1Only)
+        .retry_canceled_requests(false)
+        .build();
+    let mut response = client
+        .request(http::Method::GET, &format!("http://{address}/socket"))
+        .unwrap()
+        .header("Connection", "Upgrade")
+        .header("Upgrade", "websocket")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), http::StatusCode::SWITCHING_PROTOCOLS);
+    let Some(NetworkStream::Upgraded(mut stream)) = response.take_network_stream() else {
+        panic!("101 response must expose owned upgraded IO");
+    };
+    let mut leading = [0u8; 4];
+    stream.read_exact(&mut leading).await.unwrap();
+    assert_eq!(&leading, b"lead");
+    stream.write_all(b"pong").await.unwrap();
+    drop(stream);
+    server.await.unwrap();
+}
+
+#[cfg(feature = "eggserve")]
+#[tokio::test]
+async fn registry_eggserve_tunnel_smoke_preserves_read_ahead_and_shutdown() {
+    use eggserve_primitives::canonical::{Response, ResponseBody, StatusCode};
+    use eggserve_primitives::header_block::HeaderBlock;
+    use eggserve_server::tunnel::TunnelIo;
+    use eggserve_server::{Request as ServeRequest, RuntimeConfig, Server, service_fn_with_tunnel};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let service = service_fn_with_tunnel(|_request: ServeRequest, tunnel| async move {
+        let Some(capability) = tunnel else {
+            return Ok(Response::builder()
+                .status(StatusCode::OK)
+                .body(ResponseBody::Empty)
+                .unwrap());
+        };
+        let handler = |mut io: TunnelIo| async move {
+            let mut buf = [0u8; 64];
+            while let Ok(size) = io.read(&mut buf).await {
+                if size == 0 || io.write_all(&buf[..size]).await.is_err() {
+                    break;
+                }
+            }
+        };
+        Ok(capability.accept(HeaderBlock::new(), handler).unwrap())
+    });
+    let runtime = RuntimeConfig::builder()
+        .bind("127.0.0.1:0".parse().unwrap())
+        .disable_connection_total_timeout()
+        .build()
+        .unwrap();
+    let server = Server::builder().runtime(runtime).build().unwrap();
+    let handle = server.start_with_service(service).await.unwrap();
+    let mut stream = tokio::net::TcpStream::connect(handle.local_addr())
+        .await
+        .unwrap();
+    stream
+        .write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: upgrade\r\nUpgrade: websocket\r\n\r\nread-ahead")
+        .await
+        .unwrap();
+    let mut head = Vec::new();
+    let mut byte = [0u8; 1];
+    while !head.ends_with(b"\r\n\r\n") {
+        stream.read_exact(&mut byte).await.unwrap();
+        head.push(byte[0]);
+        assert!(head.len() < 4096);
+    }
+    assert!(head.starts_with(b"HTTP/1.1 101"));
+    let mut read_ahead = [0u8; 10];
+    stream.read_exact(&mut read_ahead).await.unwrap();
+    assert_eq!(&read_ahead, b"read-ahead");
+    stream.write_all(b"shutdown-check").await.unwrap();
+    let mut echoed = [0u8; 14];
+    stream.read_exact(&mut echoed).await.unwrap();
+    assert_eq!(&echoed, b"shutdown-check");
+    drop(stream);
+    handle.shutdown();
+    handle.wait().await;
+}
+
+#[cfg(feature = "eggress")]
+#[tokio::test]
+async fn eggress_dialed_101_returns_owned_stream_without_direct_fallback() {
+    use eggfetch_core::{HttpVersionPolicy, NetworkStream};
+    use eggreplay_http::EggressDialer;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let proxy = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy_addr = proxy.local_addr().unwrap();
+    let proxy_task = tokio::spawn(async move {
+        let (mut socket, _) = proxy.accept().await.unwrap();
+        let mut head = Vec::new();
+        let mut byte = [0u8; 1];
+        while !head.ends_with(b"\r\n\r\n") {
+            socket.read_exact(&mut byte).await.unwrap();
+            head.push(byte[0]);
+            assert!(head.len() < 8192);
+        }
+        assert!(head.starts_with(b"CONNECT ws-origin.invalid:80 HTTP/1.1\r\n"));
+        socket
+            .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+            .await
+            .unwrap();
+        head.clear();
+        while !head.ends_with(b"\r\n\r\n") {
+            socket.read_exact(&mut byte).await.unwrap();
+            head.push(byte[0]);
+            assert!(head.len() < 8192);
+        }
+        assert!(head.starts_with(b"GET /socket HTTP/1.1\r\n"));
+        socket
+            .write_all(b"HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\nroute-lead")
+            .await
+            .unwrap();
+        let mut payload = [0u8; 4];
+        socket.read_exact(&mut payload).await.unwrap();
+        assert_eq!(&payload, b"pong");
+    });
+
+    let route =
+        eggress_outbound::OutboundConnector::from_pproxy_uri(&format!("http://{proxy_addr}"))
+            .unwrap();
+    let client = eggfetch_core::Client::builder()
+        .http_version_policy(HttpVersionPolicy::Http1Only)
+        .retry_canceled_requests(false)
+        .dialer(EggressDialer::new(route))
+        .build();
+    let mut response = client
+        .request(http::Method::GET, "http://ws-origin.invalid/socket")
+        .unwrap()
+        .header("Connection", "Upgrade")
+        .header("Upgrade", "websocket")
+        .send()
+        .await
+        .expect("routed handshake must use the configured proxy");
+    assert_eq!(response.status(), http::StatusCode::SWITCHING_PROTOCOLS);
+    let Some(NetworkStream::Upgraded(mut stream)) = response.take_network_stream() else {
+        panic!("routed 101 response must expose owned upgraded IO");
+    };
+    let mut leading = [0u8; 10];
+    stream.read_exact(&mut leading).await.unwrap();
+    assert_eq!(&leading, b"route-lead");
+    stream.write_all(b"pong").await.unwrap();
+    drop(stream);
+    proxy_task.await.unwrap();
+}
+
+#[cfg(feature = "eggress")]
+#[tokio::test]
+async fn eggress_upgrade_route_failure_never_falls_back_to_direct() {
+    use eggfetch_core::HttpVersionPolicy;
+    use eggreplay_http::EggressDialer;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let origin = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin_addr = origin.local_addr().unwrap();
+    let origin_task = tokio::spawn(async move {
+        let (mut socket, _) = origin.accept().await.unwrap();
+        let mut request = [0u8; 512];
+        let _ = socket.read(&mut request).await;
+        socket
+            .write_all(b"HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n")
+            .await
+            .unwrap();
+    });
+    let unavailable_proxy = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy_addr = unavailable_proxy.local_addr().unwrap();
+    drop(unavailable_proxy);
+
+    let route =
+        eggress_outbound::OutboundConnector::from_pproxy_uri(&format!("http://{proxy_addr}"))
+            .unwrap();
+    let client = eggfetch_core::Client::builder()
+        .http_version_policy(HttpVersionPolicy::Http1Only)
+        .retry_canceled_requests(false)
+        .dialer(EggressDialer::new(route))
+        .build();
+    let result = client
+        .request(http::Method::GET, &format!("http://{origin_addr}/socket"))
+        .unwrap()
+        .header("Connection", "Upgrade")
+        .header("Upgrade", "websocket")
+        .send()
+        .await;
+    assert!(
+        result.is_err(),
+        "failed proxy route must fail the handshake"
+    );
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(50), origin_task)
+            .await
+            .is_err(),
+        "direct origin must not receive a fallback connection"
+    );
+}
+
 #[test]
 fn qual_03_04_repeated_headers_and_query_preserved() {
     // C005 items 3,4: repeated headers/query keys preserved in order.

@@ -1,6 +1,6 @@
 # M011A — Transport Dependency and Upgrade Preflight
 
-Status: ready
+Status: implemented (hosted qualification pending)
 Depends on: M010 + M010-C1 closure
 Parent milestone: M011
 

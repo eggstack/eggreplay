@@ -41,7 +41,7 @@ conversation storage/matching.
 | M010 | `implementation/streaming/010-streaming-timing-and-sse.md` | closed | M009 | stream events, timing, SSE |
 | M010-C1 | `implementation/streaming/010c-stream-extension-and-regression-corrective.md` | closed | M010 implementation | extension contract + candidate stream regression closure |
 | M011 | `implementation/websocket/011-websocket-semantic-record-replay.md` | ready (decomposed) | M010 + M010-C1 | WebSocket milestone umbrella |
-| M011A | `implementation/websocket/011a-transport-dependency-and-upgrade-preflight.md` | **ready** | M010 + M010-C1 | dependency/upgrade substrate qualification |
+| M011A | `implementation/websocket/011a-transport-dependency-and-upgrade-preflight.md` | implemented (hosted qualification pending) | M010 + M010-C1 | dependency/upgrade substrate qualification |
 | M011B | `implementation/websocket/011b-semantic-model-store-and-codec.md` | blocked | M011A | semantic/store/codec authority |
 | M011C | `implementation/websocket/011c-recording-gateway.md` | blocked | M011B | recording gateway |
 | M011D | `implementation/websocket/011d-offline-replay.md` | blocked | M011C | deterministic offline replay |
