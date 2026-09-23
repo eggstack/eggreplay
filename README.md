@@ -12,8 +12,11 @@ The hosted release gate passed Linux stable, Linux Rust 1.89 MSRV, macOS stable,
 Windows stable, and the dependency-boundary lane; see
 [`plans/closure/c006-windows-hosted-ci-qualification.md`](plans/closure/c006-windows-hosted-ci-qualification.md).
 
-Forward roadmap implementation plans M009–M014 are now registered. M009
-(stateful/dynamic replay) is the only dependency-ready next milestone.
+M009 stateful/dynamic replay is closed. M010 streaming timing/SSE is
+implemented and its initial hosted matrix is green, but M010 remains open
+pending M010-C1, a narrow corrective for required-extension semantics and live
+candidate stream-regression/SSE policy wiring. M011 remains blocked until that
+closure.
 
 The core and store remain usable without a network runtime. Supported transport
 for v0.1 is direct HTTP/1.1 acquisition and EggServe inbound HTTP/1.1 replay
