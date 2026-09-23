@@ -261,6 +261,104 @@ pub struct SessionWriter {
     stream_event_ids: std::collections::HashSet<String>,
     stream_event_records: usize,
     stream_event_object_bytes: usize,
+    websocket: WebSocketAccumulation,
+}
+
+#[derive(Debug, Default)]
+struct WebSocketAccumulation {
+    conversations: Vec<eggreplay_core::WebSocketConversation>,
+    messages: usize,
+    payload_bytes: u64,
+    encoded_bytes: usize,
+}
+
+fn append_websocket_conversation(
+    accumulation: &mut WebSocketAccumulation,
+    conversation: eggreplay_core::WebSocketConversation,
+) -> Result<(), StoreError> {
+    let limits = eggreplay_core::WebSocketLimits::default();
+    if accumulation.conversations.len() >= limits.max_conversations {
+        return Err(StoreError::Invalid(
+            "WebSocket conversation count exceeds limit".into(),
+        ));
+    }
+    if accumulation
+        .conversations
+        .iter()
+        .any(|existing| existing.id == conversation.id || existing.flow_id == conversation.flow_id)
+    {
+        return Err(StoreError::Invalid(
+            "duplicate WebSocket conversation or flow id".into(),
+        ));
+    }
+    let single = eggreplay_core::WebSocketTranscript {
+        schema_version: eggreplay_core::WEBSOCKET_SCHEMA_VERSION,
+        conversations: vec![conversation.clone()],
+    };
+    single.validate(limits).map_err(StoreError::Invalid)?;
+    let next_messages = accumulation
+        .messages
+        .checked_add(conversation.messages.len())
+        .ok_or_else(|| StoreError::Invalid("WebSocket message count overflow".into()))?;
+    if next_messages > limits.max_messages_per_session {
+        return Err(StoreError::Invalid(
+            "WebSocket message count exceeds session limit".into(),
+        ));
+    }
+    let conversation_payload = conversation
+        .messages
+        .iter()
+        .filter_map(|message| {
+            message
+                .payload
+                .as_ref()
+                .and_then(eggreplay_core::BodyRef::len)
+        })
+        .try_fold(0u64, |total, length| total.checked_add(length))
+        .ok_or_else(|| StoreError::Invalid("WebSocket payload length overflow".into()))?;
+    let next_payload = accumulation
+        .payload_bytes
+        .checked_add(conversation_payload)
+        .ok_or_else(|| StoreError::Invalid("WebSocket payload length overflow".into()))?;
+    if next_payload > limits.max_total_payload_bytes {
+        return Err(StoreError::Invalid(
+            "WebSocket payload bytes exceed session limit".into(),
+        ));
+    }
+    let encoded = serde_json::to_vec(&conversation)?;
+    let next_encoded = accumulation
+        .encoded_bytes
+        .checked_add(encoded.len() + 1)
+        .ok_or_else(|| StoreError::Invalid("WebSocket metadata length overflow".into()))?;
+    if next_encoded.saturating_add(64) > MAX_EXTENSION_BYTES as usize {
+        return Err(StoreError::Invalid(
+            "WebSocket extension exceeds configured limit".into(),
+        ));
+    }
+    accumulation.messages = next_messages;
+    accumulation.payload_bytes = next_payload;
+    accumulation.encoded_bytes = next_encoded;
+    accumulation.conversations.push(conversation);
+    Ok(())
+}
+
+fn websocket_transcript(
+    accumulation: &WebSocketAccumulation,
+) -> Result<eggreplay_core::WebSocketTranscript, StoreError> {
+    let transcript = eggreplay_core::WebSocketTranscript {
+        schema_version: eggreplay_core::WEBSOCKET_SCHEMA_VERSION,
+        conversations: accumulation.conversations.clone(),
+    };
+    transcript
+        .validate(eggreplay_core::WebSocketLimits::default())
+        .map_err(StoreError::Invalid)?;
+    let length = serde_json::to_vec(&transcript)?.len();
+    if length > MAX_EXTENSION_BYTES as usize {
+        return Err(StoreError::Invalid(
+            "WebSocket extension exceeds configured limit".into(),
+        ));
+    }
+    Ok(transcript)
 }
 
 impl SessionWriter {
@@ -310,6 +408,7 @@ impl SessionWriter {
             stream_event_ids: std::collections::HashSet::new(),
             stream_event_records: 0,
             stream_event_object_bytes: 0,
+            websocket: WebSocketAccumulation::default(),
         })
     }
 
@@ -448,6 +547,15 @@ impl SessionWriter {
         Ok(())
     }
 
+    /// Add one bounded WebSocket conversation to the single aggregate
+    /// `websockets.jsonl` extension published during finalization.
+    pub fn append_websocket_conversation(
+        &mut self,
+        conversation: eggreplay_core::WebSocketConversation,
+    ) -> Result<(), StoreError> {
+        append_websocket_conversation(&mut self.websocket, conversation)
+    }
+
     /// Atomically publish the complete session directory.
     ///
     /// Windows cannot rename a directory that contains open files, so the
@@ -465,6 +573,20 @@ impl SessionWriter {
                 "stream-events",
                 eggreplay_core::stream::STREAM_EVENTS_SCHEMA_VERSION,
                 "stream-events.json",
+                true,
+                &bytes,
+            )?;
+            self.metadata.schema_version = eggreplay_core::SESSION_SCHEMA_VERSION;
+        }
+        if !self.websocket.conversations.is_empty() {
+            let transcript = websocket_transcript(&self.websocket)?;
+            let bytes = serde_json::to_vec(&transcript)?;
+            write_extension_file(
+                &self.staging,
+                &mut self.extensions,
+                "websocket-messages",
+                eggreplay_core::WEBSOCKET_SCHEMA_VERSION,
+                "websockets.jsonl",
                 true,
                 &bytes,
             )?;
@@ -507,6 +629,7 @@ impl SessionWriter {
             stream_event_ids: _,
             stream_event_records: _,
             stream_event_object_bytes: _,
+            websocket: _,
         } = self;
         drop(flows);
         fs::rename(&staging, &destination)?;
@@ -539,6 +662,7 @@ struct RecordingInner {
     stream_event_ids: std::sync::Mutex<std::collections::HashSet<String>>,
     stream_event_records: AtomicUsize,
     stream_event_object_bytes: AtomicUsize,
+    websocket: std::sync::Mutex<WebSocketAccumulation>,
 }
 
 /// Cloneable concurrent recording session.
@@ -746,6 +870,7 @@ impl RecordingSession {
                 stream_event_ids: std::sync::Mutex::new(std::collections::HashSet::new()),
                 stream_event_records: AtomicUsize::new(0),
                 stream_event_object_bytes: AtomicUsize::new(0),
+                websocket: std::sync::Mutex::new(WebSocketAccumulation::default()),
             }),
         })
     }
@@ -799,6 +924,16 @@ impl RecordingSession {
     /// Return the number of currently open body sinks.
     pub fn active_blobs(&self) -> usize {
         self.inner.active_blobs.load(Ordering::SeqCst)
+    }
+
+    /// Return the number of bounded WebSocket conversations staged in this
+    /// recording session.
+    pub fn websocket_conversation_count(&self) -> Result<usize, StoreError> {
+        self.inner
+            .websocket
+            .lock()
+            .map(|websocket| websocket.conversations.len())
+            .map_err(|_| StoreError::Invalid("WebSocket registry poisoned".into()))
     }
 
     /// Return the number of appended flows.
@@ -969,6 +1104,26 @@ impl RecordingSession {
         Ok(())
     }
 
+    /// Add one bounded WebSocket conversation to the single aggregate
+    /// `websockets.jsonl` extension published during finalization.
+    pub fn append_websocket_conversation(
+        &self,
+        conversation: eggreplay_core::WebSocketConversation,
+    ) -> Result<(), StoreError> {
+        if self.inner.shutdown.load(Ordering::SeqCst) {
+            return Err(StoreError::Invalid("session is shutting down".into()));
+        }
+        let mut websocket = self
+            .inner
+            .websocket
+            .lock()
+            .map_err(|_| StoreError::Invalid("WebSocket registry poisoned".into()))?;
+        if self.inner.shutdown.load(Ordering::SeqCst) {
+            return Err(StoreError::Invalid("session is shutting down".into()));
+        }
+        append_websocket_conversation(&mut websocket, conversation)
+    }
+
     /// Atomically publish; fails if active sinks remain.
     ///
     /// Must be called only after admission stopped and all tasks drained.
@@ -1034,6 +1189,30 @@ impl RecordingSession {
                 )?;
             }
         }
+        let websocket = self
+            .inner
+            .websocket
+            .lock()
+            .map_err(|_| StoreError::Invalid("WebSocket registry poisoned".into()))?;
+        if !websocket.conversations.is_empty() {
+            let transcript = websocket_transcript(&websocket)?;
+            let bytes = serde_json::to_vec(&transcript)?;
+            let mut extensions = self
+                .inner
+                .extensions
+                .lock()
+                .map_err(|_| StoreError::Invalid("extension registry poisoned".into()))?;
+            write_extension_file(
+                &self.inner.staging,
+                &mut extensions,
+                "websocket-messages",
+                eggreplay_core::WEBSOCKET_SCHEMA_VERSION,
+                "websockets.jsonl",
+                true,
+                &bytes,
+            )?;
+        }
+        drop(websocket);
         let extensions = self
             .inner
             .extensions
@@ -2176,13 +2355,7 @@ mod tests {
             }],
         };
         recording
-            .write_extension(
-                "websocket-messages",
-                eggreplay_core::WEBSOCKET_SCHEMA_VERSION,
-                "websockets.jsonl",
-                true,
-                &serde_json::to_vec(&transcript).unwrap(),
-            )
+            .append_websocket_conversation(transcript.conversations[0].clone())
             .unwrap();
         let session = recording.finish().unwrap();
         assert_eq!(session.manifest().flow_count, 1);
@@ -2234,13 +2407,7 @@ mod tests {
             }],
         };
         writer
-            .write_extension(
-                "websocket-messages",
-                eggreplay_core::WEBSOCKET_SCHEMA_VERSION,
-                "websockets.jsonl",
-                true,
-                &serde_json::to_vec(&transcript).unwrap(),
-            )
+            .append_websocket_conversation(transcript.conversations[0].clone())
             .unwrap();
         let session = writer.finish().unwrap();
         assert_eq!(session.manifest().metadata.schema_version, 2);
@@ -2292,13 +2459,7 @@ mod tests {
             }],
         };
         writer
-            .write_extension(
-                "websocket-messages",
-                eggreplay_core::WEBSOCKET_SCHEMA_VERSION,
-                "websockets.jsonl",
-                true,
-                &serde_json::to_vec(&transcript).unwrap(),
-            )
+            .append_websocket_conversation(transcript.conversations[0].clone())
             .unwrap();
         assert!(writer.finish().is_err());
         assert!(!destination.exists());

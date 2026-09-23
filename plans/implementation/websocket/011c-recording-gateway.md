@@ -1,6 +1,6 @@
 # M011C — WebSocket Recording Gateway
 
-Status: blocked
+Status: implemented
 Depends on: M011B
 Parent milestone: M011
 

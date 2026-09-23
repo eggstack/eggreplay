@@ -17,5 +17,7 @@ pub mod websocket;
 #[cfg(feature = "eggress")]
 pub use eggress::{EggressDialer, parse_route, physical_route_for, redact_route_credentials};
 pub use recording::{HttpError, RecordedRequest, record_request, record_request_with_session};
+#[cfg(feature = "websocket")]
+pub use regression::compare_websocket_candidate;
 pub use regression::{CandidateObservation, RegressionError, execute_candidate};
 pub use replay::{ReplayError, ReplayFixture};

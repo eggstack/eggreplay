@@ -31,7 +31,11 @@ numbers, monotonic deltas, terminal close state, selected subprotocols,
 control payloads, and configured count/size/duration limits. Frame masking,
 fragment boundaries, and packet layout are not stored. Volatile
 `Sec-WebSocket-Key` and `Sec-WebSocket-Accept` values are excluded from
-WebSocket-specific matching authority.
+WebSocket-specific matching authority. Redacted text/binary messages retain
+typed wildcard markers; redacted payload bytes are replaced before a blob can
+be finalized. Replay loads transcripts automatically, opens payload blobs
+only for a selected conversation, and never treats a recorded 101 as an
+ordinary static HTTP response.
 
 ## Authored scenarios (M009)
 

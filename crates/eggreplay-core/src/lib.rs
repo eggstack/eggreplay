@@ -65,7 +65,7 @@ pub const SESSION_SCHEMA_V1: u16 = 1;
 pub const SESSION_SCHEMA_VERSION: u16 = 2;
 
 /// Current JSON report schema version.
-pub const REPORT_SCHEMA_VERSION: u16 = 1;
+pub const REPORT_SCHEMA_VERSION: u16 = 2;
 
 /// Tool version embedded in fixtures and reports.
 pub const TOOL_VERSION: &str = env!("CARGO_PKG_VERSION");

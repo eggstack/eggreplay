@@ -10,6 +10,19 @@ use serde_json::json;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+fn websocket_options(
+    enabled: bool,
+    redact_text: bool,
+    redact_binary: bool,
+) -> eggreplay_http::recording::WebSocketRecordingOptions {
+    eggreplay_http::recording::WebSocketRecordingOptions {
+        enabled,
+        redact_text,
+        redact_binary,
+        ..Default::default()
+    }
+}
+
 #[derive(Debug, Parser)]
 #[command(
     name = "eggreplay",
@@ -68,6 +81,15 @@ struct RecordArgs {
     /// Clearly named unsafe override: replace secure defaults instead of extending them.
     #[arg(long = "unsafe-replace-default-redaction", default_value_t = false)]
     unsafe_replace: bool,
+    /// Record HTTP/1.1 WebSocket upgrades through the opt-in tunnel gateway.
+    #[arg(long, default_value_t = false)]
+    websockets: bool,
+    /// Replace all recorded WebSocket text messages with a safe marker.
+    #[arg(long, default_value_t = false)]
+    redact_websocket_text: bool,
+    /// Replace all recorded WebSocket binary messages with a safe marker.
+    #[arg(long, default_value_t = false)]
+    redact_websocket_binary: bool,
     /// Outbound route: `direct` or a pproxy URI (`socks5://...`, `http://...`,
     /// two-hop `socks5://...__http://...`). Listener-free Eggress routing only.
     #[arg(long, default_value = "direct")]
@@ -103,6 +125,15 @@ struct ServeArgs {
     /// Replace secure redaction defaults; unsafe and explicit.
     #[arg(long = "unsafe-replace-default-redaction", default_value_t = false)]
     unsafe_replace: bool,
+    /// Record HTTP/1.1 WebSocket upgrades through the opt-in tunnel gateway.
+    #[arg(long, default_value_t = false)]
+    websockets: bool,
+    /// Replace all recorded WebSocket text messages with a safe marker.
+    #[arg(long, default_value_t = false)]
+    redact_websocket_text: bool,
+    /// Replace all recorded WebSocket binary messages with a safe marker.
+    #[arg(long, default_value_t = false)]
+    redact_websocket_binary: bool,
     /// Request matching profile used by this replay server.
     #[arg(long, value_enum, default_value_t = ServeMatcherProfile::Strict)]
     matcher_profile: ServeMatcherProfile,
@@ -172,6 +203,9 @@ struct ComparisonArgs {
     /// implies SSE comparison.
     #[arg(long = "sse-ignore")]
     sse_ignore: Vec<String>,
+    /// WebSocket message cadence tolerance in milliseconds.
+    #[arg(long)]
+    websocket_cadence_tolerance_ms: Option<u64>,
 }
 
 fn comparison_policy(args: &ComparisonArgs) -> Result<ComparisonPolicy, (String, String)> {
@@ -184,11 +218,21 @@ fn comparison_policy(args: &ComparisonArgs) -> Result<ComparisonPolicy, (String,
         })?),
         None => None,
     };
+    let websocket_cadence_tolerance_ns = match args.websocket_cadence_tolerance_ms {
+        Some(ms) => Some(ms.checked_mul(1_000_000).ok_or_else(|| {
+            (
+                "configuration".to_owned(),
+                "WebSocket cadence tolerance overflows".to_owned(),
+            )
+        })?),
+        None => None,
+    };
     let policy = ComparisonPolicy {
         compare_stream_events: args.compare_stream_events,
         cadence_tolerance_ns,
         compare_sse: args.compare_sse,
         sse_ignored: args.sse_ignore.clone(),
+        websocket_cadence_tolerance_ns,
     };
     policy
         .validate()
@@ -270,6 +314,9 @@ struct InspectArgs {
     /// Include a bounded parsed view for `text/event-stream` response bodies.
     #[arg(long, default_value_t = false)]
     sse: bool,
+    /// Include bounded WebSocket conversation metadata without payload bytes.
+    #[arg(long, default_value_t = false)]
+    websockets: bool,
     /// CLI inspection bound per body in bytes (truncates with explicit counts).
     #[arg(long, default_value_t = 65536)]
     max_body_bytes: u64,
@@ -423,7 +470,7 @@ async fn record(args: RecordArgs) -> Result<(), (String, String)> {
         .upstream
         .parse()
         .map_err(|error: http::uri::InvalidUri| ("configuration".into(), error.to_string()))?;
-    let server = eggreplay_http::recording::start_recording_gateway(
+    let server = eggreplay_http::recording::start_recording_gateway_with_websockets(
         args.listen,
         upstream,
         client,
@@ -433,6 +480,11 @@ async fn record(args: RecordArgs) -> Result<(), (String, String)> {
         profile_id,
         eggreplay_core::DEFAULT_MAX_STRUCTURED_REDACTION_BYTES,
         physical_route,
+        websocket_options(
+            args.websockets,
+            args.redact_websocket_text,
+            args.redact_websocket_binary,
+        ),
     )
     .await
     .map_err(|error| ("runtime".into(), error.to_string()))?;
@@ -449,6 +501,7 @@ async fn record(args: RecordArgs) -> Result<(), (String, String)> {
         }
         tokio::task::yield_now().await;
     }
+    let websocket_count = session.websocket_conversation_count().unwrap_or(0);
     session
         .finish()
         .map_err(|error| ("fixture".into(), error.to_string()))?;
@@ -457,7 +510,7 @@ async fn record(args: RecordArgs) -> Result<(), (String, String)> {
         args.output.output,
         true,
         None,
-        json!({"fixture": args.fixture, "status": "finalized"}),
+        json!({"fixture": args.fixture, "status": "finalized", "websocket_acquisition_enabled": args.websockets, "websocket_conversations": websocket_count}),
     );
     Ok(())
 }
@@ -467,6 +520,18 @@ async fn serve(args: ServeArgs) -> Result<(), (String, String)> {
     let policy = eggreplay_core::RecordMode::from(args.record_mode)
         .resolve(args.fixture.exists(), args.upstream.is_some())
         .map_err(|message| ("configuration".into(), message))?;
+    if args.websockets && policy.mode == eggreplay_core::RecordMode::AppendNew {
+        return Err((
+            "configuration".into(),
+            "WebSocket acquisition is not available in append-new mode".into(),
+        ));
+    }
+    if args.websockets && policy.mode == eggreplay_core::RecordMode::Sealed {
+        return Err((
+            "configuration".into(),
+            "--websockets requires a network-capable record mode".into(),
+        ));
+    }
     let timing_mode = eggreplay_core::StreamTimingMode::parse(&args.timing_mode)
         .map_err(|error| ("configuration".into(), error))?;
     if timing_mode != eggreplay_core::StreamTimingMode::Immediate
@@ -539,7 +604,7 @@ async fn serve(args: ServeArgs) -> Result<(), (String, String)> {
         args.output.output,
         true,
         None,
-        json!({"fixture": args.fixture, "scenario": args.scenario, "record_mode": "sealed", "upstream_enabled": false, "matcher_profile": args.matcher_profile.as_str(), "timing_mode": args.timing_mode, "status": "stopped"}),
+        json!({"fixture": args.fixture, "scenario": args.scenario, "record_mode": "sealed", "upstream_enabled": false, "websocket_acquisition_enabled": false, "websocket_conversations": 0, "matcher_profile": args.matcher_profile.as_str(), "timing_mode": args.timing_mode, "status": "stopped"}),
     );
     Ok(())
 }
@@ -564,7 +629,7 @@ async fn record_once_from_serve(args: ServeArgs) -> Result<(), (String, String)>
         StoreLimits::default(),
     )
     .map_err(|error| ("fixture".into(), error.to_string()))?;
-    let server = eggreplay_http::recording::start_recording_gateway(
+    let server = eggreplay_http::recording::start_recording_gateway_with_websockets(
         args.listen,
         upstream,
         client,
@@ -574,6 +639,11 @@ async fn record_once_from_serve(args: ServeArgs) -> Result<(), (String, String)>
         profile_id,
         eggreplay_core::DEFAULT_MAX_STRUCTURED_REDACTION_BYTES,
         physical_route,
+        websocket_options(
+            args.websockets,
+            args.redact_websocket_text,
+            args.redact_websocket_binary,
+        ),
     )
     .await
     .map_err(|error| ("runtime".into(), error.to_string()))?;
@@ -584,6 +654,7 @@ async fn record_once_from_serve(args: ServeArgs) -> Result<(), (String, String)>
     server.shutdown();
     server.wait().await;
     session.shutdown();
+    let websocket_count = session.websocket_conversation_count().unwrap_or(0);
     session
         .finish()
         .map_err(|error| ("fixture".into(), error.to_string()))?;
@@ -592,7 +663,7 @@ async fn record_once_from_serve(args: ServeArgs) -> Result<(), (String, String)>
         args.output.output,
         true,
         None,
-        json!({"fixture": args.fixture, "record_mode": "once", "upstream_enabled": true, "matcher_profile": args.matcher_profile.as_str(), "redaction_profile": args.redaction_profile, "status": "finalized"}),
+        json!({"fixture": args.fixture, "record_mode": "once", "upstream_enabled": true, "websocket_acquisition_enabled": args.websockets, "websocket_conversations": websocket_count, "matcher_profile": args.matcher_profile.as_str(), "redaction_profile": args.redaction_profile, "status": "finalized"}),
     );
     Ok(())
 }
@@ -678,7 +749,7 @@ async fn serve_append_new(args: ServeArgs) -> Result<(), (String, String)> {
         args.output.output,
         true,
         None,
-        json!({"fixture": args.fixture, "record_mode": "append-new", "upstream_enabled": true, "matcher_profile": args.matcher_profile.as_str(), "redaction_profile": profile_id, "new_flows": added_flows, "status": "finalized"}),
+        json!({"fixture": args.fixture, "record_mode": "append-new", "upstream_enabled": true, "websocket_acquisition_enabled": false, "websocket_conversations": 0, "matcher_profile": args.matcher_profile.as_str(), "redaction_profile": profile_id, "new_flows": added_flows, "status": "finalized"}),
     );
     Ok(())
 }
@@ -710,7 +781,7 @@ async fn serve_re_record(args: ServeArgs) -> Result<(), (String, String)> {
         StoreLimits::default(),
     )
     .map_err(|error| ("fixture".into(), error.to_string()))?;
-    let server = eggreplay_http::recording::start_recording_gateway(
+    let server = eggreplay_http::recording::start_recording_gateway_with_websockets(
         args.listen,
         upstream,
         client,
@@ -720,6 +791,11 @@ async fn serve_re_record(args: ServeArgs) -> Result<(), (String, String)> {
         profile_id,
         eggreplay_core::DEFAULT_MAX_STRUCTURED_REDACTION_BYTES,
         physical_route,
+        websocket_options(
+            args.websockets,
+            args.redact_websocket_text,
+            args.redact_websocket_binary,
+        ),
     )
     .await
     .map_err(|error| ("runtime".into(), error.to_string()))?;
@@ -730,6 +806,7 @@ async fn serve_re_record(args: ServeArgs) -> Result<(), (String, String)> {
     server.shutdown();
     server.wait().await;
     session.shutdown();
+    let websocket_count = session.websocket_conversation_count().unwrap_or(0);
     let recorded = session
         .finish()
         .map_err(|error| ("fixture".into(), error.to_string()))?;
@@ -742,7 +819,7 @@ async fn serve_re_record(args: ServeArgs) -> Result<(), (String, String)> {
         args.output.output,
         true,
         None,
-        json!({"fixture": args.fixture, "record_mode": "re-record", "upstream_enabled": true, "matcher_profile": args.matcher_profile.as_str(), "redaction_profile": args.redaction_profile, "new_flows": recorded_flows, "status": "finalized"}),
+        json!({"fixture": args.fixture, "record_mode": "re-record", "upstream_enabled": true, "websocket_acquisition_enabled": args.websockets, "websocket_conversations": websocket_count, "matcher_profile": args.matcher_profile.as_str(), "redaction_profile": args.redaction_profile, "new_flows": recorded_flows, "status": "finalized"}),
     );
     Ok(())
 }
@@ -1068,6 +1145,42 @@ async fn compare_candidate_flow(
     policy: &ComparisonPolicy,
     baseline_streams: Option<&std::collections::HashMap<String, eggreplay_core::FlowStreamEvents>>,
 ) -> Result<eggreplay_core::RegressionReport, String> {
+    if matches!(&baseline.outcome, FlowOutcome::Response(response) if response.status == 101) {
+        let bytes = session
+            .read_extension("websocket-messages")
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| {
+                "WebSocket 101 baseline is missing websocket-messages metadata".to_owned()
+            })?;
+        let transcript: eggreplay_core::WebSocketTranscript = serde_json::from_slice(&bytes)
+            .map_err(|e| format!("invalid websocket-messages extension: {e}"))?;
+        let conversation = transcript
+            .conversations
+            .iter()
+            .find(|conversation| conversation.flow_id == baseline.id)
+            .ok_or_else(|| {
+                format!(
+                    "WebSocket 101 baseline flow {} has no conversation",
+                    baseline.id
+                )
+            })?;
+        let findings = eggreplay_http::compare_websocket_candidate(
+            client,
+            session,
+            &baseline.request,
+            target_uri,
+            conversation,
+            policy.websocket_cadence_tolerance_ns,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+        return Ok(eggreplay_core::RegressionReport {
+            schema_version: eggreplay_core::REPORT_SCHEMA_VERSION,
+            scheduler,
+            baseline_flow_ids: vec![baseline.id],
+            findings,
+        });
+    }
     let request_body = body(session, &baseline.request.body).map_err(|error| error.to_string())?;
     let candidate = execute_candidate(
         client,
@@ -1152,6 +1265,8 @@ async fn diff(args: DiffArgs) -> Result<(), (String, String)> {
         .map_err(|error| ("fixture".into(), error.to_string()))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| ("fixture".into(), error.to_string()))?;
+    let baseline_websockets = fixture_websockets(&baseline)?;
+    let candidate_websockets = fixture_websockets(&candidate)?;
     // Requested stream comparison requires valid metadata on both sides.
     // Missing requested metadata is an explicit fixture/configuration error,
     // not fallback. Comparison is response-direction authoritative and
@@ -1289,6 +1404,32 @@ async fn diff(args: DiffArgs) -> Result<(), (String, String)> {
                 (format!("{:?}", a.kind), &a.field).cmp(&(format!("{:?}", b.kind), &b.field))
             });
         }
+        let has_ws_flow = matches!(&left_flow.outcome, FlowOutcome::Response(r) if r.status == 101)
+            || matches!(&right_flow.outcome, FlowOutcome::Response(r) if r.status == 101);
+        if has_ws_flow {
+            let left_ws = baseline_websockets.get(&left_flow.id);
+            let right_ws = candidate_websockets.get(&right_flow.id);
+            match (left_ws, right_ws) {
+                (Some(left_ws), Some(right_ws)) => {
+                    report.findings.extend(compare_fixture_websockets(
+                        &baseline,
+                        &candidate,
+                        left_ws,
+                        right_ws,
+                        policy.websocket_cadence_tolerance_ns,
+                    ))
+                }
+                _ => {
+                    return Err((
+                        "fixture".into(),
+                        "WebSocket 101 flow has missing conversation metadata".into(),
+                    ));
+                }
+            }
+            report.findings.sort_by(|a, b| {
+                (format!("{:?}", a.kind), &a.field).cmp(&(format!("{:?}", b.kind), &b.field))
+            });
+        }
         reports.push(report);
     }
     let success = left.len() == right.len() && reports.iter().all(|report| report.is_success());
@@ -1313,6 +1454,38 @@ async fn inspect(args: InspectArgs) -> Result<(), (String, String)> {
     let session = Session::open(&args.fixture, StoreLimits::default())
         .map_err(|error| ("fixture".into(), error.to_string()))?;
     let mut flows = Vec::new();
+    let websocket_view = if args.websockets {
+        let bytes = session
+            .read_extension("websocket-messages")
+            .map_err(|error| ("fixture".into(), error.to_string()))?;
+        match bytes {
+            Some(bytes) => {
+                let transcript: eggreplay_core::WebSocketTranscript =
+                    serde_json::from_slice(&bytes).map_err(|error| {
+                        (
+                            "fixture".into(),
+                            format!("invalid websocket-messages extension: {error}"),
+                        )
+                    })?;
+                Some(transcript.conversations.into_iter().map(|conversation| json!({
+                    "id": conversation.id,
+                    "flow_id": conversation.flow_id,
+                    "selected_subprotocol": conversation.selected_subprotocol,
+                    "terminal": conversation.terminal,
+                    "messages": conversation.messages.into_iter().map(|message| {
+                        let payload = match message.payload {
+                            Some(eggreplay_core::BodyRef::Blob(blob)) => json!({"length": blob.length, "sha256": blob.sha256}),
+                            Some(_) | None => json!({"length": 0, "sha256": null}),
+                        };
+                        json!({"sequence": message.sequence, "direction": message.direction, "kind": message.kind, "delta_ns": message.delta_ns, "payload": payload, "close_code": message.close_code, "close_reason": message.close_reason, "redactions": message.redactions})
+                    }).collect::<Vec<_>>()
+                })).collect::<Vec<_>>())
+            }
+            None => Some(Vec::<serde_json::Value>::new()),
+        }
+    } else {
+        None
+    };
     for item in session
         .iter_flows()
         .map_err(|error| ("fixture".into(), error.to_string()))?
@@ -1378,9 +1551,200 @@ async fn inspect(args: InspectArgs) -> Result<(), (String, String)> {
             "manifest": session.manifest(),
             "redaction_profile": session.manifest().metadata.redaction_profile,
             "flows": flows
+            ,"websockets": websocket_view
         }),
     );
     Ok(())
+}
+
+fn fixture_websockets(
+    session: &Session,
+) -> Result<
+    std::collections::HashMap<String, eggreplay_core::WebSocketConversation>,
+    (String, String),
+> {
+    let Some(bytes) = session
+        .read_extension("websocket-messages")
+        .map_err(|e| ("fixture".into(), e.to_string()))?
+    else {
+        return Ok(std::collections::HashMap::new());
+    };
+    let transcript: eggreplay_core::WebSocketTranscript =
+        serde_json::from_slice(&bytes).map_err(|e| {
+            (
+                "fixture".into(),
+                format!("invalid websocket-messages extension: {e}"),
+            )
+        })?;
+    transcript
+        .validate(eggreplay_core::WebSocketLimits::default())
+        .map_err(|e| ("fixture".into(), e))?;
+    Ok(transcript
+        .conversations
+        .into_iter()
+        .map(|conversation| (conversation.flow_id.clone(), conversation))
+        .collect())
+}
+
+fn compare_fixture_websockets(
+    baseline: &Session,
+    candidate: &Session,
+    left: &eggreplay_core::WebSocketConversation,
+    right: &eggreplay_core::WebSocketConversation,
+    cadence_tolerance_ns: Option<u64>,
+) -> Vec<eggreplay_core::DiffFinding> {
+    use eggreplay_core::{DiffFinding, DiffKind, WebSocketRedaction};
+    let mut findings = Vec::new();
+    let mut finding = |field: String, baseline: String, candidate: String| {
+        findings.push(DiffFinding {
+            kind: DiffKind::WebSocket,
+            field,
+            baseline,
+            candidate,
+        })
+    };
+    if left.selected_subprotocol != right.selected_subprotocol {
+        finding(
+            "handshake.subprotocol".into(),
+            left.selected_subprotocol
+                .clone()
+                .unwrap_or_else(|| "none".into()),
+            right
+                .selected_subprotocol
+                .clone()
+                .unwrap_or_else(|| "none".into()),
+        );
+    }
+    if left.terminal != right.terminal {
+        finding(
+            "terminal".into(),
+            format!("{:?}", left.terminal),
+            format!("{:?}", right.terminal),
+        );
+    }
+    if left.messages.len() != right.messages.len() {
+        finding(
+            "messages.count".into(),
+            left.messages.len().to_string(),
+            right.messages.len().to_string(),
+        );
+    }
+    for (index, (a, b)) in left.messages.iter().zip(&right.messages).enumerate() {
+        let field = format!("message.{index}");
+        if a.direction != b.direction {
+            finding(
+                format!("{field}.direction"),
+                format!("{:?}", a.direction),
+                format!("{:?}", b.direction),
+            );
+        }
+        if a.kind != b.kind {
+            finding(
+                format!("{field}.kind"),
+                format!("{:?}", a.kind),
+                format!("{:?}", b.kind),
+            );
+            continue;
+        }
+        if a.close_code != b.close_code {
+            finding(
+                format!("{field}.close_code"),
+                format!("{:?}", a.close_code),
+                format!("{:?}", b.close_code),
+            );
+        }
+        let close_reason_redacted = a.redactions.iter().chain(&b.redactions).any(|r| {
+            matches!(
+                r,
+                WebSocketRedaction::CloseReason | WebSocketRedaction::WholeMessage
+            )
+        });
+        if a.close_reason != b.close_reason && !close_reason_redacted {
+            finding(
+                format!("{field}.close_reason"),
+                "different".into(),
+                "different".into(),
+            );
+        }
+        if let Some(tolerance) = cadence_tolerance_ns
+            && a.delta_ns.abs_diff(b.delta_ns) > tolerance
+        {
+            finding(
+                format!("{field}.cadence"),
+                a.delta_ns.to_string(),
+                b.delta_ns.to_string(),
+            );
+        }
+        let whole_wildcard = a
+            .redactions
+            .iter()
+            .chain(&b.redactions)
+            .any(|r| matches!(r, WebSocketRedaction::WholeMessage));
+        if whole_wildcard || a.kind == eggreplay_core::WebSocketMessageKind::Close {
+            continue;
+        }
+        let left_bytes = a
+            .payload
+            .as_ref()
+            .and_then(|body| fixture_payload(baseline, body));
+        let right_bytes = b
+            .payload
+            .as_ref()
+            .and_then(|body| fixture_payload(candidate, body));
+        let pointer_sets = a
+            .redactions
+            .iter()
+            .chain(&b.redactions)
+            .filter_map(|r| match r {
+                WebSocketRedaction::JsonPointers { pointers } => Some(pointers.clone()),
+                _ => None,
+            })
+            .flatten()
+            .collect::<std::collections::BTreeSet<_>>();
+        let equal = match (left_bytes, right_bytes) {
+            (Some(mut left), Some(mut right)) if !pointer_sets.is_empty() => {
+                match (
+                    eggreplay_core::apply_json_redaction(&left, &pointer_sets),
+                    eggreplay_core::apply_json_redaction(&right, &pointer_sets),
+                ) {
+                    (Ok((l, _)), Ok((r, _))) => {
+                        left = l;
+                        right = r;
+                        left == right
+                    }
+                    _ => false,
+                }
+            }
+            (Some(left), Some(right)) => left == right,
+            (None, None) => true,
+            _ => false,
+        };
+        if !equal {
+            finding(
+                format!("{field}.payload"),
+                payload_summary(a),
+                payload_summary(b),
+            );
+        }
+    }
+    findings
+}
+
+fn fixture_payload(session: &Session, body: &eggreplay_core::BodyRef) -> Option<Vec<u8>> {
+    match body {
+        eggreplay_core::BodyRef::Blob(blob) => session.read_blob(blob).ok(),
+        eggreplay_core::BodyRef::Absent | eggreplay_core::BodyRef::Empty => Some(Vec::new()),
+    }
+}
+
+fn payload_summary(message: &eggreplay_core::WebSocketMessage) -> String {
+    match &message.payload {
+        Some(eggreplay_core::BodyRef::Blob(blob)) => {
+            format!("sha256:{};length:{}", blob.sha256, blob.length)
+        }
+        Some(body) => format!("length:{}", body.len().unwrap_or(0)),
+        None => "length:0".into(),
+    }
 }
 
 /// Bounded explicit body view for `inspect --bodies`.

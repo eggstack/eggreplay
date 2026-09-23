@@ -1,6 +1,6 @@
 # M011F — WebSocket Hardening, Qualification, and Milestone Closure
 
-Status: blocked
+Status: active
 Depends on: M011E
 Parent milestone: M011
 

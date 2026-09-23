@@ -28,6 +28,19 @@ recorded in flows. `inspect --bodies` performs an explicit bounded body read
 valid, otherwise length + digest (bounded base64 only with `--bodies-base64`).
 Stored bodies are already redacted, so inspection never bypasses markers.
 
+WebSocket recording is disabled by default. Use `record --websockets` or
+`serve --record-mode once|re-record --websockets` to admit HTTP/1.1 WebSocket
+upgrades. `--redact-websocket-text` and `--redact-websocket-binary` replace
+whole message payloads before publication; configured JSON Pointer redaction
+also applies to valid JSON text messages. `serve --record-mode append-new`
+rejects `--websockets`. Offline `replay`/sealed `serve` and candidate `test`
+automatically use recorded WebSocket transcripts. The optional
+`--websocket-cadence-tolerance-ms` adds message cadence findings.
+
+`inspect --websockets` reports conversation IDs, flow links, message kind,
+direction, timing, payload digest/length, close metadata, and redaction markers;
+it never prints message bytes.
+
 `serve --scenario <ID>` explicitly enables one authored scenario from the
 fixture's `rules` extension. Without the flag, a required scenario extension
 fails closed instead of being silently ignored. Scenario state is isolated to

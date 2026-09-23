@@ -12,13 +12,13 @@ M010 streaming timing/SSE (including M010-C1) are closed with hosted
 cross-platform evidence.
 
 M011 WebSocket semantic record/replay is decomposed into M011A–M011F under ADR
-0006. M011A transport/dependency/upgrade preflight is the only ready task;
-later WebSocket subplans and M012–M014D remain blocked by dependency order.
+0006. The implementation is being qualified; consult `plans/registry.md` for
+milestone closure and hosted evidence before relying on WebSocket support.
 
 The v0.1 support baseline remains direct HTTP/1.1 acquisition and EggServe
-inbound HTTP/1.1 replay with optional listener-free Eggress routing. WebSocket,
-H2/H3, and interception support are not part of the v0.1 claim until their
-later milestones close.
+inbound HTTP/1.1 replay with optional listener-free Eggress routing. WebSocket
+recording is opt-in with `--websockets`; see the plans registry for its current
+qualification status. H2/H3 and interception support remain outside the claim.
 
 ## Quickstart routes
 

@@ -1,6 +1,6 @@
 # M011D — Offline WebSocket Replay
 
-Status: blocked
+Status: implemented
 Depends on: M011C
 Parent milestone: M011
 

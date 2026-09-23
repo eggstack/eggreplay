@@ -3,7 +3,7 @@
 use eggreplay_core::{
     BodyRef, ConsumptionMode, FlowOutcome, HeaderEntry, HttpRequest, MatchCandidate, MatchResult,
     Matcher, MatcherSession, QueryPair, ScenarioRules, ScenarioRuntime, StreamEvents,
-    StreamTimingMode,
+    StreamTimingMode, WebSocketConversation, WebSocketTranscript,
 };
 use eggreplay_store::{Session, StoreError};
 use std::collections::HashMap;
@@ -14,7 +14,45 @@ use thiserror::Error;
 #[cfg(feature = "eggserve")]
 use eggserve_primitives::{HeaderBlock, RequestBodyPolicy, Response, ResponseBody, StatusCode};
 #[cfg(feature = "eggserve")]
-use eggserve_server::{Server, ServerHandle, ServiceError, service_fn_with_policy};
+use eggserve_server::{Server, ServerHandle, ServiceError};
+
+#[cfg(feature = "eggserve")]
+struct ReplayTunnelService<F> {
+    handler: F,
+    body_policy: RequestBodyPolicy,
+}
+
+#[cfg(feature = "eggserve")]
+impl<F, Fut> eggserve_server::Service for ReplayTunnelService<F>
+where
+    F: Fn(eggserve_primitives::Request, Option<eggserve_server::tunnel::TunnelCapability>) -> Fut
+        + Send
+        + Sync
+        + 'static,
+    Fut: std::future::Future<Output = Result<Response, ServiceError>> + Send + 'static,
+{
+    fn request_body_policy(&self, head: &eggserve_primitives::RequestHead) -> RequestBodyPolicy {
+        let upgrade = head.headers().iter().any(|field| {
+            field.name.as_str().eq_ignore_ascii_case("upgrade")
+                && field.value.as_bytes().eq_ignore_ascii_case(b"websocket")
+        });
+        if upgrade {
+            RequestBodyPolicy::Reject
+        } else {
+            self.body_policy
+        }
+    }
+    fn call(&self, request: eggserve_primitives::Request) -> eggserve_server::ServiceFuture<'_> {
+        Box::pin((self.handler)(request, None))
+    }
+    fn call_with_tunnel(
+        &self,
+        request: eggserve_primitives::Request,
+        tunnel: Option<eggserve_server::tunnel::TunnelCapability>,
+    ) -> eggserve_server::ServiceFuture<'_> {
+        Box::pin((self.handler)(request, tunnel))
+    }
+}
 
 /// Replay failures.
 #[derive(Debug, Error)]
@@ -41,6 +79,7 @@ struct ReplayState {
     scenario: Option<ScenarioRuntime>,
     stream_events: HashMap<String, eggreplay_core::FlowStreamEvents>,
     timing_mode: StreamTimingMode,
+    websockets: HashMap<String, WebSocketConversation>,
 }
 
 #[derive(Clone)]
@@ -143,7 +182,13 @@ impl ReplayFixture {
             if extension.name == "rules" && scenario.is_some() {
                 continue;
             }
-            if extension.name == "stream-events" {
+            if extension.name == "stream-events" || extension.name == "websocket-messages" {
+                if extension.name == "websocket-messages" && !cfg!(feature = "websocket") {
+                    return Err(ReplayError::State(
+                        "required extension \"websocket-messages\" needs the websocket feature"
+                            .into(),
+                    ));
+                }
                 continue;
             }
             return Err(ReplayError::State(format!(
@@ -195,6 +240,24 @@ impl ReplayFixture {
                 }
             }
         }
+        let mut websockets = HashMap::new();
+        if let Some(bytes) = session.read_extension("websocket-messages")? {
+            let transcript: WebSocketTranscript =
+                serde_json::from_slice(&bytes).map_err(|error| {
+                    ReplayError::State(format!("invalid websocket-messages extension: {error}"))
+                })?;
+            transcript
+                .validate(eggreplay_core::WebSocketLimits::default())
+                .map_err(ReplayError::State)?;
+            for conversation in transcript.conversations {
+                if websockets
+                    .insert(conversation.flow_id.clone(), conversation)
+                    .is_some()
+                {
+                    return Err(ReplayError::State("duplicate WebSocket flow id".into()));
+                }
+            }
+        }
         if timing_mode != StreamTimingMode::Immediate
             && candidates.iter().any(|candidate| {
                 matches!(&candidate.flow.outcome, FlowOutcome::Response(response) if !matches!(response.body, BodyRef::Absent | BodyRef::Empty))
@@ -213,6 +276,7 @@ impl ReplayFixture {
                 scenario,
                 stream_events,
                 timing_mode,
+                websockets,
             })),
         })
     }
@@ -326,19 +390,33 @@ impl ReplayFixture {
         append: Option<AppendContext>,
     ) -> Result<ServerHandle, ReplayError> {
         let state = self.state.clone();
-        let service = service_fn_with_policy(
-            move |request| {
-                let state = state.clone();
-                let append = append.clone();
-                async move { handle_request(state, request, append).await }
-            },
-            RequestBodyPolicy::Stream {
+        let handler = move |request, tunnel| {
+            let state = state.clone();
+            let append = append.clone();
+            async move { handle_request(state, request, append, tunnel).await }
+        };
+        let service = ReplayTunnelService {
+            handler,
+            body_policy: RequestBodyPolicy::Stream {
                 max_bytes: max_body_bytes,
             },
-        );
-        let runtime = eggserve_server::RuntimeConfig::builder()
+        };
+        let has_websockets = self
+            .state
+            .lock()
+            .map(|state| !state.websockets.is_empty())
+            .unwrap_or(false);
+        let builder = eggserve_server::RuntimeConfig::builder()
             .bind(bind)
-            .max_request_body_bytes(max_body_bytes)
+            .max_request_body_bytes(max_body_bytes);
+        let builder = if has_websockets {
+            builder
+                .max_active_tunnels(16)
+                .disable_connection_total_timeout()
+        } else {
+            builder
+        };
+        let runtime = builder
             .build()
             .map_err(|error| ReplayError::Serve(error.to_string()))?;
         Server::builder()
@@ -356,11 +434,90 @@ async fn handle_request(
     state: Arc<Mutex<ReplayState>>,
     request: eggserve_primitives::Request,
     append: Option<AppendContext>,
+    tunnel: Option<eggserve_server::tunnel::TunnelCapability>,
 ) -> Result<Response, ServiceError> {
     use eggserve_primitives::{ResponseStream, ResponseStreamError};
     use sha2::{Digest, Sha256};
 
+    let lifecycle = request.lifecycle_clone();
+    let websocket_intent = request.head().headers().iter().any(|field| {
+        field.name.as_str().eq_ignore_ascii_case("upgrade")
+            && String::from_utf8_lossy(field.value.as_bytes())
+                .split(',')
+                .any(|token| token.trim().eq_ignore_ascii_case("websocket"))
+    });
+    if websocket_intent && tunnel.is_none() {
+        return Err(ServiceError::rejected(
+            400,
+            "invalid WebSocket replay handshake",
+        ));
+    }
     let (head, body, connection) = request.into_parts();
+    #[cfg(feature = "websocket")]
+    if tunnel.is_some() {
+        let fields = head
+            .headers()
+            .iter()
+            .map(|h| HeaderEntry {
+                name: h.name.as_str().to_owned(),
+                value: String::from_utf8_lossy(h.value.as_bytes()).into_owned(),
+            })
+            .collect::<Vec<_>>();
+        let key_valid = fields
+            .iter()
+            .filter(|h| h.name.eq_ignore_ascii_case("sec-websocket-key"))
+            .map(|h| crate::websocket::valid_client_key(&h.value))
+            .collect::<Vec<_>>();
+        let versions = fields
+            .iter()
+            .filter(|h| h.name.eq_ignore_ascii_case("sec-websocket-version"))
+            .map(|h| h.value.as_str())
+            .collect::<Vec<_>>();
+        if head.version() != eggserve_primitives::HttpVersion::Http11
+            || !head.method().is_get()
+            || eggreplay_core::validate_websocket_handshake_headers(
+                &fields,
+                eggreplay_core::WebSocketLimits::default(),
+                false,
+            )
+            .is_err()
+            || key_valid.len() != 1
+            || !key_valid[0]
+            || versions.len() != 1
+            || versions[0] != "13"
+            || !fields.iter().any(|h| {
+                h.name.eq_ignore_ascii_case("connection")
+                    && h.value
+                        .split(',')
+                        .any(|token| token.trim().eq_ignore_ascii_case("upgrade"))
+            })
+            || !fields.iter().any(|h| {
+                h.name.eq_ignore_ascii_case("upgrade")
+                    && h.value
+                        .split(',')
+                        .any(|token| token.trim().eq_ignore_ascii_case("websocket"))
+            })
+            || fields
+                .iter()
+                .any(|h| h.name.eq_ignore_ascii_case("transfer-encoding"))
+            || fields
+                .iter()
+                .filter(|h| h.name.eq_ignore_ascii_case("content-length"))
+                .any(|h| h.value.parse::<u64>() != Ok(0))
+        {
+            return Err(ServiceError::rejected(
+                400,
+                "invalid WebSocket replay handshake",
+            ));
+        }
+    }
+    #[cfg(not(feature = "websocket"))]
+    if tunnel.is_some() {
+        return Err(ServiceError::rejected(
+            501,
+            "WebSocket replay requires the websocket feature",
+        ));
+    }
     let (body, trailers) = body
         .read_all_with_trailers()
         .await
@@ -447,6 +604,7 @@ async fn handle_request(
                                 .unwrap_or_default()
                         },
                         guard.timing_mode,
+                        guard.websockets.get(&flow.id).cloned(),
                     )),
                     FlowOutcome::Error(error) => {
                         return response_bytes(
@@ -476,11 +634,27 @@ async fn handle_request(
         in_append,
         stream_events,
         timing_mode,
+        websocket,
     ) = match selection {
         Ok(selection) => selection,
         Err(context) => return append_miss(state, context, actual, body.to_vec()).await,
     };
     let _ = index;
+    #[cfg(feature = "websocket")]
+    if response_status == 101 {
+        let conversation = websocket
+            .ok_or_else(|| ServiceError::internal("recorded WebSocket flow has no conversation"))?;
+        let tunnel = tunnel
+            .ok_or_else(|| ServiceError::rejected(400, "WebSocket upgrade tunnel unavailable"))?;
+        return replay_websocket_upgrade(tunnel, head, lifecycle, conversation, store, timing_mode)
+            .await;
+    }
+    #[cfg(not(feature = "websocket"))]
+    if response_status == 101 {
+        return Err(ServiceError::internal(
+            "recorded WebSocket flow requires the websocket feature",
+        ));
+    }
     if in_append {
         let Some(context) = append else {
             return Err(ServiceError::internal(
@@ -782,6 +956,279 @@ async fn handle_request(
     }
 }
 
+#[cfg(all(feature = "eggserve", feature = "websocket"))]
+async fn replay_websocket_upgrade(
+    tunnel: eggserve_server::tunnel::TunnelCapability,
+    head: eggserve_primitives::RequestHead,
+    lifecycle: eggserve_primitives::RequestLifecycle,
+    conversation: WebSocketConversation,
+    store: Session,
+    timing_mode: StreamTimingMode,
+) -> Result<Response, ServiceError> {
+    use eggserve_primitives::TunnelKind;
+    use tokio_tungstenite::tungstenite::handshake::derive_accept_key;
+    let fields = head
+        .headers()
+        .iter()
+        .map(|h| HeaderEntry {
+            name: h.name.as_str().to_owned(),
+            value: String::from_utf8_lossy(h.value.as_bytes()).into_owned(),
+        })
+        .collect::<Vec<_>>();
+    let limits = eggreplay_core::WebSocketLimits::default();
+    if head.version() != eggserve_primitives::HttpVersion::Http11
+        || !head.method().is_get()
+        || tunnel.request().kind() != TunnelKind::Http1Upgrade
+        || tunnel
+            .request()
+            .protocol()
+            .is_none_or(|p| !p.as_str().eq_ignore_ascii_case("websocket"))
+        || eggreplay_core::validate_websocket_handshake_headers(&fields, limits, false).is_err()
+        || !fields
+            .iter()
+            .any(|h| h.name.eq_ignore_ascii_case("sec-websocket-version") && h.value == "13")
+    {
+        return Err(ServiceError::rejected(
+            400,
+            "invalid WebSocket replay handshake",
+        ));
+    }
+    let key = fields
+        .iter()
+        .find(|h| h.name.eq_ignore_ascii_case("sec-websocket-key"))
+        .map(|h| h.value.as_str())
+        .ok_or_else(|| ServiceError::rejected(400, "missing WebSocket key"))?;
+    if !crate::websocket::valid_client_key(key) {
+        return Err(ServiceError::rejected(400, "invalid WebSocket key"));
+    }
+    let offered = fields
+        .iter()
+        .filter(|h| h.name.eq_ignore_ascii_case("sec-websocket-protocol"))
+        .flat_map(|h| h.value.split(','))
+        .map(str::trim)
+        .collect::<Vec<_>>();
+    if conversation
+        .selected_subprotocol
+        .as_ref()
+        .is_some_and(|selected| !offered.contains(&selected.as_str()))
+    {
+        return Err(ServiceError::rejected(
+            400,
+            "recorded WebSocket subprotocol was not offered",
+        ));
+    }
+    let mut headers = HeaderBlock::new();
+    headers
+        .push_bytes(
+            "sec-websocket-accept",
+            derive_accept_key(key.as_bytes()).as_bytes(),
+        )
+        .map_err(|e| ServiceError::internal(e.to_string()))?;
+    if let Some(protocol) = &conversation.selected_subprotocol {
+        headers
+            .push_bytes("sec-websocket-protocol", protocol.as_bytes())
+            .map_err(|e| ServiceError::internal(e.to_string()))?;
+    }
+    let accepted = tunnel
+        .accept(headers, move |io| async move {
+            let mut stream = crate::websocket::server(
+                io,
+                Some(
+                    crate::websocket::WebSocketConfig::default()
+                        .max_message_size(Some(16 * 1024 * 1024))
+                        .max_frame_size(Some(16 * 1024 * 1024)),
+                ),
+            )
+            .await;
+            replay_websocket_script(&mut stream, &conversation, &store, lifecycle, timing_mode)
+                .await;
+        })
+        .map_err(|_| ServiceError::internal("WebSocket replay tunnel could not be accepted"))?;
+    Ok(accepted)
+}
+
+#[cfg(all(feature = "eggserve", feature = "websocket"))]
+async fn replay_websocket_script<S>(
+    stream: &mut crate::websocket::WebSocketStream<S>,
+    conversation: &WebSocketConversation,
+    store: &Session,
+    lifecycle: eggserve_primitives::RequestLifecycle,
+    timing_mode: StreamTimingMode,
+) where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin,
+{
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::{
+        Message,
+        protocol::frame::{CloseFrame, coding::CloseCode},
+    };
+    let mut previous_delta = 0u64;
+    let mut accumulated_delay = 0u64;
+    let mut close_reply_pending = false;
+    let mut automatic_pongs: Vec<Vec<u8>> = Vec::new();
+    let deadline = tokio::time::sleep(std::time::Duration::from_secs(60 * 60));
+    tokio::pin!(deadline);
+    for expected in &conversation.messages {
+        if expected.direction == eggreplay_core::WebSocketDirection::ClientToServer {
+            let got = tokio::select! {
+                _ = lifecycle.cancelled() => return,
+                _ = &mut deadline => return,
+                got = stream.next() => match got { Some(Ok(m)) => m, _ => return }
+            };
+            if !websocket_message_matches(expected, &got, store) {
+                return;
+            }
+            if expected.kind == eggreplay_core::WebSocketMessageKind::Close {
+                close_reply_pending = true;
+            }
+            if expected.kind == eggreplay_core::WebSocketMessageKind::Ping
+                && let Some(BodyRef::Blob(blob)) = &expected.payload
+                && let Ok(payload) = store.read_blob(blob)
+            {
+                automatic_pongs.push(payload);
+            }
+        } else {
+            let delay_ns = match timing_mode.delay_ns(
+                expected.delta_ns.saturating_sub(previous_delta),
+                accumulated_delay,
+            ) {
+                Ok(delay) => delay,
+                Err(_) => return,
+            };
+            previous_delta = expected.delta_ns;
+            accumulated_delay = accumulated_delay.saturating_add(delay_ns);
+            if delay_ns > 0 {
+                let delay = std::time::Duration::from_nanos(delay_ns);
+                tokio::select! { _ = lifecycle.cancelled() => return, _ = &mut deadline => return, _ = tokio::time::sleep(delay) => {} }
+            }
+            let payload = match expected.payload.as_ref() {
+                Some(BodyRef::Blob(blob)) => match store.read_blob(blob) {
+                    Ok(b) => b,
+                    Err(_) => return,
+                },
+                Some(BodyRef::Absent | BodyRef::Empty) | None => Vec::new(),
+            };
+            let message = match expected.kind {
+                eggreplay_core::WebSocketMessageKind::Text => match String::from_utf8(payload) {
+                    Ok(s) => Message::Text(s.into()),
+                    Err(_) => return,
+                },
+                eggreplay_core::WebSocketMessageKind::Binary => Message::Binary(payload.into()),
+                eggreplay_core::WebSocketMessageKind::Ping => Message::Ping(payload.into()),
+                eggreplay_core::WebSocketMessageKind::Pong => Message::Pong(payload.into()),
+                eggreplay_core::WebSocketMessageKind::Close => {
+                    Message::Close(expected.close_code.map(|code| CloseFrame {
+                        code: CloseCode::from(code),
+                        reason: expected.close_reason.clone().unwrap_or_default().into(),
+                    }))
+                }
+            };
+            let automatic_pong = if expected.kind == eggreplay_core::WebSocketMessageKind::Pong {
+                let at = automatic_pongs.iter().position(|_| true);
+                at.map(|index| automatic_pongs.remove(index)).is_some()
+            } else {
+                false
+            };
+            if (expected.kind == eggreplay_core::WebSocketMessageKind::Close && close_reply_pending)
+                || automatic_pong
+            {
+                close_reply_pending = false;
+                if stream.flush().await.is_err() {
+                    return;
+                }
+            } else if stream.send(message).await.is_err() {
+                return;
+            }
+        }
+    }
+    // An abnormal recorded terminal must not be converted into a clean close.
+    if matches!(
+        conversation.terminal,
+        eggreplay_core::WebSocketTerminal::CleanClose { .. }
+    ) {
+        let _ = stream.flush().await;
+    }
+}
+
+#[cfg(all(feature = "eggserve", feature = "websocket"))]
+fn websocket_message_matches(
+    expected: &eggreplay_core::WebSocketMessage,
+    actual: &tokio_tungstenite::tungstenite::Message,
+    store: &Session,
+) -> bool {
+    use tokio_tungstenite::tungstenite::Message;
+    let (kind, payload, code, reason) = match actual {
+        Message::Text(s) => (
+            eggreplay_core::WebSocketMessageKind::Text,
+            s.as_bytes().to_vec(),
+            None,
+            None,
+        ),
+        Message::Binary(b) => (
+            eggreplay_core::WebSocketMessageKind::Binary,
+            b.to_vec(),
+            None,
+            None,
+        ),
+        Message::Ping(b) => (
+            eggreplay_core::WebSocketMessageKind::Ping,
+            b.to_vec(),
+            None,
+            None,
+        ),
+        Message::Pong(b) => (
+            eggreplay_core::WebSocketMessageKind::Pong,
+            b.to_vec(),
+            None,
+            None,
+        ),
+        Message::Close(frame) => (
+            eggreplay_core::WebSocketMessageKind::Close,
+            Vec::new(),
+            frame.as_ref().map(|f| u16::from(f.code)),
+            frame.as_ref().map(|f| f.reason.to_string()),
+        ),
+        Message::Frame(_) => return false,
+    };
+    if kind != expected.kind
+        || (kind == eggreplay_core::WebSocketMessageKind::Close && code != expected.close_code)
+    {
+        return false;
+    }
+    if expected.redactions.iter().any(|r| {
+        matches!(
+            r,
+            eggreplay_core::WebSocketRedaction::WholeMessage
+                | eggreplay_core::WebSocketRedaction::CloseReason
+        )
+    }) {
+        return true;
+    }
+    if kind == eggreplay_core::WebSocketMessageKind::Close {
+        return reason == expected.close_reason;
+    }
+    let expected_payload = match expected.payload.as_ref() {
+        Some(BodyRef::Blob(blob)) => match store.read_blob(blob) {
+            Ok(b) => b,
+            Err(_) => return false,
+        },
+        _ => Vec::new(),
+    };
+    for redaction in &expected.redactions {
+        if let eggreplay_core::WebSocketRedaction::JsonPointers { pointers } = redaction {
+            let paths = pointers.iter().cloned().collect();
+            if let (Ok((a, _)), Ok((b, _))) = (
+                eggreplay_core::apply_json_redaction(&expected_payload, &paths),
+                eggreplay_core::apply_json_redaction(&payload, &paths),
+            ) {
+                return a == b;
+            }
+            return false;
+        }
+    }
+    payload == expected_payload
+}
+
 #[cfg(feature = "eggserve")]
 fn response_bytes(
     status: u16,
@@ -992,7 +1439,15 @@ fn request_from_eggserve(
                 .map(|field| String::from_utf8_lossy(field.value.as_bytes()).into_owned())
         })
         .unwrap_or_default();
-    let headers = eggserve_headers(head.headers());
+    let raw_headers = eggserve_headers(head.headers());
+    let websocket_request = raw_headers.iter().any(|field| {
+        field.name.eq_ignore_ascii_case("upgrade") && field.value.eq_ignore_ascii_case("websocket")
+    });
+    let headers = if websocket_request {
+        eggreplay_core::normalize_websocket_handshake_headers(&raw_headers, false)
+    } else {
+        raw_headers
+    };
     let trailers = trailers.map(eggserve_trailers).unwrap_or_default();
     Ok(HttpRequest {
         method: head.method().as_str().into(),
@@ -1042,6 +1497,87 @@ mod tests {
     use eggreplay_store::{SessionWriter, StoreLimits};
     use std::io::Write;
 
+    #[cfg(all(feature = "eggserve", feature = "websocket"))]
+    #[test]
+    fn replay_fixture_loads_required_websocket_transcript_automatically() {
+        let dir = temp_path("websocket-load");
+        let mut writer =
+            SessionWriter::create(&dir, SessionMetadata::default(), test_limits()).unwrap();
+        let flow = Flow {
+            schema_version: eggreplay_core::FLOW_SCHEMA_VERSION,
+            id: "ws-flow".into(),
+            started_at_ms: 1,
+            completed_at_ms: Some(2),
+            request: HttpRequest {
+                method: "GET".into(),
+                scheme: "http".into(),
+                authority: "example.test".into(),
+                path: "/socket".into(),
+                query: vec![],
+                headers: vec![HeaderEntry {
+                    name: "upgrade".into(),
+                    value: "websocket".into(),
+                }],
+                body: BodyRef::Empty,
+                trailers: vec![],
+            },
+            outcome: FlowOutcome::Response(HttpResponse {
+                status: 101,
+                headers: vec![],
+                body: BodyRef::Absent,
+                trailers: vec![],
+            }),
+            physical_route: None,
+            provenance: Provenance {
+                mode: "test".into(),
+                observer: "test".into(),
+            },
+            annotations: vec![],
+            redactions: vec![],
+        };
+        writer.append_flow(&flow).unwrap();
+        writer
+            .append_websocket_conversation(WebSocketConversation {
+                id: "ws-conversation".into(),
+                flow_id: flow.id.clone(),
+                offered_subprotocols: vec![],
+                selected_subprotocol: None,
+                messages: vec![
+                    eggreplay_core::WebSocketMessage {
+                        sequence: 0,
+                        direction: eggreplay_core::WebSocketDirection::ServerToClient,
+                        delta_ns: 0,
+                        kind: eggreplay_core::WebSocketMessageKind::Close,
+                        payload: None,
+                        close_code: Some(1000),
+                        close_reason: None,
+                        redactions: vec![],
+                    },
+                    eggreplay_core::WebSocketMessage {
+                        sequence: 1,
+                        direction: eggreplay_core::WebSocketDirection::ClientToServer,
+                        delta_ns: 1,
+                        kind: eggreplay_core::WebSocketMessageKind::Close,
+                        payload: None,
+                        close_code: Some(1000),
+                        close_reason: None,
+                        redactions: vec![],
+                    },
+                ],
+                terminal: eggreplay_core::WebSocketTerminal::CleanClose {
+                    code: Some(1000),
+                    reason: None,
+                },
+            })
+            .unwrap();
+        let session = writer.finish().unwrap();
+        let fixture = ReplayFixture::load(&session).unwrap();
+        assert_eq!(fixture.candidate_count(), 1);
+        drop(fixture);
+        drop(session);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     fn test_limits() -> StoreLimits {
         StoreLimits {
             max_line_bytes: 4 * 1024 * 1024,
@@ -1064,6 +1600,158 @@ mod tests {
 
     fn large_pattern(len: usize, seed: u8) -> Vec<u8> {
         (0..len).map(|i| (i as u8).wrapping_add(seed)).collect()
+    }
+
+    #[cfg(all(feature = "eggserve", feature = "websocket"))]
+    #[tokio::test]
+    async fn offline_websocket_replay_matches_upgrade_and_scripts_messages() {
+        use futures_util::{SinkExt, StreamExt};
+        use http::Uri;
+        use tokio_tungstenite::tungstenite::Message;
+        let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = probe.local_addr().unwrap();
+        drop(probe);
+        let dir = temp_path("websocket-script");
+        let mut writer =
+            SessionWriter::create(&dir, SessionMetadata::default(), test_limits()).unwrap();
+        let mut payload = writer.begin_blob().unwrap();
+        payload.write_all(b"hello").unwrap();
+        let hello = payload.finish().unwrap();
+        let mut payload = writer.begin_blob().unwrap();
+        payload.write_all(b"ack").unwrap();
+        let ack = payload.finish().unwrap();
+        let flow = Flow {
+            schema_version: eggreplay_core::FLOW_SCHEMA_VERSION,
+            id: "ws-flow".into(),
+            started_at_ms: 1,
+            completed_at_ms: Some(2),
+            request: HttpRequest {
+                method: "GET".into(),
+                scheme: "http".into(),
+                authority: address.to_string(),
+                path: "/socket".into(),
+                query: vec![],
+                headers: vec![
+                    HeaderEntry {
+                        name: "connection".into(),
+                        value: "Upgrade".into(),
+                    },
+                    HeaderEntry {
+                        name: "upgrade".into(),
+                        value: "websocket".into(),
+                    },
+                    HeaderEntry {
+                        name: "sec-websocket-version".into(),
+                        value: "13".into(),
+                    },
+                ],
+                body: BodyRef::Empty,
+                trailers: vec![],
+            },
+            outcome: FlowOutcome::Response(HttpResponse {
+                status: 101,
+                headers: vec![],
+                body: BodyRef::Absent,
+                trailers: vec![],
+            }),
+            physical_route: None,
+            provenance: Provenance {
+                mode: "test".into(),
+                observer: "test".into(),
+            },
+            annotations: vec![],
+            redactions: vec![],
+        };
+        writer.append_flow(&flow).unwrap();
+        let mut messages = vec![
+            websocket_message(
+                0,
+                eggreplay_core::WebSocketDirection::ServerToClient,
+                0,
+                eggreplay_core::WebSocketMessageKind::Text,
+                Some(hello),
+            ),
+            websocket_message(
+                1,
+                eggreplay_core::WebSocketDirection::ClientToServer,
+                1,
+                eggreplay_core::WebSocketMessageKind::Text,
+                Some(ack),
+            ),
+            websocket_message(
+                2,
+                eggreplay_core::WebSocketDirection::ServerToClient,
+                2,
+                eggreplay_core::WebSocketMessageKind::Close,
+                None,
+            ),
+            websocket_message(
+                3,
+                eggreplay_core::WebSocketDirection::ClientToServer,
+                3,
+                eggreplay_core::WebSocketMessageKind::Close,
+                None,
+            ),
+        ];
+        messages[2].close_code = Some(1000);
+        messages[3].close_code = Some(1000);
+        writer
+            .append_websocket_conversation(WebSocketConversation {
+                id: "ws-conversation".into(),
+                flow_id: flow.id,
+                offered_subprotocols: vec![],
+                selected_subprotocol: None,
+                messages,
+                terminal: eggreplay_core::WebSocketTerminal::CleanClose {
+                    code: Some(1000),
+                    reason: None,
+                },
+            })
+            .unwrap();
+        let session = writer.finish().unwrap();
+        let server = ReplayFixture::load(&session)
+            .unwrap()
+            .start(address, 1024)
+            .await
+            .unwrap();
+        let stream = tokio::net::TcpStream::connect(address).await.unwrap();
+        let uri: Uri = format!("ws://{address}/socket").parse().unwrap();
+        let (mut socket, response) = tokio_tungstenite::client_async(uri, stream).await.unwrap();
+        assert_eq!(response.status(), http::StatusCode::SWITCHING_PROTOCOLS);
+        assert_eq!(
+            socket.next().await.unwrap().unwrap(),
+            Message::Text("hello".into())
+        );
+        socket.send(Message::Text("ack".into())).await.unwrap();
+        assert!(matches!(
+            socket.next().await.unwrap().unwrap(),
+            Message::Close(_)
+        ));
+        socket.flush().await.unwrap();
+        server.shutdown();
+        server.wait().await;
+        drop(session);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[cfg(all(feature = "eggserve", feature = "websocket"))]
+    fn websocket_message(
+        sequence: u64,
+        direction: eggreplay_core::WebSocketDirection,
+        delta_ns: u64,
+        kind: eggreplay_core::WebSocketMessageKind,
+        payload: Option<BodyRef>,
+    ) -> eggreplay_core::WebSocketMessage {
+        eggreplay_core::WebSocketMessage {
+            sequence,
+            direction,
+            delta_ns,
+            kind,
+            payload,
+            close_code: None,
+            close_reason: None,
+            redactions: vec![],
+        }
     }
 
     fn flow_with_bodies(

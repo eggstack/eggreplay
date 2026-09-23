@@ -1,6 +1,6 @@
 # M011E — WebSocket Candidate Regression, CLI, and Fixture Diff
 
-Status: blocked
+Status: implemented
 Depends on: M011D
 Parent milestone: M011
 

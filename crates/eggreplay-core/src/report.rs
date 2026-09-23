@@ -39,6 +39,8 @@ pub enum DiffKind {
     Sse,
     /// Ordered stream events differ.
     StreamEvent,
+    /// WebSocket handshake or semantic conversation differs.
+    WebSocket,
 }
 
 /// One stable, machine-readable regression finding.
@@ -79,6 +81,8 @@ pub struct ComparisonPolicy {
     /// SSE fields to ignore; only `data,event,id,retry,comments` are
     /// supported and implying SSE comparison when non-empty.
     pub sse_ignored: Vec<String>,
+    /// Optional WebSocket message cadence tolerance in nanoseconds.
+    pub websocket_cadence_tolerance_ns: Option<u64>,
 }
 
 impl ComparisonPolicy {

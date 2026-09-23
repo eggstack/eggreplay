@@ -43,10 +43,10 @@ conversation storage/matching.
 | M011 | `implementation/websocket/011-websocket-semantic-record-replay.md` | ready (decomposed) | M010 + M010-C1 | WebSocket milestone umbrella |
 | M011A | `implementation/websocket/011a-transport-dependency-and-upgrade-preflight.md` | closed | M010 + M010-C1 | dependency/upgrade substrate qualification |
 | M011B | `implementation/websocket/011b-semantic-model-store-and-codec.md` | closed | M011A | semantic/store/codec authority |
-| M011C | `implementation/websocket/011c-recording-gateway.md` | ready | M011B | recording gateway |
-| M011D | `implementation/websocket/011d-offline-replay.md` | blocked | M011C | deterministic offline replay |
-| M011E | `implementation/websocket/011e-candidate-regression-cli-and-diff.md` | blocked | M011D | regression/report/CLI/diff |
-| M011F | `implementation/websocket/011f-hardening-qualification-and-closure.md` | blocked | M011E | hardening + M011 closure |
+| M011C | `implementation/websocket/011c-recording-gateway.md` | implemented | M011B | recording gateway |
+| M011D | `implementation/websocket/011d-offline-replay.md` | implemented | M011C | deterministic offline replay |
+| M011E | `implementation/websocket/011e-candidate-regression-cli-and-diff.md` | implemented | M011D | regression/report/CLI/diff |
+| M011F | `implementation/websocket/011f-hardening-qualification-and-closure.md` | active | M011E | hardening + M011 closure |
 | M012 | `implementation/python/012-python-pytest-ecosystem.md` | blocked | M011 closure | PyO3 + pytest integration |
 | M013 | `implementation/interception/013-explicit-proxy-and-optional-mitm.md` | blocked | M012 | explicit proxy + opt-in HTTP/1.1 MITM |
 | M014 | `implementation/compatibility/014-compatibility-program.md` | blocked | M013 | umbrella compatibility stage |
@@ -61,9 +61,9 @@ M009 and M010/M010-C1 are closed. M010's qualifying corrective implementation
 is `3bdd1359e00736737dd1610035d7e9f3e49822f1`, Actions run
 `35864247624`.
 
-M011A and M011B are closed by their subplan closure records. M011C is the
-current executable task. M011D–M011F and M012–M014D remain blocked by
-dependency order.
+M011A and M011B are closed. M011C–M011E are implemented pending their closure
+records and hosted evidence. M011F is active for cross-platform hosted
+qualification. M012–M014D remain blocked until M011F closes.
 
 ## Canonical planning documents
 

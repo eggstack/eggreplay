@@ -26,6 +26,447 @@ pub enum RegressionError {
     /// Candidate body stream failed.
     #[error("candidate body: {0}")]
     Body(String),
+    /// Candidate WebSocket handshake or semantic script failed.
+    #[error("candidate WebSocket: {0}")]
+    WebSocket(String),
+}
+
+/// Replay a recorded WebSocket transcript against a candidate through the
+/// same EggFetch client and return payload-safe semantic findings.
+#[cfg(feature = "websocket")]
+pub async fn compare_websocket_candidate(
+    client: &Client,
+    session: &eggreplay_store::Session,
+    request: &HttpRequest,
+    target_base: &Uri,
+    conversation: &eggreplay_core::WebSocketConversation,
+    cadence_tolerance_ns: Option<u64>,
+) -> Result<Vec<eggreplay_core::DiffFinding>, RegressionError> {
+    use base64::Engine;
+    use eggfetch_core::{Headers, NetworkStream};
+    use eggreplay_core::WebSocketDirection;
+    use futures_util::SinkExt;
+    use tokio_tungstenite::tungstenite::handshake::derive_accept_key;
+    let uri = target_uri(target_base, request)?;
+    let key = base64::engine::general_purpose::STANDARD.encode(uuid::Uuid::new_v4().as_bytes());
+    let mut headers = Headers::new();
+    for header in &request.headers {
+        if matches!(
+            header.name.to_ascii_lowercase().as_str(),
+            "host"
+                | "connection"
+                | "upgrade"
+                | "content-length"
+                | "transfer-encoding"
+                | "sec-websocket-key"
+                | "sec-websocket-accept"
+                | "sec-websocket-version"
+                | "sec-websocket-extensions"
+        ) {
+            continue;
+        }
+        headers
+            .append(&header.name, &header.value)
+            .map_err(|e| RegressionError::WebSocket(e.to_string()))?;
+    }
+    headers
+        .append("Connection", "Upgrade")
+        .and_then(|_| headers.append("Upgrade", "websocket"))
+        .and_then(|_| headers.append("Sec-WebSocket-Version", "13"))
+        .and_then(|_| headers.append("Sec-WebSocket-Key", &key))
+        .map_err(|e| RegressionError::WebSocket(e.to_string()))?;
+    let send = client
+        .request(Method::GET, &uri.to_string())
+        .map_err(|e| RegressionError::WebSocket(e.to_string()))?
+        .headers(headers)
+        .send();
+    let response = match tokio::time::timeout(std::time::Duration::from_secs(30), send).await {
+        Ok(Ok(response)) => response,
+        Ok(Err(_)) | Err(_) => {
+            return Ok(vec![ws_finding(
+                "handshake.transport",
+                "101",
+                "unavailable",
+            )]);
+        }
+    };
+    let mut findings = Vec::new();
+    if response.status() != http::StatusCode::SWITCHING_PROTOCOLS {
+        findings.push(ws_finding(
+            "handshake.status",
+            "101",
+            &response.status().to_string(),
+        ));
+        return Ok(findings);
+    }
+    let response_headers = response.headers().clone();
+    let accept = response_headers
+        .get("sec-websocket-accept")
+        .and_then(|v| v.to_str().ok());
+    if accept != Some(derive_accept_key(key.as_bytes()).as_str()) {
+        findings.push(ws_finding("handshake.accept", "valid", "invalid"));
+    }
+    if !response_headers
+        .get("upgrade")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.eq_ignore_ascii_case("websocket"))
+        || !response_headers
+            .get("connection")
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| {
+                v.split(',')
+                    .any(|token| token.trim().eq_ignore_ascii_case("upgrade"))
+            })
+    {
+        findings.push(ws_finding(
+            "handshake.upgrade",
+            "websocket_upgrade",
+            "invalid",
+        ));
+    }
+    if response_headers.contains_key("sec-websocket-extensions") {
+        findings.push(ws_finding("handshake.extensions", "none", "negotiated"));
+    }
+    let selected = response_headers
+        .get("sec-websocket-protocol")
+        .and_then(|v| v.to_str().ok());
+    if selected != conversation.selected_subprotocol.as_deref() {
+        findings.push(ws_finding(
+            "handshake.subprotocol",
+            conversation
+                .selected_subprotocol
+                .as_deref()
+                .unwrap_or("none"),
+            selected.unwrap_or("none"),
+        ));
+    }
+    if !findings.is_empty() {
+        return Ok(findings);
+    }
+    let Some(network_stream) = response.into_network_stream() else {
+        return Ok(vec![ws_finding(
+            "handshake.stream",
+            "upgraded",
+            "unavailable",
+        )]);
+    };
+    let NetworkStream::Upgraded(io) = network_stream else {
+        return Ok(vec![ws_finding(
+            "handshake.stream",
+            "upgraded",
+            "unavailable",
+        )]);
+    };
+    let mut socket = crate::websocket::client(
+        io,
+        Some(
+            crate::websocket::WebSocketConfig::default()
+                .max_message_size(Some(16 * 1024 * 1024))
+                .max_frame_size(Some(16 * 1024 * 1024)),
+        ),
+    )
+    .await;
+    let conversation_started = Instant::now();
+    let mut close_reply_pending = false;
+    let mut auto_pong_pending = false;
+    for expected in &conversation.messages {
+        let elapsed = conversation_started.elapsed();
+        if elapsed >= std::time::Duration::from_secs(60 * 60) {
+            findings.push(ws_finding(
+                "terminal",
+                "completed_within_limit",
+                "duration_limit",
+            ));
+            break;
+        }
+        if expected.direction == WebSocketDirection::ClientToServer {
+            let payload = match &expected.payload {
+                Some(BodyRef::Blob(blob)) => session
+                    .read_blob(blob)
+                    .map_err(|e| RegressionError::WebSocket(e.to_string()))?,
+                _ => Vec::new(),
+            };
+            let message = ws_message(
+                expected.kind,
+                payload,
+                expected.close_code,
+                expected.close_reason.as_deref(),
+            );
+            if expected.kind == eggreplay_core::WebSocketMessageKind::Close && close_reply_pending {
+                close_reply_pending = false;
+                if let Err(error) = socket.flush().await {
+                    findings.push(ws_finding(
+                        "message.close",
+                        "clean",
+                        &format!("error:{:?}", error),
+                    ));
+                    break;
+                }
+            } else if expected.kind == eggreplay_core::WebSocketMessageKind::Pong
+                && auto_pong_pending
+            {
+                auto_pong_pending = false;
+                if let Err(error) = socket.flush().await {
+                    findings.push(ws_finding(
+                        "message.pong",
+                        "automatic",
+                        &format!("error:{:?}", error),
+                    ));
+                    break;
+                }
+            } else {
+                match tokio::time::timeout(
+                    std::time::Duration::from_secs(30),
+                    crate::websocket::send(&mut socket, message),
+                )
+                .await
+                {
+                    Ok(Ok(())) => {}
+                    Ok(Err(error)) => {
+                        findings.push(ws_finding(
+                            "message.write",
+                            "success",
+                            &format!("error:{:?}", error),
+                        ));
+                        break;
+                    }
+                    Err(_) => {
+                        findings.push(ws_finding("message.write", "success", "timeout"));
+                        break;
+                    }
+                }
+            }
+        } else {
+            let actual = match tokio::time::timeout(
+                std::time::Duration::from_secs(30)
+                    .min(std::time::Duration::from_secs(60 * 60).saturating_sub(elapsed)),
+                crate::websocket::next(&mut socket),
+            )
+            .await
+            {
+                Ok(Some(Ok(message))) => message,
+                Ok(Some(Err(error))) => {
+                    findings.push(ws_finding(
+                        &format!("message.{}.read", expected.sequence),
+                        "message",
+                        &format!("error:{:?}", error),
+                    ));
+                    break;
+                }
+                _ => {
+                    findings.push(ws_finding(
+                        &format!("message.{}.read", expected.sequence),
+                        "message",
+                        "timeout_or_eof",
+                    ));
+                    break;
+                }
+            };
+            if !candidate_message_matches(expected, &actual, session) {
+                findings.push(ws_finding(
+                    &format!("message.{}", expected.sequence),
+                    &expected_message_summary(expected, session),
+                    &candidate_message_summary(&actual),
+                ));
+                break;
+            }
+            if expected.kind == eggreplay_core::WebSocketMessageKind::Close {
+                close_reply_pending = true;
+            }
+            if expected.kind == eggreplay_core::WebSocketMessageKind::Ping {
+                auto_pong_pending = true;
+            }
+        }
+        if let Some(tolerance) = cadence_tolerance_ns {
+            let observed = elapsed_ns(conversation_started);
+            if observed.abs_diff(expected.delta_ns) > tolerance {
+                findings.push(ws_finding(
+                    &format!("message.{}.cadence", expected.sequence),
+                    &expected.delta_ns.to_string(),
+                    &observed.to_string(),
+                ));
+            }
+        }
+    }
+    if matches!(
+        conversation.terminal,
+        eggreplay_core::WebSocketTerminal::Abnormal { .. }
+    ) {
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            crate::websocket::next(&mut socket),
+        )
+        .await
+        {
+            Ok(Some(Ok(message))) => findings.push(ws_finding(
+                "terminal",
+                "abnormal_end",
+                &candidate_message_summary(&message),
+            )),
+            Ok(Some(Err(_))) | Ok(None) => {}
+            Err(_) => findings.push(ws_finding(
+                "terminal",
+                "abnormal_end",
+                "connection_remained_open",
+            )),
+        }
+    }
+    Ok(findings)
+}
+
+#[cfg(feature = "websocket")]
+fn ws_finding(field: &str, baseline: &str, candidate: &str) -> eggreplay_core::DiffFinding {
+    eggreplay_core::DiffFinding {
+        kind: eggreplay_core::DiffKind::WebSocket,
+        field: field.into(),
+        baseline: baseline.into(),
+        candidate: candidate.into(),
+    }
+}
+
+#[cfg(feature = "websocket")]
+fn message_kind(
+    message: &tokio_tungstenite::tungstenite::Message,
+) -> eggreplay_core::WebSocketMessageKind {
+    use tokio_tungstenite::tungstenite::Message;
+    match message {
+        Message::Text(_) => eggreplay_core::WebSocketMessageKind::Text,
+        Message::Binary(_) => eggreplay_core::WebSocketMessageKind::Binary,
+        Message::Ping(_) => eggreplay_core::WebSocketMessageKind::Ping,
+        Message::Pong(_) => eggreplay_core::WebSocketMessageKind::Pong,
+        Message::Close(_) => eggreplay_core::WebSocketMessageKind::Close,
+        Message::Frame(_) => eggreplay_core::WebSocketMessageKind::Binary,
+    }
+}
+
+#[cfg(feature = "websocket")]
+fn expected_message_summary(
+    message: &eggreplay_core::WebSocketMessage,
+    session: &eggreplay_store::Session,
+) -> String {
+    use sha2::{Digest, Sha256};
+    if message
+        .redactions
+        .iter()
+        .any(|r| matches!(r, eggreplay_core::WebSocketRedaction::WholeMessage))
+    {
+        return format!("{:?}:redacted", message.kind);
+    }
+    let bytes = match &message.payload {
+        Some(BodyRef::Blob(blob)) => session.read_blob(blob).unwrap_or_default(),
+        _ => Vec::new(),
+    };
+    format!(
+        "{:?}:length:{}:sha256:{:x}",
+        message.kind,
+        bytes.len(),
+        Sha256::digest(bytes)
+    )
+}
+
+#[cfg(feature = "websocket")]
+fn candidate_message_summary(message: &tokio_tungstenite::tungstenite::Message) -> String {
+    use sha2::{Digest, Sha256};
+    let bytes = match message {
+        tokio_tungstenite::tungstenite::Message::Text(s) => s.as_bytes(),
+        tokio_tungstenite::tungstenite::Message::Binary(b)
+        | tokio_tungstenite::tungstenite::Message::Ping(b)
+        | tokio_tungstenite::tungstenite::Message::Pong(b) => b,
+        tokio_tungstenite::tungstenite::Message::Close(_)
+        | tokio_tungstenite::tungstenite::Message::Frame(_) => &[],
+    };
+    format!(
+        "{:?}:length:{}:sha256:{:x}",
+        message_kind(message),
+        bytes.len(),
+        Sha256::digest(bytes)
+    )
+}
+
+#[cfg(feature = "websocket")]
+fn ws_message(
+    kind: eggreplay_core::WebSocketMessageKind,
+    payload: Vec<u8>,
+    code: Option<u16>,
+    reason: Option<&str>,
+) -> tokio_tungstenite::tungstenite::Message {
+    use tokio_tungstenite::tungstenite::{
+        Message,
+        protocol::frame::{CloseFrame, coding::CloseCode},
+    };
+    match kind {
+        eggreplay_core::WebSocketMessageKind::Text => {
+            Message::Text(String::from_utf8_lossy(&payload).into_owned().into())
+        }
+        eggreplay_core::WebSocketMessageKind::Binary => Message::Binary(payload.into()),
+        eggreplay_core::WebSocketMessageKind::Ping => Message::Ping(payload.into()),
+        eggreplay_core::WebSocketMessageKind::Pong => Message::Pong(payload.into()),
+        eggreplay_core::WebSocketMessageKind::Close => {
+            Message::Close(code.map(|code| CloseFrame {
+                code: CloseCode::from(code),
+                reason: reason.unwrap_or("").into(),
+            }))
+        }
+    }
+}
+
+#[cfg(feature = "websocket")]
+fn candidate_message_matches(
+    expected: &eggreplay_core::WebSocketMessage,
+    actual: &tokio_tungstenite::tungstenite::Message,
+    session: &eggreplay_store::Session,
+) -> bool {
+    use eggreplay_core::{WebSocketMessageKind as Kind, WebSocketRedaction};
+    use tokio_tungstenite::tungstenite::Message;
+    let (kind, payload, code, reason) = match actual {
+        Message::Text(s) => (Kind::Text, s.as_bytes().to_vec(), None, None),
+        Message::Binary(b) => (Kind::Binary, b.to_vec(), None, None),
+        Message::Ping(b) => (Kind::Ping, b.to_vec(), None, None),
+        Message::Pong(b) => (Kind::Pong, b.to_vec(), None, None),
+        Message::Close(frame) => (
+            Kind::Close,
+            Vec::new(),
+            frame.as_ref().map(|f| u16::from(f.code)),
+            frame.as_ref().map(|f| f.reason.to_string()),
+        ),
+        Message::Frame(_) => return false,
+    };
+    if kind != expected.kind || (kind == Kind::Close && code != expected.close_code) {
+        return false;
+    }
+    if expected.redactions.iter().any(|r| {
+        matches!(
+            r,
+            WebSocketRedaction::WholeMessage | WebSocketRedaction::CloseReason
+        )
+    }) {
+        return true;
+    }
+    if kind == Kind::Close {
+        return reason == expected.close_reason;
+    }
+    let expected_payload = match &expected.payload {
+        Some(BodyRef::Blob(blob)) => match session.read_blob(blob) {
+            Ok(bytes) => bytes,
+            Err(_) => return false,
+        },
+        _ => Vec::new(),
+    };
+    if let Some(WebSocketRedaction::JsonPointers { pointers }) = expected
+        .redactions
+        .iter()
+        .find(|redaction| matches!(redaction, WebSocketRedaction::JsonPointers { .. }))
+    {
+        let paths = pointers.iter().cloned().collect();
+        return match (
+            eggreplay_core::apply_json_redaction(&expected_payload, &paths),
+            eggreplay_core::apply_json_redaction(&payload, &paths),
+        ) {
+            (Ok((a, _)), Ok((b, _))) => a == b,
+            _ => false,
+        };
+    }
+    payload == expected_payload
 }
 
 /// Candidate result plus bounded body bytes and response stream events.
@@ -350,6 +791,111 @@ mod tests {
             }
         });
         addr
+    }
+
+    #[cfg(feature = "websocket")]
+    #[tokio::test]
+    async fn candidate_websocket_executes_the_recorded_message_script() {
+        use futures_util::{SinkExt, StreamExt};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let peer = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut chunk = [0u8; 512];
+            loop {
+                let count = stream.read(&mut chunk).await.unwrap();
+                request.extend_from_slice(&chunk[..count]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let request = String::from_utf8(request).unwrap();
+            let key = request
+                .lines()
+                .find_map(|line| {
+                    line.strip_prefix("Sec-WebSocket-Key: ")
+                        .or_else(|| line.strip_prefix("sec-websocket-key: "))
+                })
+                .unwrap()
+                .trim();
+            let accept = crate::websocket::derive_accept_key(key.as_bytes());
+            stream.write_all(format!("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Accept: {accept}\r\n\r\n").as_bytes()).await.unwrap();
+            let mut socket = crate::websocket::server(stream, None).await;
+            assert_eq!(
+                socket.next().await.unwrap().unwrap(),
+                tokio_tungstenite::tungstenite::Message::Text("hello".into())
+            );
+            socket
+                .send(tokio_tungstenite::tungstenite::Message::Text(
+                    "world".into(),
+                ))
+                .await
+                .unwrap();
+        });
+        let dir =
+            std::env::temp_dir().join(format!("eggreplay-candidate-ws-{}", std::process::id()));
+        let writer = eggreplay_store::SessionWriter::create(
+            &dir,
+            eggreplay_core::SessionMetadata::default(),
+            eggreplay_store::StoreLimits::default(),
+        )
+        .unwrap();
+        let mut sink = writer.begin_blob().unwrap();
+        sink.write_all(b"hello").unwrap();
+        let hello = sink.finish().unwrap();
+        let mut sink = writer.begin_blob().unwrap();
+        sink.write_all(b"world").unwrap();
+        let world = sink.finish().unwrap();
+        let session = writer.finish().unwrap();
+        let conversation = eggreplay_core::WebSocketConversation {
+            id: "ws-candidate".into(),
+            flow_id: "flow".into(),
+            offered_subprotocols: vec![],
+            selected_subprotocol: None,
+            messages: vec![
+                eggreplay_core::WebSocketMessage {
+                    sequence: 0,
+                    direction: eggreplay_core::WebSocketDirection::ClientToServer,
+                    delta_ns: 0,
+                    kind: eggreplay_core::WebSocketMessageKind::Text,
+                    payload: Some(hello),
+                    close_code: None,
+                    close_reason: None,
+                    redactions: vec![],
+                },
+                eggreplay_core::WebSocketMessage {
+                    sequence: 1,
+                    direction: eggreplay_core::WebSocketDirection::ServerToClient,
+                    delta_ns: 1,
+                    kind: eggreplay_core::WebSocketMessageKind::Text,
+                    payload: Some(world),
+                    close_code: None,
+                    close_reason: None,
+                    redactions: vec![],
+                },
+            ],
+            terminal: eggreplay_core::WebSocketTerminal::Abnormal {
+                cause: "eof".into(),
+            },
+        };
+        let client = Client::builder().retry_canceled_requests(false).build();
+        let target: Uri = format!("http://{address}").parse().unwrap();
+        let findings = compare_websocket_candidate(
+            &client,
+            &session,
+            &test_request(&address.to_string(), "/socket"),
+            &target,
+            &conversation,
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(findings.is_empty(), "{findings:?}");
+        peer.await.unwrap();
+        drop(session);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[tokio::test]

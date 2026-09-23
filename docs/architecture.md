@@ -63,6 +63,20 @@ and Eggress-routed HTTP/1.1 101 upgrades, and the no-direct-fallback path.
 M011B owns transport-neutral conversation semantics and an optional
 `eggreplay-http/websocket` codec adapter over already-owned streams.
 
+The recording gateway is opt-in with `--websockets` in `record` and
+network-capable `serve --record-mode once|re-record`. It validates H1 Upgrade,
+uses EggFetch for the upstream 101, and tunnels through EggServe. Conversation
+messages are bounded and stored in the required `websocket-messages`
+extension; text/binary whole-message redaction is explicit, and configured
+JSON Pointer redaction runs before payload publication. Offline replay matches
+the initiating HTTP flow and scripts the ordered transcript through the same
+EggServe tunnel. Candidate regression executes that transcript through the
+same EggFetch client and optional Eggress route.
+
+M011 does not claim WSS, inbound TLS interception, H2 Extended CONNECT, H3,
+negotiated WebSocket extensions, or frame-layout fidelity. `append-new` does
+not acquire new WebSocket conversations.
+
 ## Dependency state
 
 EggFetch 0.2.0 is consumed from crates.io and exposes the owned
