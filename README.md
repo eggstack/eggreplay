@@ -11,9 +11,9 @@ v0.1 is fully qualified through C001–C006. M009 stateful/dynamic replay, M010
 streaming timing/SSE, and M011 semantic WebSocket record/replay/regression are
 closed with hosted cross-platform evidence.
 
-M012 Python/pytest integration is now decomposed under ADR 0007. M012A
-toolchain/package/ABI preflight is the only ready task; later Python subplans
-and M013–M014 remain blocked by dependency order.
+M012 Python/pytest integration has completed its implementation and is in
+final hardening and hosted qualification under ADR 0007. M013 remains blocked
+until the M012 closure record is complete; M014 remains downstream of M013.
 
 The support baseline includes direct HTTP/1.1 acquisition and EggServe inbound
 HTTP/1.1 replay with optional listener-free Eggress routing. WebSocket support
@@ -31,6 +31,23 @@ eggreplay test --fixture demo.eggr --target http://127.0.0.1:9000 --route socks5
 
 `direct` is the default; non-direct values use listener-free Eggress routing
 via the `pproxy-compat` grammar only.
+
+## Python quickstart
+
+The Python adapter builds from this repository and uses the same Rust fixture,
+transport, matching, and regression authorities as the CLI:
+
+```sh
+cd crates/eggreplay-python
+uv sync --extra dev
+maturin develop
+python -c 'import eggreplay; print(eggreplay.__version__)'
+```
+
+Python exposes `.eggr` directory fixtures and managed replay/recording
+lifecycles. See [`crates/eggreplay-python/README.md`](crates/eggreplay-python/README.md)
+for pytest fixtures, explicit record modes, and migration notes for VCR.py
+users. It is not a drop-in VCR.py replacement.
 
 ## Development
 

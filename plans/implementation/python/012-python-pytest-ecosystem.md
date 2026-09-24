@@ -1,6 +1,6 @@
 # M012 — Python Bindings and Pytest/VCR-Style Integration
 
-Status: ready (decomposed; execute M012A first)
+Status: active (M012F final closure in progress)
 Depends on: M011 closure
 Roadmap stage: 8
 Architecture: ADR 0007

@@ -95,8 +95,15 @@ def _settings(
         )
     path = Path(raw_path)
     if not path.is_absolute():
-        path = Path(request.config.rootpath) / path
-    path = path.resolve()
+        root = Path(request.config.rootpath).resolve()
+        path = (root / path).resolve()
+        if not path.is_relative_to(root):
+            pytest.fail(
+                "relative EggReplay fixture paths must stay inside the pytest root",
+                pytrace=False,
+            )
+    else:
+        path = path.resolve()
     mode = marker_mode if marker_mode is not None else request.config.getoption("eggreplay_record_mode")
     upstream = marker_upstream if marker_upstream is not None else request.config.getoption("eggreplay_upstream")
     route = marker_route if marker_route is not None else request.config.getoption("eggreplay_route")
@@ -140,9 +147,20 @@ class _WriterLock:
                 f"the stale lock explicitly: {self.path}"
             ) from error
         try:
-            os.write(descriptor, metadata)
-        finally:
+            remaining = memoryview(metadata)
+            while remaining:
+                written = os.write(descriptor, remaining)
+                if written == 0:
+                    raise OSError("could not write EggReplay fixture lock metadata")
+                remaining = remaining[written:]
             os.close(descriptor)
+        except BaseException:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+            self.path.unlink(missing_ok=True)
+            raise
         self.owned = True
         return self
 

@@ -4,6 +4,14 @@ The package is built from the Rust workspace with maturin. Fixture parsing,
 validation, reports, configuration checks, and body integrity remain Rust
 authorities.
 
+For a local editable install from the repository root:
+
+```sh
+cd crates/eggreplay-python
+uv sync --extra dev
+maturin develop
+```
+
 ```python
 import eggreplay
 
@@ -50,7 +58,9 @@ and `eggreplay_async_server` (managed sync and pytest-asyncio servers),
 `eggreplay_recorder` and `eggreplay_async_recorder` (aliases using the same
 explicit mode), and `eggreplay_report` (bounded candidate-regression
 assertions). Set a fixture path with `--eggreplay-fixture=PATH` or
-`@eggreplay.use_fixture(PATH)`. Relative paths resolve from pytest's root.
+`@eggreplay.use_fixture(PATH)`. Relative paths resolve from pytest's root;
+relative paths that escape that root are rejected. Absolute paths remain
+available for explicit shared fixture locations.
 The `eggreplay_fixture` and `eggreplay_async_fixture` markers also accept a
 path and optional `record_mode`, `upstream`, `route`, and `websockets` values.
 
@@ -62,11 +72,14 @@ generic pytest `--update` option has no effect on EggReplay. Append-new remains
 HTTP-only. A sibling create-new lock refuses concurrent writers; if a process
 crashes, verify its PID/worker is no longer active and remove the named stale
 lock file explicitly. For bulk recording, give each worker a separate fixture
-path. Read-only workers can share a fixture. Each server owns its own scenario
-runtime.
+path. Read-only pytest xdist workers can share a fixture. Each server owns its
+own scenario runtime.
 
-The VCR-style `fixture_context(path)` context manager and
-`@use_fixture(path)` decorator call the same Rust server lifecycle. They do not
-patch Python HTTP clients or use a Python cassette format. Synchronous use
-manages one Python `asyncio.Runner` around the shared process Tokio bridge; it
-does not create a Rust runtime or detached server thread per object.
+The VCR-inspired `fixture_context(path)` context manager and
+`@use_fixture(path)` decorator call the same Rust server lifecycle. They are
+not drop-in VCR.py compatibility: fixtures are semantic `.eggr` directories,
+recording uses explicit modes, and arbitrary callbacks or scripts are not
+supported. Python does not patch HTTP clients or implement a cassette format.
+Rust owns matching, redaction, fixture persistence, and transport. Synchronous
+use manages one Python `asyncio.Runner` around the shared process Tokio bridge;
+it does not create a Rust runtime or detached server thread per object.

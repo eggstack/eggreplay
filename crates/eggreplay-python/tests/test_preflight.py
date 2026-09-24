@@ -4,6 +4,8 @@ import gc
 import hashlib
 import json
 from pathlib import Path
+import subprocess
+import sys
 import pytest
 
 import eggreplay
@@ -417,6 +419,43 @@ def test_pytest_report_failure_is_bounded_and_retains_structured_report():
     assert raised.value.report.to_dict() == report.to_dict()
 
 
+def test_pytest_terminal_failure_output_does_not_print_report_values(tmp_path, pytester):
+    pytester.makepyfile(
+        """
+import json
+import pytest
+import eggreplay
+import eggreplay.pytest_plugin as plugin
+
+@pytest.fixture(autouse=True)
+def unsafe_report(monkeypatch):
+    report = eggreplay.RegressionReport.from_json(json.dumps({
+        "schema_version": 2,
+        "scheduler": "sequential",
+        "baseline_flow_ids": ["flow-1"],
+        "findings": [{
+            "kind": "header", "field": "authorization",
+            "baseline": "pytest-secret-baseline",
+            "candidate": "pytest-secret-candidate",
+        }],
+    }))
+    async def fake_regress_flow(*args, **kwargs):
+        return report
+    monkeypatch.setattr(plugin, "regress_flow", fake_regress_flow)
+
+def test_report(eggreplay_report):
+    eggreplay_report.compare("flow-1", "http://candidate.invalid")
+"""
+    )
+    fixture_path, _ = write_fixture(tmp_path / "terminal-output.eggr")
+    result = pytester.runpytest("--eggreplay-fixture", str(fixture_path), "-q")
+    result.assert_outcomes(failed=1)
+    output = result.stdout.str() + result.stderr.str()
+    assert "authorization" in output
+    assert "pytest-secret-baseline" not in output
+    assert "pytest-secret-candidate" not in output
+
+
 async def raw_request(address, body=b"body", path="/items"):
     host, port = address.rsplit(":", 1)
     reader, writer = await asyncio.open_connection(host, int(port))
@@ -536,6 +575,49 @@ def test_recording_gateway_finalizes_after_async_context(tmp_path):
             await origin.wait_closed()
 
     asyncio.run(run())
+
+
+def test_recording_gateway_redacts_sensitive_headers_before_persistence(tmp_path):
+    fixture_path = tmp_path / "redacted.eggr"
+    sentinel = b"persisted-secret-sentinel"
+
+    async def run():
+        async def upstream(reader, writer):
+            await reader.readuntil(b"\r\n\r\n")
+            writer.write(
+                b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n"
+                b"Set-Cookie: persisted-secret-sentinel\r\nConnection: close\r\n\r\nok"
+            )
+            await writer.drain()
+            writer.close()
+            await writer.wait_closed()
+
+        origin = await asyncio.start_server(upstream, "127.0.0.1", 0)
+        port = origin.sockets[0].getsockname()[1]
+        try:
+            server = await eggreplay.recording_gateway(
+                str(fixture_path), f"http://127.0.0.1:{port}"
+            )
+            host, port_text = server.address.rsplit(":", 1)
+            reader, writer = await asyncio.open_connection(host, int(port_text))
+            writer.write(
+                b"GET / HTTP/1.1\r\nHost: example.test\r\n"
+                b"Authorization: Bearer persisted-secret-sentinel\r\n"
+                b"Connection: close\r\n\r\n"
+            )
+            await writer.drain()
+            await reader.read()
+            writer.close()
+            await writer.wait_closed()
+            await server.aclose()
+        finally:
+            origin.close()
+            await origin.wait_closed()
+
+    asyncio.run(run())
+    assert eggreplay.Fixture(str(fixture_path)).manifest["flow_count"] == 1
+    persisted_files = [path for path in fixture_path.rglob("*") if path.is_file()]
+    assert all(sentinel not in path.read_bytes() for path in persisted_files)
 
 
 def test_candidate_regression_uses_rust_report_and_leaves_event_loop_live(tmp_path):
@@ -794,6 +876,24 @@ def test_read_only_workers_can_share_fixture_concurrently(tmp_path):
     asyncio.run(run())
 
 
+def test_pytest_xdist_workers_share_read_only_fixture(tmp_path, pytester):
+    root, _ = write_fixture(tmp_path / "xdist-shared.eggr")
+    pytester.makepyfile(
+        """
+def test_first_worker(eggreplay_fixture):
+    assert eggreplay_fixture.manifest["flow_count"] == 1
+
+def test_second_worker(eggreplay_fixture):
+    assert eggreplay_fixture.manifest["flow_count"] == 1
+"""
+    )
+    result = pytester.runpytest_subprocess(
+        "--eggreplay-fixture", str(root), "-n", "2", "-q"
+    )
+    result.assert_outcomes(passed=2)
+    assert not root.with_name(f".{root.name}.eggreplay.lock").exists()
+
+
 def test_pytest_plugin_once_is_explicit_and_seals_after_creation(tmp_path, pytester):
     fixture_path = tmp_path / "once.eggr"
     pytester.makepyfile("def test_recording(eggreplay_server): assert eggreplay_server.address")
@@ -863,6 +963,59 @@ def test_pytest_writer_lock_refuses_duplicate_and_allows_independent_paths(tmp_p
             with _WriterLock(tmp_path / "worker-b.eggr", "gw1"):
                 pass
     assert not first.path.exists()
+
+
+def test_pytest_writer_lock_reports_stale_owner_without_removing_it(tmp_path):
+    from eggreplay.pytest_plugin import _WriterLock
+
+    fixture = tmp_path / "stale.eggr"
+    lock = _WriterLock(fixture, "gw7")
+    lock.path.write_text('{"pid":99999999,"worker_id":"gw-crashed"}')
+    with pytest.raises(RuntimeError, match="verify the recorded PID and worker") as raised:
+        with _WriterLock(fixture, "gw0"):
+            pass
+    assert "gw-crashed" in str(raised.value)
+    assert lock.path.read_text() == '{"pid":99999999,"worker_id":"gw-crashed"}'
+
+
+def test_pytest_relative_fixture_path_cannot_escape_root(tmp_path, pytester):
+    pytester.makepyfile("def test_fixture(eggreplay_fixture): pass")
+    result = pytester.runpytest("--eggreplay-fixture=../outside.eggr", "-q")
+    result.assert_outcomes(errors=1)
+    assert "must stay inside the pytest root" in result.stdout.str()
+    assert not (pytester.path.parent / "outside.eggr").exists()
+
+
+def test_repeated_async_server_create_close_is_bounded(tmp_path):
+    root, _ = write_fixture(tmp_path / "lifecycle-stress.eggr")
+
+    async def run():
+        for _ in range(32):
+            server = await eggreplay.replay_server(eggreplay.Fixture(str(root)))
+            await server.aclose()
+            await server.aclose()
+            await server.wait()
+            assert server.is_closing()
+
+    asyncio.run(asyncio.wait_for(run(), timeout=20))
+
+
+def test_interpreter_exit_with_unclosed_replay_server_does_not_hang(tmp_path):
+    root, _ = write_fixture(tmp_path / "unclosed-process.eggr")
+    script = (
+        "import asyncio, eggreplay\n"
+        "async def main():\n"
+        f"    await eggreplay.replay_server(eggreplay.Fixture({str(root)!r}))\n"
+        "asyncio.run(main())"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def test_vcr_style_sync_and_async_contexts_share_server_lifecycle(tmp_path):

@@ -89,7 +89,16 @@ pytest/application -> eggreplay Python ergonomics -> eggreplay._native
 ```
 
 Python never becomes an alternate path around the Rust store/matcher/network
-stack.
+stack. The plugin may select a fixture path, acquire an exclusive writer
+lock, and manage server startup/shutdown. It cannot interpret or publish
+fixture data itself. Relative plugin paths are confined to pytest's root;
+shared fixtures use an explicit absolute path. Read-only xdist workers may
+share a fixture, while writers to one path fail closed.
+
+The package uses a process-wide Tokio bridge. Explicit `aclose()` and context
+manager exit own deterministic cleanup. Dropping an unclosed replay object is
+covered by a subprocess interpreter-exit qualification; recordings still
+require explicit close to publish their completed fixture.
 
 ## Flow/conversation authority
 

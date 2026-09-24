@@ -33,7 +33,11 @@ Issues = "https://github.com/eggstack/eggreplay/issues"
 eggreplay = "eggreplay.pytest_plugin"
 
 [project.optional-dependencies]
-dev = ["pytest==8.4.2", "pytest-asyncio==1.2.0"]
+dev = [
+    "pytest==8.4.2",
+    "pytest-asyncio==1.2.0",
+    "pytest-xdist==3.8.0",
+]
 
 [tool.pytest.ini_options]
 asyncio_default_fixture_loop_scope = "function"

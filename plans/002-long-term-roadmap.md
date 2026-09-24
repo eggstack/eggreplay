@@ -59,7 +59,9 @@ Execution is decomposed:
 - M012E — wheels, typing, distribution qualification;
 - M012F — hardening, hosted qualification, milestone closure.
 
-See `implementation/python/`. Only M012A is initially ready.
+See `implementation/python/`. M012A–M012E are closed; M012F is in final
+hardening and hosted qualification. M013 remains blocked until the M012
+umbrella closure is recorded.
 
 ## Stage 9 — Optional interception (M013)
 
