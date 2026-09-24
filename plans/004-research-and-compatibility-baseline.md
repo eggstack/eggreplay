@@ -13,7 +13,7 @@ References:
 
 ## WireMock concepts
 
-Adopt matching across method/URL/query/headers/cookies/body, semantic JSON comparison, state-machine scenarios, request-derived templates, and strong mismatch diagnostics. v0.1 implements only bounded matcher/consumption essentials; scenarios/templates are M009.
+Adopt matching across method/URL/query/headers/cookies/body, semantic JSON comparison, state-machine scenarios, request-derived templates, and strong mismatch diagnostics.
 
 References:
 - https://wiremock.org/docs/request-matching/
@@ -22,56 +22,52 @@ References:
 
 ## VCR.py concepts
 
-Adopt portable cassette lifecycle, configurable matchers, consumption tracking, record-mode distinctions, and pre-persistence filtering. Do not adopt YAML as canonical storage or arbitrary language-stack monkeypatching in the Rust core.
+Adopt portable cassette lifecycle, configurable matchers, consumption tracking,
+record-mode distinctions, and pre-persistence filtering. Do not adopt YAML as
+canonical storage or arbitrary language-stack monkeypatching in the Rust core.
 
 Reference:
 - https://vcrpy.readthedocs.io/
 
 ## Current Eggstack seams
 
-EggFetch currently documents native body execution, `NativeHttpService`, custom `Dialer`, body DATA/trailers, detailed failures, TLS, pooling, and optional H2/H3.
+EggFetch 0.2.0 is the published outbound authority used by EggReplay.
+EggServe's qualified downstream set is `eggserve-server 0.2.1` with
+`eggserve-primitives 0.2.0`. EggReplay currently uses
+`eggress-outbound 1.0.8` with only `pproxy-compat`.
 
-Eggress documents listener-free `eggress-outbound::OutboundConnector` plus detailed route failures.
-
-EggServe documents canonical request/response/service primitives, embeddable H1 runtime, streaming/trailers/lifecycle, and tunnel handoff; H2/H3 require more qualification.
+M011 qualified direct/routed cleartext H1 WebSocket upgrade semantics and is
+closed. WSS/H2/H3 remain later compatibility work.
 
 References:
 - https://github.com/eggstack/eggfetch
 - https://github.com/eggstack/eggress
 - https://github.com/eggstack/eggserve
 
-## Evidence-gated open questions
+## Python baseline — 2026-09-23
 
-- exact published EggServe surface to select in M004;
-- whether EggFetch needs a generic observer hook after M003 proves the wrapper path;
-- whether body-event timing is cheap enough for default capture;
-- whether packed `.eggrz` is needed before v0.1;
-- whether H2 evidence is affordable for v0.1;
-- timing of HAR import/export.
+M012 planning uses the current upstream-compatible line:
 
-Do not resolve these by speculative abstractions in M001.
+- PyO3 0.29.2; the 0.29 line supports current CPython through the 3.15
+  transition and has an MSRV below EggReplay's Rust 1.89 floor;
+- `pyo3-async-runtimes 0.29.0` provides the Tokio/asyncio bridge and supports
+  Rust 1.83+;
+- maturin 1.14.1 provides current wheel/abi3 tooling.
 
+EggReplay does not inherit upstream support claims automatically. M012A must
+qualify its own CPython/ABI/runtime set. The planned initial product target is
+CPython 3.11–3.14 GIL builds with `abi3-py311` preferred. Python 3.15 and
+free-threaded support remain evidence-gated.
 
-## Baseline resolution update — 2026-09-23
+## Remaining evidence-gated questions
 
-Several original open questions are now resolved and should not be re-opened
-implicitly by later work:
+- whether EggReplay's async surface qualifies under `abi3-py311` or needs
+  per-interpreter wheels;
+- Linux aarch64 runtime wheel qualification;
+- Python 3.15/free-threaded promotion;
+- H2/H3 promotion;
+- HAR/migration interoperability;
+- interception and later protocol-specific extensions.
 
-- EggFetch 0.2.0 is the published outbound baseline and exposes owned
-  post-101/CONNECT `UpgradedStream` IO plus caller-owned TLS/dialer seams.
-- EggServe's direct downstream surface is published: `eggserve-server 0.2.1`
-  is registry-qualified and resolves with `eggserve-primitives 0.2.0`.
-  M011A owns EggReplay's migration from the historical Git pin and must prove
-  tunnel/read-ahead/lifecycle behavior locally.
-- Eggress 1.0.9 is not a safe automatic upgrade target while its upstream
-  pooled route-isolation/metadata correctives remain release blockers.
-  EggReplay keeps its narrow `pproxy-compat` feature and M011A selects only a
-  proven published/pinned line.
-- M010 established that body-event timing is optional semantic metadata, not a
-  default timing assertion.
-- M011 WebSocket architecture is governed by ADR 0006 and must qualify direct
-  and routed H1 upgrade ownership before semantic implementation.
-
-The remaining evidence-gated compatibility questions are H2/H3 promotion,
-HAR/migration interoperability, interception, and later protocol-specific
-extensions. Those stay in M013/M014 rather than expanding M011.
+These questions belong to M012–M014 rather than speculative changes to earlier
+closed milestones.
