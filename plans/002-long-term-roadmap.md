@@ -63,14 +63,24 @@ See `implementation/python/`. M012A–M012F and the M012 umbrella are closed
 with local and hosted Rust/Python/wheel qualification. See
 `closure/m012-python-pytest-ecosystem.md`. M013 is ready.
 
-## Stage 9 — Optional interception (M013)
+## Stage 9 — Explicit proxy and optional interception (M013)
 
-Separate explicit-proxy acquisition and opt-in HTTPS MITM boundary with
-dedicated CA/key lifecycle. Transparent/TUN/WireGuard remains a future
-decision.
+Separate explicit-forward-proxy acquisition and opt-in HTTPS MITM with a
+dedicated CA/key boundary. Interception stays outside default library/Python
+dependency graphs.
 
-Executable plan:
-`implementation/interception/013-explicit-proxy-and-optional-mitm.md`.
+ADR: `adrs/0008-interception-security-and-transport-boundary.md`.
+
+Execution is decomposed:
+
+- M013A — substrate/dependency/threat preflight;
+- M013B — explicit HTTP proxy + CONNECT deny/tunnel;
+- M013C — CA lifecycle + bounded exact-host leaf issuance;
+- M013D — HTTPS MITM HTTP/1.1 recording;
+- M013E — CLI/policy/operator UX;
+- M013F — hardening, hosted qualification, closure.
+
+Only M013A is initially ready.
 
 ## Stage 10 — broader compatibility (M014)
 
@@ -81,7 +91,8 @@ Umbrella program split into bounded tracks:
 - M014C HTTP/3 feasibility/qualification;
 - M014D gRPC-aware views + bounded fault-model polish.
 
-See `implementation/compatibility/`.
+See `implementation/compatibility/`. M014/M014A/M014B remain blocked until
+M013 closes; later tracks keep their declared dependencies.
 
 ## Roadmap rule
 
