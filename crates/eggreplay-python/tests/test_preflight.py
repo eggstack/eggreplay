@@ -248,6 +248,13 @@ def test_body_reader_propagates_symlink_rejection(tmp_path):
         blob.symlink_to(target)
     except (OSError, NotImplementedError):
         backup.rename(blob)
+        pytest.skip("symlink creation is unavailable")
+    try:
+        with pytest.raises(eggreplay.FixtureError):
+            fixture.open_body("flow-1", "request")
+    finally:
+        blob.unlink()
+        backup.rename(blob)
 
 
 def test_repeated_fixture_children_survive_python_gc(tmp_path):
@@ -261,13 +268,6 @@ def test_repeated_fixture_children_survive_python_gc(tmp_path):
         gc.collect()
         assert flow.request.method == "POST"
         assert reader.read_all(max_bytes=8) == b"gc"
-        pytest.skip("symlink creation is unavailable")
-    try:
-        with pytest.raises(eggreplay.FixtureError):
-            fixture.open_body("flow-1", "request")
-    finally:
-        blob.unlink()
-        backup.rename(blob)
 
 
 def test_extension_summaries_are_bounded_metadata(tmp_path):
