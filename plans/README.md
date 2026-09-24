@@ -39,9 +39,9 @@ closes a plan.
 v0.1/C001–C006, M009, M010/M010-C1, and M011/M011A–M011F are closed.
 
 M012 is closed under ADR 0007. M013 is decomposed under ADR 0008 into
-M013A–M013F. **M013A — Interception Substrate, Dependency, and Threat
-Preflight** is the only dependency-ready task. M013B–M013F and M014 remain
-blocked in dependency order.
+M013A–M013F. M013A — Interception Substrate, Dependency, and Threat Preflight
+is closed; **M013B — Explicit HTTP Proxy and CONNECT Policy** is the only
+dependency-ready task. M013C–M013F and M014 remain blocked in dependency order.
 
 See `registry.md` for the exact handoff state.
 

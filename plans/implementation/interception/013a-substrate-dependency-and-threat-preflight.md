@@ -1,6 +1,6 @@
 # M013A — Interception Substrate, Dependency, and Threat Preflight
 
-Status: ready
+Status: closed
 Depends on: M012 closure
 Parent milestone: M013
 ADR: 0008
