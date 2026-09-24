@@ -1,6 +1,6 @@
 # M012C — Async Lifecycle and Network Bindings
 
-Status: blocked
+Status: ready
 Depends on: M012B
 Parent milestone: M012
 

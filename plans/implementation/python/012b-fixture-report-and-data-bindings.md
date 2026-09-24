@@ -1,6 +1,6 @@
 # M012B — Fixture, Report, and Data Bindings
 
-Status: implemented (hosted qualification pending)
+Status: closed
 Depends on: M012A
 Parent milestone: M012
 
@@ -128,10 +128,7 @@ small immutable metadata. No borrowed pointer may outlive Rust ownership.
 Create `plans/closure/m012b-python-fixture-report-and-data-bindings.md`.
 M012C becomes ready only after the static binding contract is stable.
 
-Local implementation is in `crates/eggreplay-python/src/{errors,fixture,report,config}.rs`.
-The CPython 3.14 suite passes 13 tests covering valid/corrupt fixtures,
-ordered duplicate fields, typed error/report projections, bounded/chunked body
-reads and digest/symlink failures, extension summaries, Rust-backed config
-validation, object lifetime, and redaction-safe diagnostics. Hosted
-qualification is pending; this plan is not closed until the Python CI matrix
-and workspace verification pass and the closure record is written.
+Implementation and hosted qualification are complete. See
+`plans/closure/m012b-python-fixture-report-and-data-bindings.md` for the exact
+qualifying revision, CI run, platform results, and public surface limits.
+M012C is now ready.
