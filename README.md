@@ -14,9 +14,9 @@ closed with hosted cross-platform evidence.
 M012 Python/pytest integration is closed under ADR 0007 with hosted
 Rust/Python and wheel qualification. M013 explicit-proxy/optional HTTPS
 interception is decomposed under ADR 0008. M013A substrate/dependency/threat
-preflight is closed, and M013B explicit HTTP proxy/CONNECT policy is ready.
-Interception is not yet part of the supported product baseline. M014 remains
-downstream of M013.
+preflight is closed. M013B is blocked pending a published EggServe seam for
+absolute-form HTTP/1 proxy requests. Interception is not yet part of the
+supported product baseline. M014 remains downstream of M013.
 
 The support baseline includes direct HTTP/1.1 acquisition and EggServe inbound
 HTTP/1.1 replay with optional listener-free Eggress routing. WebSocket support

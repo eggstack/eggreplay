@@ -4,6 +4,21 @@ Status: blocked
 Depends on: M013A
 Parent milestone: M013
 
+## Current blocker
+
+Published `eggserve-server 0.2.1` rejects HTTP/1 absolute-form request targets
+inside its canonical request adapter before the service is invoked
+(`connection/request.rs`, the `scheme_str().is_some()` check). M013B requires
+the proxy service to receive and validate the absolute URI before deriving
+the logical origin and removing proxy-only headers. The current public
+EggServe service API cannot provide that request to the service.
+
+M013B is blocked pending an EggServe-owned API change that safely exposes
+absolute-form HTTP/1 requests to the caller-owned service path. Keep HTTP
+parsing and transport ownership in EggServe; do not introduce another parser
+or Hyper server in EggReplay. Reassess this plan after the upstream seam is
+published and qualified.
+
 ## Objective
 
 Implement a safe explicit HTTP/1.1 forward-proxy acquisition path with

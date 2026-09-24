@@ -57,7 +57,7 @@ boundary, and ADR 0008 owns interception security/transport ownership.
 | M012F | `implementation/python/012f-hardening-hosted-qualification-and-closure.md` | closed | M012E | hardening + M012 closure |
 | M013 | `implementation/interception/013-explicit-proxy-and-optional-mitm.md` | ready (decomposed) | M012 closure | interception milestone umbrella |
 | M013A | `implementation/interception/013a-substrate-dependency-and-threat-preflight.md` | closed | M012 closure | dependency/TLS/route substrate + threat model |
-| M013B | `implementation/interception/013b-explicit-http-proxy-and-connect-policy.md` | ready | M013A | HTTP proxy + CONNECT deny/tunnel |
+| M013B | `implementation/interception/013b-explicit-http-proxy-and-connect-policy.md` | blocked | M013A + EggServe absolute-form service seam | HTTP proxy + CONNECT deny/tunnel |
 | M013C | `implementation/interception/013c-ca-lifecycle-and-leaf-issuance.md` | blocked | M013B | CA/key lifecycle + leaf issuance |
 | M013D | `implementation/interception/013d-https-mitm-http1-recording.md` | blocked | M013C | HTTPS MITM H1 recording |
 | M013E | `implementation/interception/013e-cli-policy-and-operator-experience.md` | blocked | M013D | CLI/policy/operator surface |
@@ -94,9 +94,12 @@ decomposed. M013A is closed with published caller-owned TLS-to-EggServe H1
 handoff, Eggress raw CONNECT routing, EggFetch upstream TLS verification, the
 interception crate boundary, and the threat model qualified on Linux stable/
 Rust 1.89, macOS stable, Windows stable, and dependency-boundary CI. See
-`closure/m013a-interception-substrate-and-threat-preflight.md`. **M013B is now
-the only dependency-ready implementation task.** M013C–M013F and M014–M014D
-remain blocked by dependency order.
+`closure/m013a-interception-substrate-and-threat-preflight.md`. M013B is
+blocked: published EggServe 0.2.1 rejects absolute-form HTTP/1 targets before
+service dispatch, preventing the planned proxy service from applying policy
+and recording through the canonical path. M013B needs an EggServe-owned
+absolute-form service seam; do not add another parser or HTTP stack in
+EggReplay. M013C–M013F and M014–M014D remain blocked by dependency order.
 
 ## Canonical planning documents
 
