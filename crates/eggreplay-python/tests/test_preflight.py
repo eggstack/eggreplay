@@ -437,7 +437,10 @@ def test_recording_gateway_finalizes_after_async_context(tmp_path):
                 await close_task
             except asyncio.CancelledError:
                 pass
-            await asyncio.sleep(0.1)
+            for _ in range(500):
+                if fixture_path.is_dir():
+                    break
+                await asyncio.sleep(0.01)
             assert fixture_path.is_dir()
             assert eggreplay.Fixture(str(fixture_path)).manifest["flow_count"] == 1
             appended = await eggreplay.recording_gateway(
