@@ -53,6 +53,9 @@ def record_policy(mode: RecordMode, *, fixture_exists: bool, upstream_configured
     )
     return {"mode": RecordMode(effective_mode), "upstream_enabled": upstream_enabled}
 
+
+from ._lifecycle import fixture_context, use_fixture
+
 __all__ = [
     "BodyReader",
     "ComparisonPolicy",
@@ -86,6 +89,8 @@ __all__ = [
     "validate_matcher_profile",
     "validate_record_mode",
     "validate_stream_timing",
+    "fixture_context",
+    "use_fixture",
     "async_sleep",
     "async_value",
     "version",

@@ -8,6 +8,8 @@ import pytest
 import eggreplay
 from eggreplay import _native
 
+pytest_plugins = ["pytester"]
+
 
 def test_native_import_and_roundtrip():
     assert _native.version() == "0.1.0"
@@ -337,6 +339,34 @@ def test_regression_report_uses_rust_json_shape():
         eggreplay.RegressionReport.from_json("not a report")
 
 
+def test_pytest_report_failure_is_bounded_and_retains_structured_report():
+    from eggreplay.pytest_plugin import _RegressionAssertions
+
+    report = eggreplay.RegressionReport.from_json(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "scheduler": "sequential",
+                "baseline_flow_ids": ["flow-1"],
+                "findings": [
+                    {
+                        "kind": "header",
+                        "field": "authorization",
+                        "baseline": "secret-baseline-value",
+                        "candidate": "secret-candidate-value",
+                    }
+                ],
+            }
+        )
+    )
+    with pytest.raises(AssertionError) as raised:
+        _RegressionAssertions._assert_success(report)
+    assert "authorization" in str(raised.value)
+    assert "secret-baseline-value" not in str(raised.value)
+    assert "secret-candidate-value" not in str(raised.value)
+    assert raised.value.report.to_dict() == report.to_dict()
+
+
 async def raw_request(address, body=b"body", path="/items"):
     host, port = address.rsplit(":", 1)
     reader, writer = await asyncio.open_connection(host, int(port))
@@ -636,5 +666,145 @@ def test_candidate_cancellation_closes_pending_network_request(tmp_path):
         finally:
             candidate.close()
             await candidate.wait_closed()
+
+    asyncio.run(run())
+
+
+def test_pytest_plugin_sync_async_and_decorator_replay(tmp_path, pytester):
+    root, _ = write_fixture(tmp_path / "plugin.eggr")
+    flow = json.loads((root / "flows.jsonl").read_text())
+    flow["request"]["headers"].extend(
+        [{"name": "content-length", "value": "4"}, {"name": "connection", "value": "close"}]
+    )
+    (root / "flows.jsonl").write_text(json.dumps(flow) + "\n")
+    pytester.makepyfile(
+        test_plugin=f"""
+import pytest
+import eggreplay
+
+def test_sync_fixture(eggreplay_server, eggreplay_fixture):
+    assert eggreplay_fixture.manifest["flow_count"] == 1
+    assert eggreplay_server.address.startswith("127.0.0.1:")
+
+@pytest.mark.asyncio
+async def test_async_fixture(eggreplay_async_server):
+    assert eggreplay_async_server.address.startswith("127.0.0.1:")
+
+@eggreplay.use_fixture({str(root)!r})
+def test_vcr_decorator(eggreplay_server):
+    assert eggreplay_server.address
+"""
+    )
+    result = pytester.runpytest("--eggreplay-fixture", str(root), "-q")
+    result.assert_outcomes(passed=3)
+
+
+def test_pytest_plugin_missing_fixture_is_read_only(tmp_path, pytester):
+    absent = tmp_path / "missing.eggr"
+    pytester.makepyfile("def test_missing(eggreplay_server): pass")
+    result = pytester.runpytest("--eggreplay-fixture", str(absent), "-q")
+    result.assert_outcomes(errors=1)
+    assert not absent.exists()
+    assert not absent.with_name(f".{absent.name}.eggreplay.lock").exists()
+
+
+def test_pytest_plugin_generic_update_flag_does_not_enable_writes(tmp_path, pytester):
+    absent = tmp_path / "sealed.eggr"
+    pytester.makepyfile("def test_missing(eggreplay_server): pass")
+    result = pytester.runpytest("--eggreplay-fixture", str(absent), "--update", "-q")
+    assert result.ret != 0
+    assert "unrecognized arguments: --update" in result.stderr.str()
+    assert not absent.exists()
+
+
+def test_pytest_plugin_read_only_workers_can_share_fixture(tmp_path, pytester):
+    root, _ = write_fixture(tmp_path / "shared.eggr")
+    pytester.makepyfile("def test_replay(eggreplay_server): assert eggreplay_server.address")
+    first = pytester.runpytest("--eggreplay-fixture", str(root), "-q")
+    second = pytester.runpytest("--eggreplay-fixture", str(root), "-q")
+    first.assert_outcomes(passed=1)
+    second.assert_outcomes(passed=1)
+    assert not root.with_name(f".{root.name}.eggreplay.lock").exists()
+
+
+def test_pytest_plugin_once_is_explicit_and_seals_after_creation(tmp_path, pytester):
+    fixture_path = tmp_path / "once.eggr"
+    pytester.makepyfile("def test_recording(eggreplay_server): assert eggreplay_server.address")
+    result = pytester.runpytest(
+        "--eggreplay-fixture",
+        str(fixture_path),
+        "--eggreplay-record-mode=once",
+        "--eggreplay-upstream=http://127.0.0.1:9",
+        "-q",
+    )
+    result.assert_outcomes(passed=1)
+    assert eggreplay.Fixture(str(fixture_path)).manifest["flow_count"] == 0
+    assert not fixture_path.with_name(f".{fixture_path.name}.eggreplay.lock").exists()
+
+
+def test_pytest_plugin_append_and_rerecord_require_explicit_modes(tmp_path, pytester):
+    fixture_path, _ = write_fixture(tmp_path / "append-plugin.eggr")
+    pytester.makepyfile("def test_server(eggreplay_server): assert eggreplay_server.address")
+    appended = pytester.runpytest(
+        "--eggreplay-fixture",
+        str(fixture_path),
+        "--eggreplay-record-mode=append-new",
+        "--eggreplay-upstream=http://127.0.0.1:9",
+        "-q",
+    )
+    appended.assert_outcomes(passed=1)
+    assert eggreplay.Fixture(str(fixture_path)).manifest["flow_count"] == 1
+    assert not fixture_path.with_name(f".{fixture_path.name}.eggreplay.lock").exists()
+
+    rerecorded = pytester.runpytest(
+        "--eggreplay-fixture",
+        str(fixture_path),
+        "--eggreplay-record-mode=re-record",
+        "--eggreplay-upstream=http://127.0.0.1:9",
+        "-q",
+    )
+    rerecorded.assert_outcomes(passed=1)
+    assert eggreplay.Fixture(str(fixture_path)).manifest["flow_count"] == 0
+
+
+def test_pytest_plugin_surfaces_websocket_append_limitation(tmp_path, pytester):
+    fixture_path, _ = write_fixture(tmp_path / "ws-append.eggr")
+    pytester.makepyfile("def test_server(eggreplay_server): pass")
+    result = pytester.runpytest(
+        "--eggreplay-fixture",
+        str(fixture_path),
+        "--eggreplay-record-mode=append-new",
+        "--eggreplay-upstream=http://127.0.0.1:9",
+        "--eggreplay-websockets",
+        "-q",
+    )
+    result.assert_outcomes(errors=1)
+    assert "WebSocket append-new is not supported" in result.stdout.str()
+    assert fixture_path.is_dir()
+    assert not fixture_path.with_name(f".{fixture_path.name}.eggreplay.lock").exists()
+
+
+def test_pytest_writer_lock_refuses_duplicate_and_allows_independent_paths(tmp_path):
+    from eggreplay.pytest_plugin import _WriterLock
+
+    first = _WriterLock(tmp_path / "same.eggr", "gw0")
+    with first:
+        with pytest.raises(RuntimeError, match="already has a writer lock"):
+            with _WriterLock(tmp_path / "same.eggr", "gw1"):
+                pass
+        with _WriterLock(tmp_path / "worker-a.eggr", "gw0"):
+            with _WriterLock(tmp_path / "worker-b.eggr", "gw1"):
+                pass
+    assert not first.path.exists()
+
+
+def test_vcr_style_sync_and_async_contexts_share_server_lifecycle(tmp_path):
+    root, _ = write_fixture(tmp_path / "vcr.eggr")
+    with eggreplay.fixture_context(root) as server:
+        assert server.address.startswith("127.0.0.1:")
+
+    async def run():
+        async with eggreplay.fixture_context(root) as server:
+            assert server.address.startswith("127.0.0.1:")
 
     asyncio.run(run())

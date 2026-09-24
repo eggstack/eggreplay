@@ -11,8 +11,14 @@ license = { text = "MIT" }
 readme = "README.md"
 dependencies = []
 
+[project.entry-points.pytest11]
+eggreplay = "eggreplay.pytest_plugin"
+
 [project.optional-dependencies]
 dev = ["pytest==8.4.2", "pytest-asyncio==1.2.0"]
+
+[tool.pytest.ini_options]
+asyncio_default_fixture_loop_scope = "function"
 
 [tool.maturin]
 python-source = "python"

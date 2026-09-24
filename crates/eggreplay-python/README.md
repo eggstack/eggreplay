@@ -44,5 +44,29 @@ requests drain. `regress_flow` executes one fixture request against a
 candidate target and returns the Rust `RegressionReport`; `route` accepts
 `direct` or Eggress' supported outbound route grammar.
 
-The synchronous context manager is deferred to the M012D pytest adapter.
-Python does not create a runtime or detached server thread per object.
+The package registers the `eggreplay.pytest_plugin` pytest plugin. Its fixtures
+are `eggreplay_fixture` (validated read-only fixture data), `eggreplay_server`
+and `eggreplay_async_server` (managed sync and pytest-asyncio servers),
+`eggreplay_recorder` and `eggreplay_async_recorder` (aliases using the same
+explicit mode), and `eggreplay_report` (bounded candidate-regression
+assertions). Set a fixture path with `--eggreplay-fixture=PATH` or
+`@eggreplay.use_fixture(PATH)`. Relative paths resolve from pytest's root.
+The `eggreplay_fixture` and `eggreplay_async_fixture` markers also accept a
+path and optional `record_mode`, `upstream`, `route`, and `websockets` values.
+
+All plugin use is sealed/read-only by default. Missing fixtures fail setup
+without creating a directory. Writes require
+`--eggreplay-record-mode=once|append-new|re-record` plus an upstream for
+networked modes, or the corresponding explicit marker/decorator options. A
+generic pytest `--update` option has no effect on EggReplay. Append-new remains
+HTTP-only. A sibling create-new lock refuses concurrent writers; if a process
+crashes, verify its PID/worker is no longer active and remove the named stale
+lock file explicitly. For bulk recording, give each worker a separate fixture
+path. Read-only workers can share a fixture. Each server owns its own scenario
+runtime.
+
+The VCR-style `fixture_context(path)` context manager and
+`@use_fixture(path)` decorator call the same Rust server lifecycle. They do not
+patch Python HTTP clients or use a Python cassette format. Synchronous use
+manages one Python `asyncio.Runner` around the shared process Tokio bridge; it
+does not create a Rust runtime or detached server thread per object.
