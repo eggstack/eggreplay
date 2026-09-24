@@ -1,6 +1,6 @@
 # M012D — Pytest/VCR Ergonomics and Parallel Safety
 
-Status: blocked
+Status: ready
 Depends on: M012C
 Parent milestone: M012
 

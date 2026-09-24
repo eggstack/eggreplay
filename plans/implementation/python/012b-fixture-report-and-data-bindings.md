@@ -131,4 +131,6 @@ M012C becomes ready only after the static binding contract is stable.
 Implementation and hosted qualification are complete. See
 `plans/closure/m012b-python-fixture-report-and-data-bindings.md` for the exact
 qualifying revision, CI run, platform results, and public surface limits.
+The GC/symlink test harness correction is recorded in
+`plans/closure/m012b-python-fixture-report-and-data-bindings-errata.md`.
 M012C is now ready.

@@ -1,6 +1,6 @@
 # M012C — Async Lifecycle and Network Bindings
 
-Status: implemented (hosted qualification pending)
+Status: closed
 Depends on: M012B
 Parent milestone: M012
 
@@ -31,7 +31,8 @@ request bodies. Recording supports Rust policy modes once, append-new, and
 re-record; WebSocket capture is opt-in and append-new rejects it. Candidate
 regression routes through EggFetch/Eggress and returns M012B's report wrapper,
 including stream/SSE policy and semantic WebSocket regression. See the closure
-record for local evidence and the deliberate synchronous-adapter handoff.
+record for local and hosted evidence and the deliberate synchronous-adapter
+handoff.
 
 ## B. Recording gateway binding
 
