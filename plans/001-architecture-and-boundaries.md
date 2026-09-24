@@ -24,7 +24,7 @@ eggreplay-http
   EggServe inbound record/replay adapter
   body/frame/WebSocket orchestration
   optional Eggress-backed Dialer adapter
-  no Python runtime
+  no Python/interception CA ownership
 
 eggreplay-intercept (M013)
   optional explicit forward-proxy acquisition
@@ -47,11 +47,8 @@ eggreplay-python (M012)
 `eggreplay-core`, `eggreplay-store`, and `eggreplay-http` must never gain
 PyO3/Python dependencies. The Python crate is a leaf adapter.
 
-`eggreplay-intercept` is a privileged leaf adapter. Existing product crates
-must not depend upward on it.
-
-`eggreplay-intercept` is a separate privileged leaf. Existing product crates and
-the default Python wheel must not depend upward on it.
+`eggreplay-intercept` is a separate privileged leaf. Existing product crates
+and the default Python wheel must not depend upward on it.
 
 ## EggFetch boundary
 
@@ -128,23 +125,13 @@ EggFetch owns semantic upstream HTTP/TLS with ordinary certificate and hostname
 verification. EggReplay interception code owns only target policy, CA/leaf
 lifecycle, authority coherence, and acquisition orchestration.
 
-Opaque CONNECT passthrough never becomes a semantic HTTP flow. Initial MITM is
-HTTP/1.1 only and must not advertise H2. CA/private leaf key material remains
-outside `.eggr` and routine diagnostics.
-
-Python remains interception-free in M013 so the qualified default abi3 wheel
-does not acquire CA-generation dependencies.
-
-## Interception boundary
-
-ADR 0008 governs M013.
-
 CONNECT passthrough bytes are opaque and never become semantic HTTP flows.
-Interception is policy-selected per target. CA/key material is operational
-state outside `.eggr`.
+Interception is policy-selected per target. CA/private leaf key material
+remains outside `.eggr` and routine diagnostics.
 
 Initial MITM is HTTP/1.1 only and advertises only `http/1.1`. H2/H3/WSS/mTLS
-interception is not part of M013.
+interception is not part of M013. Python remains interception-free so the
+qualified default abi3 wheel does not acquire CA-generation dependencies.
 
 ## Flow/conversation authority
 
@@ -154,6 +141,5 @@ conversation semantics.
 
 ADR 0006 governs WebSockets, ADR 0007 Python binding/runtime ownership, and
 ADR 0008 interception security/transport ownership.
-ADR 0008 governs interception security and transport ownership.
 
 No plugin ABI or scripting engine is required for v0.1.
