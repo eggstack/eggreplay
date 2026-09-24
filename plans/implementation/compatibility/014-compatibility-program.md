@@ -1,7 +1,7 @@
 # M014 — Broader Compatibility Program
 
 Status: blocked
-Depends on: M013
+Depends on: M013 closure
 Roadmap stage: 10
 
 ## Purpose
