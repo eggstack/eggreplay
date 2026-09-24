@@ -10,14 +10,14 @@ eggreplay-core
   normalization + matcher/scenario model
   semantic diff/report model
   redaction vocabulary
-  no sockets/filesystem/Python runtime
+  no sockets/filesystem/Python/interception runtime
 
 eggreplay-store
   .eggr manifest/JSONL/blob persistence
   schema validation + migrations
   streaming blob reader/writer
   crash-safe finalization
-  no Python runtime
+  no Python/interception runtime
 
 eggreplay-http
   EggFetch outbound adapter
@@ -47,6 +47,9 @@ eggreplay-python (M012)
 `eggreplay-core`, `eggreplay-store`, and `eggreplay-http` must never gain
 PyO3/Python dependencies. The Python crate is a leaf adapter.
 
+`eggreplay-intercept` is a privileged leaf adapter. Existing product crates
+must not depend upward on it.
+
 `eggreplay-intercept` is a separate privileged leaf. Existing product crates and
 the default Python wheel must not depend upward on it.
 
@@ -54,19 +57,24 @@ the default Python wheel must not depend upward on it.
 
 EggFetch is outbound HTTP authority. Current seams include native body
 execution, custom Dialer, structured failures, destination TLS, pooling, H1
-upgrade ownership, and HTTP framing.
+upgrade ownership, and HTTP framing. M013 intercepted upstream requests use
+normal EggFetch verification; installing the EggReplay CA never changes
+upstream trust.
 
 ## EggServe boundary
 
 EggServe is inbound HTTP service/runtime authority for gateway recording,
-replay/mock serving, and generic H1 tunnel handoff. Do not duplicate listener
-lifecycle, parser limits, HTTP framing, keep-alive, or server TLS machinery.
+replay/mock serving, generic H1 tunnel handoff, and caller-owned H1 execution.
+M013 terminates client TLS outside EggServe and passes the decrypted async
+stream plus truthful HTTPS/TLS `ConnectionContext` into that driver. Do not
+import `eggserve-core` or create a private Hyper server merely for interception.
 
 ## Eggress boundary
 
 Use `eggress-outbound::OutboundConnector` for optional listener-free routes.
-EggReplay reports route metadata but does not implement SOCKS, CONNECT, SSH,
-chains, or relays.
+Eggress owns raw route establishment for CONNECT passthrough and remains the
+optional physical route under EggFetch for intercepted semantic requests.
+Configured routes never fall back to direct.
 
 ## Canonical data flow
 
@@ -127,13 +135,25 @@ outside `.eggr` and routine diagnostics.
 Python remains interception-free in M013 so the qualified default abi3 wheel
 does not acquire CA-generation dependencies.
 
+## Interception boundary
+
+ADR 0008 governs M013.
+
+CONNECT passthrough bytes are opaque and never become semantic HTTP flows.
+Interception is policy-selected per target. CA/key material is operational
+state outside `.eggr`.
+
+Initial MITM is HTTP/1.1 only and advertises only `http/1.1`. H2/H3/WSS/mTLS
+interception is not part of M013.
+
 ## Flow/conversation authority
 
 EggReplay owns request/response semantics, errors, routes, timestamps,
 annotations, redaction markers, stream events, scenarios, and WebSocket
 conversation semantics.
 
-ADR 0006 governs WebSockets. ADR 0007 governs Python binding/runtime ownership.
+ADR 0006 governs WebSockets, ADR 0007 Python binding/runtime ownership, and
+ADR 0008 interception security/transport ownership.
 ADR 0008 governs interception security and transport ownership.
 
 No plugin ABI or scripting engine is required for v0.1.
