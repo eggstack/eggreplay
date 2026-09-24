@@ -42,6 +42,12 @@ pub struct ReportView {
     report: RegressionReport,
 }
 
+impl ReportView {
+    pub(crate) fn from_report(report: RegressionReport) -> Self {
+        Self { report }
+    }
+}
+
 #[pymethods]
 impl ReportView {
     #[staticmethod]
@@ -59,6 +65,11 @@ impl ReportView {
     #[getter]
     fn finding_count(&self) -> usize {
         self.report.findings.len()
+    }
+
+    #[getter]
+    fn baseline_flow_ids(&self) -> Vec<String> {
+        self.report.baseline_flow_ids.clone()
     }
 
     #[getter]

@@ -5,6 +5,7 @@ use pyo3::prelude::*;
 mod config;
 mod errors;
 mod fixture;
+mod lifecycle;
 mod report;
 
 /// Return the `EggReplay` crate version as a small ABI/import smoke value.
@@ -36,6 +37,7 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(async_value, module)?)?;
     module.add_function(wrap_pyfunction!(async_sleep, module)?)?;
     config::register(module)?;
+    lifecycle::register(module)?;
     for class in [
         module.add_class::<fixture::PyFixture>(),
         module.add_class::<fixture::FlowView>(),

@@ -345,7 +345,7 @@ impl PyFlowIterator {
 /// Read-only validated `.eggr` fixture.
 #[pyclass(name = "Fixture")]
 pub struct PyFixture {
-    session: Arc<Session>,
+    pub(crate) session: Arc<Session>,
 }
 
 #[pymethods]

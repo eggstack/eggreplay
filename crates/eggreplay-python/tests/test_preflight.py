@@ -335,3 +335,306 @@ def test_regression_report_uses_rust_json_shape():
     assert report.to_dict() == payload
     with pytest.raises(eggreplay.RegressionError):
         eggreplay.RegressionReport.from_json("not a report")
+
+
+async def raw_request(address, body=b"body", path="/items"):
+    host, port = address.rsplit(":", 1)
+    reader, writer = await asyncio.open_connection(host, int(port))
+    request = (
+        f"POST {path}?tag=a&tag=b HTTP/1.1\r\n".encode()
+        + b"Host: example.test\r\n"
+        + b"x-repeat: one\r\n"
+        + b"x-repeat: two\r\n"
+        + f"Content-Length: {len(body)}\r\nConnection: close\r\n\r\n".encode()
+        + body
+    )
+    writer.write(request)
+    await writer.drain()
+    response = await reader.read()
+    writer.close()
+    await writer.wait_closed()
+    return response
+
+
+def test_async_replay_server_lifecycle_and_server_isolation(tmp_path):
+    root, _ = write_fixture(tmp_path / "server.eggr")
+    flow = json.loads((root / "flows.jsonl").read_text())
+    flow["request"]["headers"].extend(
+        [{"name": "content-length", "value": "4"}, {"name": "connection", "value": "close"}]
+    )
+    (root / "flows.jsonl").write_text(json.dumps(flow) + "\n")
+
+    async def run():
+        fixture = eggreplay.Fixture(str(root))
+        first = await eggreplay.replay_server(fixture)
+        second = await eggreplay.replay_server(fixture)
+        assert first.address != second.address
+        assert b"200" in await raw_request(first.address)
+        assert b"200" in await raw_request(second.address)
+        await first.aclose()
+        await first.aclose()
+        assert second.is_closing() is False
+        async with second:
+            assert second.is_closing() is False
+        assert second.is_closing() is True
+
+    asyncio.run(run())
+
+
+def test_recording_gateway_finalizes_after_async_context(tmp_path):
+    fixture_path = tmp_path / "recorded.eggr"
+
+    async def run():
+        async def upstream(reader, writer):
+            await reader.readuntil(b"\r\n\r\n")
+            writer.write(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+            await writer.drain()
+            writer.close()
+            await writer.wait_closed()
+
+        origin = await asyncio.start_server(upstream, "127.0.0.1", 0)
+        port = origin.sockets[0].getsockname()[1]
+        try:
+            server = await eggreplay.recording_gateway(
+                str(fixture_path), f"http://127.0.0.1:{port}"
+            )
+            response = await raw_request(server.address)
+            assert b"200" in response and response.endswith(b"ok")
+            close_task = asyncio.ensure_future(server.aclose())
+            await asyncio.sleep(0)
+            close_task.cancel()
+            try:
+                await close_task
+            except asyncio.CancelledError:
+                pass
+            await asyncio.sleep(0.1)
+            assert fixture_path.is_dir()
+            assert eggreplay.Fixture(str(fixture_path)).manifest["flow_count"] == 1
+            appended = await eggreplay.recording_gateway(
+                str(fixture_path), f"http://127.0.0.1:{port}", record_mode="append-new"
+            )
+            response = await raw_request(appended.address, path="/new")
+            assert response.endswith(b"ok")
+            await appended.aclose()
+            assert eggreplay.Fixture(str(fixture_path)).manifest["flow_count"] == 2
+
+            rerecorded = await eggreplay.recording_gateway(
+                str(fixture_path), f"http://127.0.0.1:{port}", record_mode="re-record"
+            )
+            assert (await raw_request(rerecorded.address)).endswith(b"ok")
+            await rerecorded.aclose()
+            assert eggreplay.Fixture(str(fixture_path)).manifest["flow_count"] == 1
+
+            sealed = await eggreplay.recording_gateway(
+                str(fixture_path), f"http://127.0.0.1:{port}", record_mode="once"
+            )
+            assert b"404" in await raw_request(sealed.address)
+            await sealed.aclose()
+            assert eggreplay.Fixture(str(fixture_path)).manifest["flow_count"] == 1
+
+            independent_paths = [tmp_path / "parallel-a.eggr", tmp_path / "parallel-b.eggr"]
+            independent = [
+                await eggreplay.recording_gateway(
+                    str(path), f"http://127.0.0.1:{port}"
+                )
+                for path in independent_paths
+            ]
+            responses = await asyncio.gather(
+                *(raw_request(server.address) for server in independent)
+            )
+            assert all(response.endswith(b"ok") for response in responses)
+            await asyncio.gather(*(server.aclose() for server in independent))
+            assert [
+                eggreplay.Fixture(str(path)).manifest["flow_count"]
+                for path in independent_paths
+            ] == [1, 1]
+        finally:
+            origin.close()
+            await origin.wait_closed()
+
+    asyncio.run(run())
+
+
+def test_candidate_regression_uses_rust_report_and_leaves_event_loop_live(tmp_path):
+    root, _ = write_fixture(tmp_path / "regression.eggr")
+    flow = json.loads((root / "flows.jsonl").read_text())
+    flow["request"]["headers"].extend(
+        [{"name": "content-length", "value": "4"}, {"name": "connection", "value": "close"}]
+    )
+    (root / "flows.jsonl").write_text(json.dumps(flow) + "\n")
+
+    async def run():
+        heartbeats = 0
+
+        async def upstream(reader, writer):
+            nonlocal heartbeats
+            headers = await reader.readuntil(b"\r\n\r\n")
+            length = next(
+                int(line.split(b":", 1)[1])
+                for line in headers.split(b"\r\n")
+                if line.lower().startswith(b"content-length:")
+            )
+            await reader.readexactly(length)
+            await asyncio.sleep(0.1)
+            writer.write(
+                b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\nbody"
+            )
+            await writer.drain()
+            writer.close()
+            await writer.wait_closed()
+
+        async def heartbeat():
+            nonlocal heartbeats
+            while True:
+                heartbeats += 1
+                await asyncio.sleep(0.005)
+
+        async def proxy(reader, writer):
+            request_line = await reader.readline()
+            method, authority, _version = request_line.decode().split()
+            assert method == "CONNECT"
+            while await reader.readline() != b"\r\n":
+                pass
+            host, port = authority.rsplit(":", 1)
+            upstream_reader, upstream_writer = await asyncio.open_connection(host, int(port))
+            writer.write(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+            await writer.drain()
+
+            async def pipe(source, destination):
+                try:
+                    while data := await source.read(65536):
+                        destination.write(data)
+                        await destination.drain()
+                finally:
+                    destination.close()
+
+            await asyncio.gather(
+                pipe(reader, upstream_writer), pipe(upstream_reader, writer)
+            )
+
+        origin = await asyncio.start_server(upstream, "127.0.0.1", 0)
+        port = origin.sockets[0].getsockname()[1]
+        proxy_server = await asyncio.start_server(proxy, "127.0.0.1", 0)
+        proxy_port = proxy_server.sockets[0].getsockname()[1]
+        ticker = asyncio.create_task(heartbeat())
+        try:
+            report = await eggreplay.regress_flow(
+                eggreplay.Fixture(str(root)),
+                "flow-1",
+                f"http://127.0.0.1:{port}",
+                compare_stream_events=True,
+            )
+            assert report.baseline_flow_ids == ["flow-1"]
+            assert report.finding_count > 0
+            assert heartbeats >= 5
+            routed = await eggreplay.regress_flow(
+                eggreplay.Fixture(str(root)),
+                "flow-1",
+                f"http://127.0.0.1:{port}",
+                route=f"http://127.0.0.1:{proxy_port}",
+            )
+            assert routed.baseline_flow_ids == ["flow-1"]
+        finally:
+            ticker.cancel()
+            origin.close()
+            await origin.wait_closed()
+            proxy_server.close()
+            await proxy_server.wait_closed()
+
+    asyncio.run(run())
+
+
+def test_websocket_candidate_uses_rust_websocket_regression_authority(tmp_path):
+    root, _ = write_fixture(tmp_path / "websocket.eggr", with_extensions=True)
+    flow = json.loads((root / "flows.jsonl").read_text())
+    flow["request"].update(
+        {
+            "method": "GET",
+            "body": {"kind": "absent"},
+            "headers": [
+                {"name": "connection", "value": "Upgrade"},
+                {"name": "upgrade", "value": "websocket"},
+                {"name": "sec-websocket-key", "value": "dGhlIHNhbXBsZSBub25jZQ=="},
+                {"name": "sec-websocket-version", "value": "13"},
+            ],
+        }
+    )
+    flow["request"].pop("authority", None)
+    flow["request"]["authority"] = "example.test"
+    flow["outcome"]["status"] = 101
+    (root / "flows.jsonl").write_text(json.dumps(flow) + "\n")
+    (root / "websockets.jsonl").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "conversations": [
+                    {
+                        "id": "ws-1",
+                        "flow_id": "flow-1",
+                        "offered_subprotocols": [],
+                        "messages": [],
+                        "terminal": {"kind": "abnormal", "cause": "eof"},
+                    }
+                ],
+            }
+        )
+    )
+
+    async def run():
+        async def reject(reader, writer):
+            await reader.readuntil(b"\r\n\r\n")
+            writer.write(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+            await writer.drain()
+            writer.close()
+            await writer.wait_closed()
+
+        candidate = await asyncio.start_server(reject, "127.0.0.1", 0)
+        port = candidate.sockets[0].getsockname()[1]
+        try:
+            report = await eggreplay.regress_flow(
+                eggreplay.Fixture(str(root)), "flow-1", f"http://127.0.0.1:{port}"
+            )
+            assert report.baseline_flow_ids == ["flow-1"]
+            assert report.finding_count > 0
+        finally:
+            candidate.close()
+            await candidate.wait_closed()
+
+    asyncio.run(run())
+
+
+def test_candidate_cancellation_closes_pending_network_request(tmp_path):
+    root, _ = write_fixture(tmp_path / "cancel-regression.eggr")
+
+    async def run():
+        accepted = asyncio.Event()
+        disconnected = asyncio.Event()
+
+        async def stalled(reader, writer):
+            await reader.readuntil(b"\r\n\r\n")
+            accepted.set()
+            await reader.read()
+            disconnected.set()
+            writer.close()
+            await writer.wait_closed()
+
+        candidate = await asyncio.start_server(stalled, "127.0.0.1", 0)
+        port = candidate.sockets[0].getsockname()[1]
+        try:
+            task = asyncio.ensure_future(
+                eggreplay.regress_flow(
+                    eggreplay.Fixture(str(root)),
+                    "flow-1",
+                    f"http://127.0.0.1:{port}",
+                )
+            )
+            await asyncio.wait_for(accepted.wait(), 1)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            await asyncio.wait_for(disconnected.wait(), 1)
+        finally:
+            candidate.close()
+            await candidate.wait_closed()
+
+    asyncio.run(run())

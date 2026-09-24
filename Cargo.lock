@@ -456,9 +456,12 @@ dependencies = [
 name = "eggreplay-python"
 version = "0.1.0"
 dependencies = [
+ "eggfetch-core",
  "eggreplay-core",
  "eggreplay-http",
  "eggreplay-store",
+ "eggserve-server",
+ "http",
  "pyo3",
  "pyo3-async-runtimes",
  "serde",

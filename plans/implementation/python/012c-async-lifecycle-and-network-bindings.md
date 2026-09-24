@@ -1,6 +1,6 @@
 # M012C — Async Lifecycle and Network Bindings
 
-Status: ready
+Status: implemented (hosted qualification pending)
 Depends on: M012B
 Parent milestone: M012
 
@@ -23,6 +23,15 @@ Expose a Rust-backed replay server handle with:
 - WebSocket replay automatically active for fixtures that require it.
 
 The Python wrapper must call the existing Rust replay authority.
+
+Implementation in `crates/eggreplay-python/src/lifecycle.rs` exports async
+`replay_server`, `recording_gateway`, `regress_flow`, and an owned `Server`
+handle. Replay supports matcher profile, scenario, stream timing, and bounded
+request bodies. Recording supports Rust policy modes once, append-new, and
+re-record; WebSocket capture is opt-in and append-new rejects it. Candidate
+regression routes through EggFetch/Eggress and returns M012B's report wrapper,
+including stream/SSE policy and semantic WebSocket regression. See the closure
+record for local evidence and the deliberate synchronous-adapter handoff.
 
 ## B. Recording gateway binding
 

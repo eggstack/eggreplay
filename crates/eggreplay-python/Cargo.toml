@@ -17,6 +17,9 @@ doctest = false
 eggreplay-core = { path = "../eggreplay-core" }
 eggreplay-http = { path = "../eggreplay-http", default-features = false, features = ["direct", "eggserve", "eggress", "websocket"] }
 eggreplay-store = { path = "../eggreplay-store" }
+eggfetch-core.workspace = true
+eggserve-server.workspace = true
+http.workspace = true
 pyo3 = { version = "=0.29.2", features = ["extension-module", "abi3-py311"] }
 pyo3-async-runtimes = { version = "=0.29.0", features = ["tokio-runtime"] }
 serde = { workspace = true }

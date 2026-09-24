@@ -1557,14 +1557,28 @@ impl Session {
         for flow in self.iter_flows()?.chain(additional.iter_flows()?) {
             writer.append_flow(&flow?)?;
         }
-        let mut extensions = std::collections::BTreeMap::new();
+        let mut extensions: std::collections::BTreeMap<String, (ExtensionDescriptor, Vec<u8>)> =
+            std::collections::BTreeMap::new();
         for source in [self, additional] {
             for extension in &source.manifest.extensions {
                 let bytes = source.read_extension(&extension.name)?.ok_or_else(|| {
                     StoreError::Invalid("extension disappeared during merge".into())
                 })?;
-                if let Some((prior, prior_bytes)) = extensions.get(&extension.name) {
-                    if prior != extension || prior_bytes != &bytes {
+                if let Some((prior, prior_bytes)) = extensions.get_mut(&extension.name) {
+                    if extension.name == "stream-events" && prior == extension {
+                        let mut combined: eggreplay_core::StreamEvents =
+                            serde_json::from_slice(prior_bytes)?;
+                        let additional: eggreplay_core::StreamEvents =
+                            serde_json::from_slice(&bytes)?;
+                        if combined.schema_version != additional.schema_version {
+                            return Err(StoreError::Invalid(
+                                "conflicting stream-event schemas during merge".into(),
+                            ));
+                        }
+                        combined.flows.extend(additional.flows);
+                        combined.validate().map_err(StoreError::Invalid)?;
+                        *prior_bytes = serde_json::to_vec(&combined)?;
+                    } else if prior != extension || prior_bytes != &bytes {
                         return Err(StoreError::Invalid(format!(
                             "conflicting extension {:?} during merge",
                             extension.name
