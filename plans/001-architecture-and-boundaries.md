@@ -26,9 +26,16 @@ eggreplay-http
   optional Eggress-backed Dialer adapter
   no Python runtime
 
+eggreplay-intercept (M013)
+  optional explicit forward-proxy acquisition
+  CONNECT policy / opaque relay
+  dedicated CA + leaf issuance
+  client-side TLS termination
+  leaf adapter; never depended on by core/store/http/Python
+
 eggreplay-cli
   record / serve / replay / test / diff / inspect / validate
-  config and presentation
+  optional interception commands behind explicit feature
 
 eggreplay-python (M012)
   PyO3 adapter over existing Rust authorities
@@ -39,6 +46,9 @@ eggreplay-python (M012)
 
 `eggreplay-core`, `eggreplay-store`, and `eggreplay-http` must never gain
 PyO3/Python dependencies. The Python crate is a leaf adapter.
+
+`eggreplay-intercept` is a separate privileged leaf. Existing product crates and
+the default Python wheel must not depend upward on it.
 
 ## EggFetch boundary
 
@@ -100,6 +110,23 @@ manager exit own deterministic cleanup. Dropping an unclosed replay object is
 covered by a subprocess interpreter-exit qualification; recordings still
 require explicit close to publish their completed fixture.
 
+## Interception boundary
+
+ADR 0008 governs M013.
+
+EggServe owns inbound H1 parsing, CONNECT tunnel handoff, and caller-owned H1
+execution after TLS termination. Eggress owns raw CONNECT route establishment.
+EggFetch owns semantic upstream HTTP/TLS with ordinary certificate and hostname
+verification. EggReplay interception code owns only target policy, CA/leaf
+lifecycle, authority coherence, and acquisition orchestration.
+
+Opaque CONNECT passthrough never becomes a semantic HTTP flow. Initial MITM is
+HTTP/1.1 only and must not advertise H2. CA/private leaf key material remains
+outside `.eggr` and routine diagnostics.
+
+Python remains interception-free in M013 so the qualified default abi3 wheel
+does not acquire CA-generation dependencies.
+
 ## Flow/conversation authority
 
 EggReplay owns request/response semantics, errors, routes, timestamps,
@@ -107,5 +134,6 @@ annotations, redaction markers, stream events, scenarios, and WebSocket
 conversation semantics.
 
 ADR 0006 governs WebSockets. ADR 0007 governs Python binding/runtime ownership.
+ADR 0008 governs interception security and transport ownership.
 
 No plugin ABI or scripting engine is required for v0.1.
