@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import glob
 import hashlib
 from email.parser import Parser
 from pathlib import Path
@@ -14,7 +15,16 @@ def main() -> None:
     parser.add_argument("wheel", type=Path)
     parser.add_argument("platform_tag")
     args = parser.parse_args()
-    wheel = args.wheel.resolve()
+    wheel = args.wheel
+    if wheel.is_dir():
+        matches = sorted(wheel.glob("*.whl"))
+        assert len(matches) == 1, matches
+        wheel = matches[0]
+    elif "*" in str(wheel):
+        matches = [Path(item) for item in sorted(glob.glob(str(wheel)))]
+        assert len(matches) == 1, matches
+        wheel = matches[0]
+    wheel = wheel.resolve()
     assert wheel.is_file() and wheel.suffix == ".whl"
     assert f"cp311-abi3-{args.platform_tag}.whl" in wheel.name, wheel.name
 

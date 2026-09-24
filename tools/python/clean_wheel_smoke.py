@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import glob
 import os
 from pathlib import Path
 import subprocess
@@ -16,7 +17,16 @@ def main() -> None:
     parser.add_argument("--wheel", type=Path, required=True)
     parser.add_argument("--smoke-script", type=Path, required=True)
     args = parser.parse_args()
-    wheel = args.wheel.resolve()
+    wheel = args.wheel
+    if wheel.is_dir():
+        matches = sorted(wheel.glob("*.whl"))
+        assert len(matches) == 1, matches
+        wheel = matches[0]
+    elif "*" in str(wheel):
+        matches = [Path(item) for item in sorted(glob.glob(str(wheel)))]
+        assert len(matches) == 1, matches
+        wheel = matches[0]
+    wheel = wheel.resolve()
     smoke_script = args.smoke_script.resolve()
     assert wheel.is_file()
 

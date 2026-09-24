@@ -47,9 +47,9 @@ jobs:
       - name: Build abi3 wheel
         run: uv run --directory crates/eggreplay-python --python 3.11 --with maturin==1.14.1 maturin build --locked --release --compatibility pypi --out target/python-release/${{ matrix.target }}
       - name: Inspect wheel contents and tags
-        run: python tools/python/inspect_wheel.py crates/eggreplay-python/target/python-release/${{ matrix.target }}/*.whl ${{ matrix.platform_tag }}
+        run: python tools/python/inspect_wheel.py crates/eggreplay-python/target/python-release/${{ matrix.target }} ${{ matrix.platform_tag }}
       - name: Clean install, replay, regression, and pytest plugin smoke
-        run: python tools/python/clean_wheel_smoke.py --wheel crates/eggreplay-python/target/python-release/${{ matrix.target }}/*.whl --smoke-script tools/python/wheel_smoke.py
+        run: python tools/python/clean_wheel_smoke.py --wheel crates/eggreplay-python/target/python-release/${{ matrix.target }} --smoke-script tools/python/wheel_smoke.py
       - name: Record artifact hash
         run: python tools/python/write_artifact_manifest.py crates/eggreplay-python/target/python-release/${{ matrix.target }} --pattern '*.whl'
       - uses: actions/upload-artifact@v4
