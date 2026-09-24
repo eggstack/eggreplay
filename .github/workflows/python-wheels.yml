@@ -84,3 +84,22 @@ jobs:
             crates/eggreplay-python/target/python-sdist-verify/SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 30
+
+  abi3-interpreter-smoke:
+    needs: wheel
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.11', '3.12', '3.13', '3.14']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: eggreplay-manylinux-x86_64
+          path: target/python-wheel-smoke
+      - name: Smoke the same abi3 wheel on this CPython version
+        run: python tools/python/clean_wheel_smoke.py --wheel target/python-wheel-smoke --smoke-script tools/python/wheel_smoke.py
