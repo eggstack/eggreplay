@@ -7,19 +7,19 @@ EggServe. Optional outbound routing is delegated to Eggress.
 
 ## Status
 
-v0.1 is fully qualified through C001–C006. M009 stateful/dynamic replay and
-M010 streaming timing/SSE (including M010-C1) are closed with hosted
-cross-platform evidence.
+v0.1 is fully qualified through C001–C006. M009 stateful/dynamic replay, M010
+streaming timing/SSE, and M011 semantic WebSocket record/replay/regression are
+closed with hosted cross-platform evidence.
 
-M011 WebSocket semantic record/replay is closed under ADR 0006 with hosted
-cross-platform qualification. Recording is opt-in with `--websockets`;
-transcripts replay and participate in candidate regression automatically.
+M012 Python/pytest integration is now decomposed under ADR 0007. M012A
+toolchain/package/ABI preflight is the only ready task; later Python subplans
+and M013–M014 remain blocked by dependency order.
 
 The support baseline includes direct HTTP/1.1 acquisition and EggServe inbound
 HTTP/1.1 replay with optional listener-free Eggress routing. WebSocket support
 covers RFC 6455 over cleartext HTTP/1.1 Upgrade (`ws://`) with bounded semantic
-text, binary, ping, pong, and close messages. WSS, inbound TLS, H2/H3, negotiated
-extensions, and wire-frame fidelity remain outside the claim.
+text, binary, ping, pong, and close messages. WSS, inbound TLS, H2/H3,
+negotiated extensions, and wire-frame fidelity remain outside the claim.
 
 ## Quickstart routes
 
