@@ -71,3 +71,35 @@ free-threaded support remain evidence-gated.
 
 These questions belong to M012–M014 rather than speculative changes to earlier
 closed milestones.
+
+
+## Interception baseline — 2026-09-24
+
+M013 planning is based on current sibling evidence:
+
+- `eggserve-server 0.2.1` already publishes generic caller-owned
+  `serve_http1_connection`, so a decrypted rustls stream can feed the
+  canonical H1 runtime without a private Hyper server;
+- `ConnectionContext::for_tcp` accepts truthful TLS metadata and produces
+  HTTPS scheme when TLS is present;
+- EggServe source is versioned 0.2.2, but the newly published 0.2.2 registry
+  patch is `eggserve-core` for Tower/HTTP interop; unchanged direct server
+  crates were intentionally not republished;
+- EggServe's neutral `eggnet-tls` source exposes bounded identity/trust
+  parsing and rustls server-configuration helpers. M013A must query its exact
+  published version before depending on it;
+- EggReplay remains on `eggress-outbound 1.0.8`. Eggress main is preparing
+  1.0.10, but that release is currently blocked on an H2 TLS-override
+  correctness corrective, so M013 must not opportunistically adopt it;
+- EggFetch already owns custom-CA/SNI/client TLS policy and remains the secure
+  upstream HTTPS authority for intercepted requests.
+
+ADR 0008 therefore keeps interception in a separate leaf crate, uses Eggress
+for opaque CONNECT route establishment, uses EggFetch for intercepted semantic
+HTTP, and keeps CA generation/private-key state outside fixtures/default
+Python packaging.
+
+The remaining M013 evidence gates are the exact published `eggnet-tls` and
+certificate-generation versions, cross-platform CA file protection,
+independent local client interoperability, and final release-binary feature
+policy.
