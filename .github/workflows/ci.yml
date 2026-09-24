@@ -28,6 +28,51 @@ jobs:
       - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - run: cargo test --workspace --all-features --locked
 
+  python-bindings:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            python: '3.11'
+            toolchain: '1.89.0'
+          - os: ubuntu-latest
+            python: '3.14'
+            toolchain: stable
+          - os: macos-latest
+            python: '3.11'
+            toolchain: stable
+          - os: windows-latest
+            python: '3.11'
+            toolchain: stable
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ matrix.toolchain }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: '0.8.22'
+      - run: uv run --directory crates/eggreplay-python --with maturin==1.14.1 --with pytest==8.4.2 --with pytest-asyncio==1.2.0 maturin develop
+      - run: uv run --directory crates/eggreplay-python --with maturin==1.14.1 --with pytest==8.4.2 --with pytest-asyncio==1.2.0 python -m pytest tests -q
+      - name: Ensure semantic crates remain Python-free
+        shell: bash
+        run: |
+          for package in eggreplay-core eggreplay-store eggreplay-http; do
+            if cargo tree -p "$package" --edges normal --prefix none | grep -E '^(pyo3|pyo3-async-runtimes) '; then
+              echo "$package depends on Python" >&2
+              exit 1
+            fi
+          done
+          if cargo tree -p eggreplay-python --edges normal --prefix none | grep -E '^eggreplay-(core|store|http) '; then
+            echo 'Python extension must remain a leaf crate' >&2
+            exit 1
+          fi
+      - run: uv run --directory crates/eggreplay-python --with maturin==1.14.1 maturin build --locked
+
   dependency-boundary:
     runs-on: ubuntu-latest
     steps:

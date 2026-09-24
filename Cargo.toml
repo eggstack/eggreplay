@@ -5,6 +5,7 @@ members = [
     "crates/eggreplay-store",
     "crates/eggreplay-http",
     "crates/eggreplay-cli",
+    "crates/eggreplay-python",
 ]
 
 [workspace.package]

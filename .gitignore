@@ -1,3 +1,11 @@
 /target/
 *.eggr/
+.venv/
+__pycache__/
+.pytest_cache/
+*.py[cod]
+*.so
+*.dylib
+*.pyd
+dist/
 .DS_Store

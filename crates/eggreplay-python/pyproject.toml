@@ -1,0 +1,20 @@
+[build-system]
+requires = ["maturin==1.14.1"]
+build-backend = "maturin"
+
+[project]
+name = "eggreplay"
+version = "0.1.0"
+description = "Python bindings for EggReplay"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+readme = "README.md"
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest==8.4.2", "pytest-asyncio==1.2.0"]
+
+[tool.maturin]
+python-source = "python"
+module-name = "eggreplay._native"
+features = ["pyo3/extension-module"]

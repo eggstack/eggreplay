@@ -38,8 +38,8 @@ closes a plan.
 v0.1/C001–C006, M009, M010/M010-C1, and M011/M011A–M011F are closed.
 
 M012 is decomposed under ADR 0007 into M012A–M012F. **M012A — Python Toolchain,
-Package, and ABI Preflight** is the only dependency-ready task. M012B–M012F and
-M013–M014 remain blocked in dependency order.
+Package, and ABI Preflight** has implementation in place and awaits hosted
+qualification. M012B–M012F and M013–M014 remain blocked in dependency order.
 
 See `registry.md` for the exact handoff state.
 

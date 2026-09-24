@@ -10,3 +10,8 @@ The supported local verification command is:
 ```text
 cargo fmt --all -- --check && cargo check --workspace --all-targets --all-features && cargo clippy --workspace --all-targets --all-features -- -D warnings && cargo test --workspace --all-features
 ```
+
+Python binding development uses the `crates/eggreplay-python` package. Create
+an isolated environment there, install the pinned development tools, then run
+`maturin develop` and `python -m pytest tests`. The native extension remains a
+leaf workspace crate and Rust product crates must not depend on PyO3.
