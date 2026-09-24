@@ -1,110 +1,67 @@
 # M012 — Python Bindings and Pytest/VCR-Style Integration
 
-Status: ready
-Depends on: M011
+Status: ready (decomposed; execute M012A first)
+Depends on: M011 closure
 Roadmap stage: 8
+Architecture: ADR 0007
 
 ## Objective
 
-Expose EggReplay's existing Rust authorities to Python and pytest without
-creating a Python matcher, store, recorder, or HTTP implementation.
+Expose EggReplay's closed Rust authorities to Python and pytest without
+creating a second matcher, fixture parser, recorder, transport, scenario
+engine, or regression evaluator.
 
-## Package topology
+The distribution package is `eggreplay`; the native extension is
+`eggreplay._native`. Pure-Python code is limited to ergonomics, pytest
+integration, typing, and presentation.
 
-Add `crates/eggreplay-python` using PyO3/maturin. Prefer an abi3 build from a
-conservative minimum Python version if the selected PyO3 version supports the
-required async/runtime interfaces; otherwise publish per-interpreter wheels.
+## Execution decomposition
 
-Initial public Python objects should be thin wrappers around Rust concepts:
+M012 is split into dependency-ordered plans:
 
-- Fixture/Session open + validate + inspect;
-- Matcher/config profiles;
-- replay server lifecycle;
-- recorder/gateway lifecycle;
-- regression report;
-- scenario/record-mode configuration;
-- optional WebSocket/timing controls exposed only where the Rust API is already
-  stable.
+| ID | Plan | Result |
+|---|---|---|
+| M012A | `012a-toolchain-package-and-abi-preflight.md` | PyO3/maturin/runtime/ABI/package substrate |
+| M012B | `012b-fixture-report-and-data-bindings.md` | read-only fixture/data/report bindings |
+| M012C | `012c-async-lifecycle-and-network-bindings.md` | replay/record/regression lifecycle |
+| M012D | `012d-pytest-vcr-and-parallel-safety.md` | pytest/VCR ergonomics + explicit update safety |
+| M012E | `012e-wheel-stubs-and-distribution-qualification.md` | wheels, typing, clean install qualification |
+| M012F | `012f-hardening-hosted-qualification-and-closure.md` | security/runtime/platform hardening + closure |
 
-Never deserialize flows into a second Python-only authority for evaluation.
+Only M012A is ready initially. Do not skip subplan dependency order.
 
-## Runtime model
+## Initial toolchain/support target
 
-Use one documented async bridge. Avoid nested ad-hoc Tokio runtimes per call.
+M012A starts from the currently compatible line:
 
-Long-running Rust operations release the GIL. Cancellation from asyncio/pytest
-must reach Rust lifecycle cancellation and close servers/tasks deterministically.
+- PyO3 0.29.2;
+- pyo3-async-runtimes 0.29.0 with Tokio;
+- maturin 1.14.1.
 
-Provide synchronous convenience only where it can wrap the same authority
-without hidden background threads that outlive the Python object.
+The initial product target is CPython 3.11–3.14 on GIL-enabled builds.
+`abi3-py311` is preferred if EggReplay's own async/import tests qualify it.
+Python 3.15, free-threaded CPython, PyPy, and GraalPy remain unclaimed until
+dedicated evidence exists.
 
-## Pytest integration
+## Authority rules
 
-Ship a pytest plugin with explicit fixtures/helpers such as:
+ADR 0007 is binding:
 
-- fixture path selection;
-- sealed replay server fixture;
-- record mode selection matching M009 exactly;
-- target/upstream routing configuration;
-- update/record-on-miss opt-in;
-- assertion/report attachment on failure.
-
-Provide a VCR-style decorator/context manager only as syntax over the same Rust
-session/replay machinery.
-
-Default test behavior is sealed/offline. CI must never record/update fixtures
-unless the user opts in explicitly.
-
-## Concurrency
-
-Multiple read-only fixture users are safe. Concurrent writers to the same
-fixture path must fail clearly or use an explicit single-writer lock; never
-silently interleave.
-
-Document pytest-xdist behavior and recommend per-test fixture paths or sealed
-shared fixtures.
-
-## Python data contracts
-
-Expose machine reports as typed Python objects plus lossless dict/JSON views.
-Preserve ordered duplicate headers/query pairs; do not collapse them into plain
-dicts.
-
-Body access must remain explicit and bounded. Large blobs should expose
-stream/file-like reads rather than unconditional `bytes`.
-
-## Packaging/CI
-
-Qualify supported CPython versions against current PyO3 support. Target at
-minimum:
-
-- Linux x86_64;
-- Linux aarch64 when the wheel toolchain is practical;
-- macOS arm64 and x86_64/universal strategy as appropriate;
-- Windows x86_64.
-
-Do not claim Python 3.15 until the chosen PyO3/maturin toolchain and hosted
-tests pass it. Record the exact supported matrix.
-
-Include wheel install smoke tests in clean environments.
-
-## Compatibility tests
-
-Build behavioral tests for common pytest workflows: sync test, asyncio test,
-record then sealed replay, append-new explicit update, failure diagnostics,
-xdist-safe read-only fixtures, scenario state isolation, and regression report
-attachment.
-
-No test should require public Internet.
-
-## Documentation
-
-Add Python quickstart, pytest examples, migration notes from common VCR.py
-concepts, and explicit differences (semantic fixture directory, no arbitrary
-callbacks/scripts, bounded redaction).
+- Rust owns fixture/schema validation, matching, redaction, scenario state,
+  transport, WebSocket semantics, record modes, and regression findings;
+- Python preserves ordered duplicate headers/query values;
+- large bodies remain lazy/bounded;
+- one process-wide Tokio/async bridge is used;
+- sealed/offline is the pytest default;
+- mutation is explicit;
+- parallel writers to one fixture must fail rather than interleave.
 
 ## Closure
 
-Create `plans/closure/m012-python-pytest-ecosystem.md` with wheel matrix,
-installation evidence, Python test counts, and proof that Rust remains the
-single semantic authority.
+M012 closes only through M012F after all subplan closure records and one
+coherent hosted Rust/Python/wheel evidence set exist.
+
+Final closure:
+`plans/closure/m012-python-pytest-ecosystem.md`.
+
+M013 remains blocked until M012 closes.
