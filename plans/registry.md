@@ -52,8 +52,8 @@ boundary.
 | M012A | `implementation/python/012a-toolchain-package-and-abi-preflight.md` | closed | M011 closure | Python toolchain/package/ABI substrate |
 | M012B | `implementation/python/012b-fixture-report-and-data-bindings.md` | closed | M012A | fixture/report/data bindings |
 | M012C | `implementation/python/012c-async-lifecycle-and-network-bindings.md` | closed | M012B | async/sync lifecycle + network operations |
-| M012D | `implementation/python/012d-pytest-vcr-and-parallel-safety.md` | ready | M012C | pytest/VCR + parallel mutation safety |
-| M012E | `implementation/python/012e-wheel-stubs-and-distribution-qualification.md` | blocked | M012D | wheels, typing, clean install |
+| M012D | `implementation/python/012d-pytest-vcr-and-parallel-safety.md` | closed | M012C | pytest/VCR + parallel mutation safety |
+| M012E | `implementation/python/012e-wheel-stubs-and-distribution-qualification.md` | ready | M012D | wheels, typing, clean install |
 | M012F | `implementation/python/012f-hardening-hosted-qualification-and-closure.md` | blocked | M012E | hardening + M012 closure |
 | M013 | `implementation/interception/013-explicit-proxy-and-optional-mitm.md` | blocked | M012 closure | explicit proxy + opt-in HTTP/1.1 MITM |
 | M014 | `implementation/compatibility/014-compatibility-program.md` | blocked | M013 | umbrella compatibility stage |
@@ -73,8 +73,9 @@ M012A is closed on qualifying revision `4dd280e` with hosted run
 `35953277189`. M012B is closed on qualifying revision `486de4b` with hosted
 run `35956198913`. M012C is closed on qualifying revision `9c71c36` with hosted run
 `35959113753`; that run also supplies corrected lifetime/symlink coverage for
-M012B, recorded in its closure errata. M012D is the next ready plan; M012E–F
-and M013–M014D remain blocked by dependency order.
+M012B, recorded in its closure errata. M012D is closed on qualifying revision
+`21aa5ae` with hosted run `35963105100`. M012E is now the next ready plan;
+M012F and M013–M014D remain blocked by dependency order.
 
 ## Canonical planning documents
 
