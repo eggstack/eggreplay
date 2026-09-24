@@ -73,6 +73,27 @@ jobs:
           fi
       - run: uv run --directory crates/eggreplay-python --with maturin==1.14.1 maturin build --locked
 
+  python-abi3-cross-version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: '0.8.22'
+      - name: Build abi3 wheel under CPython 3.11
+        run: uv run --directory crates/eggreplay-python --python 3.11 --with maturin==1.14.1 maturin build --locked --out $GITHUB_WORKSPACE/target/python-wheels
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - name: Install the same wheel under CPython 3.14
+        run: python -m pip install $GITHUB_WORKSPACE/target/python-wheels/*.whl pytest==8.4.2 pytest-asyncio==1.2.0
+      - name: Smoke the installed wheel under CPython 3.14
+        run: python -m pytest $GITHUB_WORKSPACE/crates/eggreplay-python/tests -q
+
   dependency-boundary:
     runs-on: ubuntu-latest
     steps:
