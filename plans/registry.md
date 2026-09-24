@@ -32,8 +32,9 @@ v0.1 hosted qualification is closed. Qualifying implementation:
 
 ## Forward implementation queue
 
-ADR 0005 owns versioned session extensions. ADR 0006 owns WebSocket semantic
-conversation storage/matching.
+ADR 0005 owns versioned session extensions, ADR 0006 owns WebSocket semantic
+conversation storage/matching, and ADR 0007 owns the Python binding/runtime
+boundary.
 
 | ID | Plan | Status | Depends on | Primary result |
 |---|---|---|---|---|
@@ -47,8 +48,14 @@ conversation storage/matching.
 | M011D | `implementation/websocket/011d-offline-replay.md` | closed | M011C | deterministic offline replay |
 | M011E | `implementation/websocket/011e-candidate-regression-cli-and-diff.md` | closed | M011D | regression/report/CLI/diff |
 | M011F | `implementation/websocket/011f-hardening-qualification-and-closure.md` | closed | M011E | hardening + M011 closure |
-| M012 | `implementation/python/012-python-pytest-ecosystem.md` | ready | M011 closure | PyO3 + pytest integration |
-| M013 | `implementation/interception/013-explicit-proxy-and-optional-mitm.md` | blocked | M012 | explicit proxy + opt-in HTTP/1.1 MITM |
+| M012 | `implementation/python/012-python-pytest-ecosystem.md` | ready (decomposed) | M011 closure | Python/pytest milestone umbrella |
+| M012A | `implementation/python/012a-toolchain-package-and-abi-preflight.md` | **ready** | M011 closure | Python toolchain/package/ABI substrate |
+| M012B | `implementation/python/012b-fixture-report-and-data-bindings.md` | blocked | M012A | fixture/report/data bindings |
+| M012C | `implementation/python/012c-async-lifecycle-and-network-bindings.md` | blocked | M012B | async/sync lifecycle + network operations |
+| M012D | `implementation/python/012d-pytest-vcr-and-parallel-safety.md` | blocked | M012C | pytest/VCR + parallel mutation safety |
+| M012E | `implementation/python/012e-wheel-stubs-and-distribution-qualification.md` | blocked | M012D | wheels, typing, clean install |
+| M012F | `implementation/python/012f-hardening-hosted-qualification-and-closure.md` | blocked | M012E | hardening + M012 closure |
+| M013 | `implementation/interception/013-explicit-proxy-and-optional-mitm.md` | blocked | M012 closure | explicit proxy + opt-in HTTP/1.1 MITM |
 | M014 | `implementation/compatibility/014-compatibility-program.md` | blocked | M013 | umbrella compatibility stage |
 | M014A | `implementation/compatibility/014a-har-and-migration.md` | blocked | M013 | HAR + migration |
 | M014B | `implementation/compatibility/014b-http2-qualification.md` | blocked | M013, M010 | H2 qualification |
@@ -57,13 +64,13 @@ conversation storage/matching.
 
 ### Current execution gate
 
-M009 and M010/M010-C1 are closed. M010's qualifying corrective implementation
-is `3bdd1359e00736737dd1610035d7e9f3e49822f1`, Actions run
-`35864247624`.
+M011 and M011A–M011F are closed. The qualifying WebSocket run is
+`35880303725` on `63d9e6c`; Linux stable, Linux Rust 1.89, and macOS ran
+132 tests, while Windows ran 130 because two symlink-construction tests are
+Unix-only.
 
-M011 and M011A–M011F are closed by their closure records and hosted
-qualification. The qualifying run is 35880303725 on revision `63d9e6c`.
-M012 is ready. M013–M014D remain blocked by dependency order.
+M012 is decomposed. **M012A is the only dependency-ready implementation task.**
+M012B–M012F and M013–M014D remain blocked by dependency order.
 
 ## Canonical planning documents
 
