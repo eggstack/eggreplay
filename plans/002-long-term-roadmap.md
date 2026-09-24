@@ -24,45 +24,42 @@ Outcome: v0.1 hosted release qualification closed.
 
 ## Stage 5 — Stateful/dynamic replay (M009)
 
-Record modes analogous to sealed/offline, once, append-new, and re-record;
-explicit pass-through/record-on-miss; authored state-machine scenarios;
-variable extraction; deterministic templates; bounded transforms.
+Record modes, explicit pass-through/record-on-miss, authored state-machine
+scenarios, extraction, deterministic templates, and bounded transforms.
 
 Status: closed.
 
 ## Stage 6 — Streaming semantics (M010)
 
-Optional stream-event timing, immediate/recorded/scaled replay, mid-body
-failures, SSE-aware views/diffing, and concurrency timeline replay.
+Stream-event timing, mid-body failures, SSE-aware views/diffing, and concurrent
+timeline replay.
 
 Status: closed with M010-C1 corrective qualification.
 
 ## Stage 7 — WebSockets (M011)
 
-Use EggFetch upgraded streams and EggServe tunnel handoff. Preserve the
-initiating HTTP flow and attach required ordered semantic conversations. No
-wire-perfect claim.
+Semantic RFC 6455 conversations attached to initiating HTTP Upgrade flows using
+EggFetch upgraded streams and EggServe tunnel handoff.
 
-ADR: `adrs/0006-websocket-semantic-conversations.md`.
-
-Execution is decomposed:
-
-- M011A — transport dependency and upgrade preflight;
-- M011B — semantic model, store, and codec boundary;
-- M011C — recording gateway;
-- M011D — offline replay;
-- M011E — candidate regression, CLI, and fixture diff;
-- M011F — hardening, hosted qualification, and milestone closure.
-
-See `implementation/websocket/`. Only M011A is initially ready.
+Status: closed through M011A–M011F under ADR 0006.
 
 ## Stage 8 — Python/test ecosystem (M012)
 
-Thin PyO3 bindings over Rust authorities plus pytest/VCR-style fixture helpers.
-No second matcher/store/network implementation.
+Thin PyO3 bindings over Rust authorities plus pytest/VCR-style fixture
+ergonomics. No second matcher/store/network implementation.
 
-Executable plan:
-`implementation/python/012-python-pytest-ecosystem.md`.
+ADR: `adrs/0007-python-binding-authority-and-runtime.md`.
+
+Execution is decomposed:
+
+- M012A — Python toolchain, package, ABI/runtime preflight;
+- M012B — fixture/report/data bindings;
+- M012C — async lifecycle/network bindings;
+- M012D — pytest/VCR ergonomics and parallel mutation safety;
+- M012E — wheels, typing, distribution qualification;
+- M012F — hardening, hosted qualification, milestone closure.
+
+See `implementation/python/`. Only M012A is initially ready.
 
 ## Stage 9 — Optional interception (M013)
 
