@@ -23,9 +23,11 @@ Status: closed
   `cargo audit` (no advisories), and `git diff --check`.
 - Hosted Actions run [35880303725](https://github.com/eggstack/eggreplay/actions/runs/35880303725)
   passed all jobs on revision `63d9e6c`: Ubuntu stable, Ubuntu Rust 1.89,
-  macOS stable, Windows stable, and dependency-boundary. Each platform ran the
-  full workspace test suite successfully (132 tests); check, Clippy, and format
-  also passed on each platform.
+  macOS stable, Windows stable, and dependency-boundary. Ubuntu stable,
+  Ubuntu Rust 1.89, and macOS each ran 132 tests; Windows ran 130 because
+  `required_extension_rejects_symlinked_payload` and
+  `open_blob_rejects_symlinked_blob` are intentionally `#[cfg(unix)]`.
+  Check, Clippy, and format also passed on each platform.
 - Dependency-boundary checks passed for core/store isolation, direct-only
   HTTP, optional WebSocket codec, and narrow Eggress routing.
 - Local scripted-peer tests exercise two independent WebSocket sides: raw
