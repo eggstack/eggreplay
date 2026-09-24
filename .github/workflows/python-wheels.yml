@@ -1,0 +1,86 @@
+name: Python wheel qualification
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  wheel:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: manylinux-x86_64
+            os: ubuntu-24.04
+            machine: x86_64
+            platform_tag: manylinux_2_34_x86_64
+          - target: manylinux-aarch64
+            os: ubuntu-24.04-arm
+            machine: aarch64
+            platform_tag: manylinux_2_34_aarch64
+          - target: macos-arm64
+            os: macos-14
+            machine: arm64
+            platform_tag: macosx_11_0_arm64
+          - target: macos-x86_64
+            os: macos-15-intel
+            machine: x86_64
+            platform_tag: macosx_10_12_x86_64
+          - target: windows-x86_64
+            os: windows-latest
+            machine: amd64
+            platform_tag: win_amd64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: '0.8.22'
+      - name: Verify native runner architecture
+        run: python -c "import platform; actual=platform.machine().lower(); expected='${{ matrix.machine }}'; print(actual); assert actual == expected, (actual, expected)"
+      - name: Build abi3 wheel
+        run: uv run --directory crates/eggreplay-python --python 3.11 --with maturin==1.14.1 maturin build --locked --release --compatibility pypi --out target/python-release/${{ matrix.target }}
+      - name: Inspect wheel contents and tags
+        run: python tools/python/inspect_wheel.py crates/eggreplay-python/target/python-release/${{ matrix.target }}/*.whl ${{ matrix.platform_tag }}
+      - name: Clean install, replay, regression, and pytest plugin smoke
+        run: python tools/python/clean_wheel_smoke.py --wheel crates/eggreplay-python/target/python-release/${{ matrix.target }}/*.whl --smoke-script tools/python/wheel_smoke.py
+      - name: Record artifact hash
+        run: python tools/python/write_artifact_manifest.py crates/eggreplay-python/target/python-release/${{ matrix.target }} --pattern '*.whl'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: eggreplay-${{ matrix.target }}
+          path: crates/eggreplay-python/target/python-release/${{ matrix.target }}
+          if-no-files-found: error
+          retention-days: 30
+
+  source-distribution:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: '0.8.22'
+      - name: Build source distribution and wheel from the sdist
+        run: uv run --directory crates/eggreplay-python --python 3.11 --with maturin==1.14.1 maturin build --release --sdist --out target/python-sdist-verify
+      - name: Inspect source archive
+        run: python tools/python/inspect_sdist.py crates/eggreplay-python/target/python-sdist-verify/*.tar.gz
+      - name: Record source archive hash
+        run: python tools/python/write_artifact_manifest.py crates/eggreplay-python/target/python-sdist-verify --pattern '*.tar.gz'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: eggreplay-sdist
+          path: |
+            crates/eggreplay-python/target/python-sdist-verify/*.tar.gz
+            crates/eggreplay-python/target/python-sdist-verify/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 30

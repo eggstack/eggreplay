@@ -1,4 +1,5 @@
 import asyncio
+import ast
 import gc
 import hashlib
 import json
@@ -13,6 +14,55 @@ pytest_plugins = ["pytester"]
 
 def test_native_import_and_roundtrip():
     assert _native.version() == "0.1.0"
+
+
+def test_stub_manifest_matches_runtime_exports_and_rust_enum_names():
+    stub = Path(eggreplay.__file__).with_suffix(".pyi")
+    assert stub.is_file()
+    assert Path(eggreplay.__file__).with_name("py.typed").is_file()
+    tree = ast.parse(stub.read_text())
+    declarations = {
+        node.name
+        for node in tree.body
+        if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    assert set(eggreplay.__all__) <= declarations
+
+    for enum_name in (
+        "MatcherProfile",
+        "ConsumptionMode",
+        "RecordMode",
+        "WebSocketRedaction",
+    ):
+        runtime_enum = getattr(eggreplay, enum_name)
+        stub_enum = next(
+            node
+            for node in tree.body
+            if isinstance(node, ast.ClassDef) and node.name == enum_name
+        )
+        stub_members = {
+            node.target.id
+            for node in stub_enum.body
+            if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name)
+        }
+        assert stub_members == set(runtime_enum.__members__)
+
+    plugin_stub = Path(eggreplay.__file__).with_name("pytest_plugin.pyi")
+    plugin_tree = ast.parse(plugin_stub.read_text())
+    plugin_declarations = {
+        node.name
+        for node in plugin_tree.body
+        if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    assert {
+        "RegressionAssertions",
+        "eggreplay_fixture",
+        "eggreplay_server",
+        "eggreplay_async_server",
+        "eggreplay_recorder",
+        "eggreplay_async_recorder",
+        "eggreplay_report",
+    } <= plugin_declarations
 
 
 def test_async_runtime_bridge():
@@ -340,7 +390,7 @@ def test_regression_report_uses_rust_json_shape():
 
 
 def test_pytest_report_failure_is_bounded_and_retains_structured_report():
-    from eggreplay.pytest_plugin import _RegressionAssertions
+    from eggreplay.pytest_plugin import RegressionAssertions
 
     report = eggreplay.RegressionReport.from_json(
         json.dumps(
@@ -360,7 +410,7 @@ def test_pytest_report_failure_is_bounded_and_retains_structured_report():
         )
     )
     with pytest.raises(AssertionError) as raised:
-        _RegressionAssertions._assert_success(report)
+        RegressionAssertions._assert_success(report)
     assert "authorization" in str(raised.value)
     assert "secret-baseline-value" not in str(raised.value)
     assert "secret-candidate-value" not in str(raised.value)

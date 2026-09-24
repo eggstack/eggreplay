@@ -278,7 +278,7 @@ if pytest_asyncio is not None:
         return eggreplay_async_server
 
 
-class _RegressionAssertions:
+class RegressionAssertions:
     def __init__(self, fixture: Any) -> None:
         self.fixture = fixture
 
@@ -311,6 +311,6 @@ class _RegressionAssertions:
 
 
 @pytest.fixture
-def eggreplay_report(eggreplay_fixture: Fixture) -> _RegressionAssertions:
+def eggreplay_report(eggreplay_fixture: Fixture) -> RegressionAssertions:
     """Bounded assertion/report helper over Rust candidate regression."""
-    return _RegressionAssertions(eggreplay_fixture)
+    return RegressionAssertions(eggreplay_fixture)

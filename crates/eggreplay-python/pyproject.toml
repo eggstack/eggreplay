@@ -7,9 +7,27 @@ name = "eggreplay"
 version = "0.1.0"
 description = "Python bindings for EggReplay"
 requires-python = ">=3.11"
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE-MIT"]
 readme = "README.md"
+authors = [{ name = "Eggstack contributors" }]
 dependencies = []
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Rust",
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Typing :: Typed",
+]
+
+[project.urls]
+Repository = "https://github.com/eggstack/eggreplay"
+Issues = "https://github.com/eggstack/eggreplay/issues"
 
 [project.entry-points.pytest11]
 eggreplay = "eggreplay.pytest_plugin"

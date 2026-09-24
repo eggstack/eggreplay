@@ -1,6 +1,7 @@
 """Python package for the EggReplay Rust authorities."""
 
 from enum import Enum
+from typing import TypedDict
 
 from ._native import (
     BodyReader,
@@ -47,7 +48,14 @@ RecordMode = Enum("RecordMode", _enum_values("record_mode"), type=str)
 WebSocketRedaction = Enum("WebSocketRedaction", _enum_values("websocket_redaction"), type=str)
 
 
-def record_policy(mode: RecordMode, *, fixture_exists: bool, upstream_configured: bool):
+class RecordPolicy(TypedDict):
+    mode: RecordMode
+    upstream_enabled: bool
+
+
+def record_policy(
+    mode: RecordMode, *, fixture_exists: bool, upstream_configured: bool
+) -> RecordPolicy:
     effective_mode, upstream_enabled = validate_record_mode(
         mode.value, fixture_exists, upstream_configured
     )
