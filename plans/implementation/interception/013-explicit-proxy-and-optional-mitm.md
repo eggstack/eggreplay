@@ -1,125 +1,95 @@
 # M013 — Explicit Proxy Acquisition and Optional HTTPS Interception
 
-Status: ready
-Depends on: M012
+Status: ready (decomposed; execute M013A first)
+Depends on: M012 closure
 Roadmap stage: 9
+Architecture: ADR 0008
 
 ## Objective
 
-Add a separate, opt-in acquisition adapter for clients that cannot be
-instrumented through EggFetch directly: explicit HTTP proxying and optional
-HTTPS MITM. Interception must remain outside the default EggReplay trust and
-dependency boundary.
+Add a separately compiled, opt-in acquisition adapter for clients that cannot
+be instrumented through EggFetch directly:
 
-## Crate/feature boundary
+- explicit HTTP/1.1 forward-proxy recording;
+- policy-controlled CONNECT deny/tunnel;
+- dedicated CA lifecycle;
+- optional policy-controlled HTTPS MITM for HTTP/1.1 only.
 
-Create a separate `eggreplay-intercept` crate (or equivalently strict optional
-feature crate boundary approved by an ADR). Default EggReplay builds must not
-pull CA generation, server TLS interception, or interception key-management
-dependencies.
+Interception must not become ambient behavior or a dependency of default
+EggReplay library/Python builds.
 
-Core/store/ordinary HTTP recording behavior remains unchanged.
+## Execution decomposition
 
-## Phase 1 — explicit HTTP proxy acquisition
+| ID | Plan | Result |
+|---|---|---|
+| M013A | `013a-substrate-dependency-and-threat-preflight.md` | crate/dependency/TLS-stream substrate + threat model |
+| M013B | `013b-explicit-http-proxy-and-connect-policy.md` | absolute-form HTTP proxy + CONNECT deny/tunnel |
+| M013C | `013c-ca-lifecycle-and-leaf-issuance.md` | CA/key lifecycle + bounded exact-host leaf issuance |
+| M013D | `013d-https-mitm-http1-recording.md` | policy-gated HTTPS MITM recording |
+| M013E | `013e-cli-policy-and-operator-experience.md` | optional CLI, policy files, trust/operator UX |
+| M013F | `013f-hardening-qualification-and-closure.md` | security/resource/interoperability qualification + closure |
 
-Implement standard explicit HTTP proxy request handling using EggServe's
-generic server/tunnel surfaces:
+Only M013A is ready initially. Later subplans must not begin before their
+dependency closes.
 
-- absolute-form HTTP requests are converted to the canonical logical request
-  and forwarded through EggFetch;
-- CONNECT is policy-controlled;
-- non-intercepted CONNECT can be denied or tunneled, but tunnel-only traffic is
-  not falsely recorded as semantic HTTP;
-- outbound routing may still use Eggress.
+## Ownership boundary
 
-Do not reimplement HTTP framing.
+ADR 0008 is binding:
 
-Add allow/deny host/port policies before any CONNECT or interception action.
+- `eggreplay-intercept` is a new leaf crate;
+- EggServe owns inbound H1 parsing/lifecycle and decrypted-stream H1 execution;
+- Eggress owns raw CONNECT route establishment;
+- EggFetch owns semantic upstream HTTP/TLS verification;
+- `eggnet-tls` may provide published neutral PEM/server-config helpers;
+- maintained rcgen/rustls tooling owns X.509/TLS mechanics;
+- EggReplay owns proxy target policy, CA lifecycle, leaf cache, authority
+  coherence, recording integration, and CLI orchestration.
 
-## Phase 2 — CA lifecycle
+Do not add another Hyper client/server, proxy protocol stack, TLS verifier, or
+hand-built X.509 implementation.
 
-Provide explicit CLI/library operations for a dedicated interception CA:
+## Security posture
 
-- initialize/import a CA in a caller-selected directory;
-- strict file permissions where supported;
-- print/export the public certificate separately from the private key;
-- inspect fingerprint/expiry;
-- rotate by creating a new identity, never silently replacing an existing key.
+- loopback listener by default;
+- non-loopback bind requires explicit remote-listener opt-in and ingress policy;
+- every target is policy-checked before route establishment/certificate issue;
+- CONNECT action is exactly deny/tunnel/intercept;
+- passthrough tunnels are opaque and never represented as semantic HTTP;
+- MITM is explicit and per-policy, not global merely because compiled;
+- no automatic OS/browser trust-store installation;
+- CA/private leaf keys never enter fixtures/logs/reports;
+- upstream TLS verification remains normal EggFetch verification;
+- strict CONNECT/SNI/Host authority coherence prevents cross-origin tunnel reuse.
 
-Do not automatically install trust into OS/browser stores in v1 of this
-feature. Document platform trust installation separately.
+## Initial support target
 
-CA/private-key material never lives inside `.eggr` fixtures, logs, JSON
-reports, or crash diagnostics.
+M013 targets HTTP/1.1 only.
 
-Use a maintained certificate-generation crate and rustls-compatible key types;
-do not implement X.509 generation manually.
+Not claimed:
 
-## Phase 3 — HTTPS MITM
+- H2 MITM / Extended CONNECT;
+- H3/QUIC interception;
+- WSS interception;
+- arbitrary non-HTTP TLS;
+- client mTLS interception;
+- transparent/TUN interception;
+- certificate-pinned applications;
+- automatic trust installation.
 
-For an allowed CONNECT target:
+## Python boundary
 
-1. validate/connect policy and authority;
-2. accept CONNECT through EggServe's tunnel capability;
-3. wrap the client-side tunnel in rustls using a leaf certificate minted from
-   the dedicated CA;
-4. serve the decrypted HTTP stream through EggServe's caller-owned connection
-   runtime;
-5. forward semantic requests through EggFetch using normal upstream TLS
-   verification;
-6. record through the same C002/C003 recorder.
-
-Reuse `eggnet-tls`/EggServe neutral TLS identity primitives where they fit.
-If EggServe lacks a public caller-owned TLS->HTTP handoff needed here, document
-and upstream the smallest generic seam rather than embedding another Hyper
-server in EggReplay.
-
-## ALPN/protocol policy
-
-Initial MITM support is HTTP/1.1 only. Advertise only `http/1.1` to the
-intercepted client until M014 separately qualifies H2 interception.
-
-If a client requires H2-only/QUIC/pinning, fail explicitly or use configured
-passthrough; never claim semantic capture.
-
-HTTP/3/QUIC interception is out of scope.
-
-## Certificate policy
-
-Leaf certificates are generated only for validated DNS/IP targets from CONNECT
-authority/SNI policy. Cache leaf material with bounded count/lifetime.
-
-Document:
-
-- certificate pinning failures;
-- mTLS/client-certificate limitations;
-- browser/app trust requirements;
-- security implications of installing the CA;
-- no guarantee for non-HTTP TLS protocols.
-
-## Security controls
-
-- interception disabled by default;
-- explicit allowlist recommended and supported;
-- private-key paths/contents redacted from diagnostics;
-- no remote control endpoint for CA export;
-- restrictive permissions;
-- bounded certificate generation/cache;
-- no wildcard leaf generation unless explicitly justified;
-- fail closed on malformed CONNECT/SNI mismatch according to documented policy.
-
-## Tests
-
-Use a local generated CA and local TLS origin. Cover HTTP proxy absolute-form,
-CONNECT deny/tunnel, successful MITM HTTP/1.1, upstream TLS verification
-failure, untrusted client behavior, SNI/CONNECT mismatch, redaction, CA
-permissions, key non-persistence in fixtures, Eggress-routed upstream, shutdown
-with active tunnel, and certificate-cache bounds.
-
-No public Internet or system trust-store mutation in routine tests.
+The default `eggreplay` abi3 Python wheel remains interception-free.
+M013 does not pull CA-generation dependencies into that wheel. A future
+separately qualified Python distribution/feature strategy may expose
+interception without weakening this default boundary.
 
 ## Closure
 
-Create `plans/closure/m013-explicit-proxy-and-optional-mitm.md`. Record the
-exact supported protocol matrix and threat model. M014 compatibility expansion
-remains blocked until interception's protocol claims are explicit.
+M013 closes only through M013F after one qualifying hosted revision proves the
+explicit-proxy/MITM support matrix, key non-leakage, upstream TLS verification,
+resource bounds, and platform behavior.
+
+Final closure:
+`plans/closure/m013-explicit-proxy-and-optional-mitm.md`.
+
+M014 and its currently M013-dependent tracks remain blocked until M013 closes.
