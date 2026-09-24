@@ -365,6 +365,7 @@ def test_rust_backed_configuration_enums_and_validation():
     )
     assert "do-not-print" not in (route.target or "")
     assert "do-not-print" not in repr(route)
+    assert "do-not-print" not in str(route)
 
 
 def test_regression_report_uses_rust_json_shape():
