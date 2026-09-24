@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Streaming .eggr fixture persistence for EggReplay"
+exclude = ["tests/fixtures/**"]
 
 [dependencies]
 eggreplay-core = { path = "../eggreplay-core" }

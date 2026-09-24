@@ -2,6 +2,11 @@
 
 use pyo3::prelude::*;
 
+mod config;
+mod errors;
+mod fixture;
+mod report;
+
 /// Return the `EggReplay` crate version as a small ABI/import smoke value.
 #[pyfunction]
 fn version() -> &'static str {
@@ -30,5 +35,35 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(version, module)?)?;
     module.add_function(wrap_pyfunction!(async_value, module)?)?;
     module.add_function(wrap_pyfunction!(async_sleep, module)?)?;
+    config::register(module)?;
+    for class in [
+        module.add_class::<fixture::PyFixture>(),
+        module.add_class::<fixture::FlowView>(),
+        module.add_class::<fixture::RequestView>(),
+        module.add_class::<fixture::ResponseView>(),
+        module.add_class::<fixture::FlowErrorView>(),
+        module.add_class::<fixture::PyFlowIterator>(),
+        module.add_class::<fixture::BodyReader>(),
+    ] {
+        class?;
+    }
+    module.add(
+        "EggReplayError",
+        module.py().get_type::<errors::EggReplayError>(),
+    )?;
+    module.add(
+        "FixtureError",
+        module.py().get_type::<errors::FixtureError>(),
+    )?;
+    module.add("MatchError", module.py().get_type::<errors::MatchError>())?;
+    module.add(
+        "NetworkError",
+        module.py().get_type::<errors::NetworkError>(),
+    )?;
+    module.add(
+        "ConfigurationError",
+        module.py().get_type::<errors::ConfigurationError>(),
+    )?;
+    report::register(module)?;
     Ok(())
 }

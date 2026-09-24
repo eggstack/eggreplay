@@ -1,4 +1,9 @@
 import asyncio
+import gc
+import hashlib
+import json
+from pathlib import Path
+import pytest
 
 import eggreplay
 from eggreplay import _native
@@ -27,3 +32,293 @@ def test_async_cancellation():
         raise AssertionError("cancellation must reach the Rust future")
 
     asyncio.run(cancel_sleep())
+
+
+def write_fixture(
+    root: Path,
+    payload: bytes = b"body",
+    with_extensions: bool = False,
+    with_error: bool = False,
+) -> tuple[Path, str]:
+    root.mkdir()
+    digest = hashlib.sha256(payload).hexdigest()
+    (root / "blobs").mkdir()
+    (root / "blobs" / digest).write_bytes(payload)
+    manifest = {
+        "schema_version": 1,
+        "tool_version": "0.1.0",
+        "session_id": "python-test",
+        "capture_mode": "semantic",
+        "source": None,
+        "target": None,
+        "matcher_profile": "strict",
+        "redaction_profile": "default-v1",
+        "complete": True,
+        "flow_count": 2 if with_error else 1,
+        "blob_count": 1,
+    }
+    extension_docs = {
+        "websocket-messages": ("websockets.jsonl", {"schema_version": 1, "conversations": []}),
+        "rules": ("rules.json", {"schema_version": 1, "scenarios": []}),
+        "stream-events": ("stream-events.json", {"schema_version": 1, "flows": []}),
+    }
+    if with_extensions:
+        manifest["schema_version"] = 2
+        manifest["extensions"] = []
+        for name, (relative_path, document) in extension_docs.items():
+            (root / relative_path).write_text(json.dumps(document))
+            manifest["extensions"].append(
+                {"name": name, "schema_version": 1, "path": relative_path, "required_for_replay": True}
+            )
+    body = {"kind": "blob", "sha256": digest, "length": len(payload)}
+    flow = {
+        "schema_version": 1,
+        "id": "flow-1",
+        "started_at_ms": 1,
+        "completed_at_ms": 2,
+        "request": {
+            "method": "POST",
+            "scheme": "http",
+            "authority": "example.test",
+            "path": "/items",
+            "query": [{"key": "tag", "value": "a"}, {"key": "tag", "value": "b"}],
+            "headers": [
+                {"name": "x-repeat", "value": "one"},
+                {"name": "x-repeat", "value": "two"},
+            ],
+            "body": body,
+            "trailers": [],
+        },
+        "outcome": {
+            "kind": "response",
+            "status": 200,
+            "headers": [],
+            "body": body,
+            "trailers": [],
+        },
+        "physical_route": None,
+        "provenance": {"mode": "test", "observer": "python-test"},
+        "annotations": [],
+        "redactions": [],
+    }
+    flows = [flow]
+    if with_error:
+        failed = json.loads(json.dumps(flow))
+        failed["id"] = "flow-error"
+        failed["request"]["body"] = {"kind": "absent"}
+        failed["outcome"] = {
+            "kind": "error",
+            "category": "timeout",
+            "phase": "body",
+            "message": "upstream response timed out",
+        }
+        flows.append(failed)
+    (root / "manifest.json").write_text(json.dumps(manifest))
+    (root / "flows.jsonl").write_text("".join(json.dumps(item) + "\n" for item in flows))
+    return root, digest
+
+
+def test_fixture_preserves_ordered_duplicates_and_child_lifetime(tmp_path):
+    root, _ = write_fixture(tmp_path / "ordered.eggr")
+    fixture = eggreplay.Fixture(str(root))
+    assert fixture.manifest["flow_count"] == 1
+    flows = list(fixture.iter_flows())
+    flow = flows[0]
+    assert flow.id == "flow-1"
+    assert flow.request.method == "POST"
+    assert flow.request.query == [("tag", "a"), ("tag", "b")]
+    assert flow.request.headers == [("x-repeat", "one"), ("x-repeat", "two")]
+    assert flow.response.status == 200
+    assert fixture.flow("flow-1").to_dict() == flow.to_dict()
+    assert fixture.flow("absent") is None
+    data = flow.to_dict()
+    assert "flow-1" not in repr(flow)
+    assert [(item["key"], item["value"]) for item in data["request"]["query"]] == [
+        ("tag", "a"),
+        ("tag", "b"),
+    ]
+    assert [item["value"] for item in data["request"]["headers"]] == ["one", "two"]
+    del fixture
+    assert flow.id == "flow-1"
+
+
+def test_flow_error_keeps_rust_category_phase_and_provenance(tmp_path):
+    root, _ = write_fixture(tmp_path / "errors.eggr", with_error=True)
+    flow = eggreplay.Fixture(str(root)).flow("flow-error")
+    assert flow.error.category == "timeout"
+    assert flow.error.phase == "body"
+    assert flow.error.message == "upstream response timed out"
+
+
+def test_body_reader_is_bounded_chunked_and_closes(tmp_path):
+    root, _ = write_fixture(tmp_path / "body.eggr", b"abcdef")
+    fixture = eggreplay.Fixture(str(root))
+    reader = fixture.open_body("flow-1", "request")
+    assert reader.length == 6
+    assert reader.read(2) == b"ab"
+    assert reader.read(4) == b"cdef"
+    assert reader.read(1) == b""
+    reader.close()
+    try:
+        reader.read(1)
+    except eggreplay.FixtureError:
+        pass
+    else:
+        raise AssertionError("closed body reader must reject reads")
+
+    with fixture.open_body("flow-1", "response") as body:
+        assert body.read_all(max_bytes=6) == b"abcdef"
+    try:
+        with fixture.open_body("flow-1", "request") as body:
+            body.read_all(max_bytes=5)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("read_all must honor its byte cap")
+
+    with fixture.open_body("flow-1", "request") as body:
+        with pytest.raises(eggreplay.FixtureError):
+            body.read(8 * 1024 * 1024 + 1)
+
+    reader = fixture.open_body("flow-1", "request")
+    del fixture
+    gc.collect()
+    assert list(reader) == [b"abcdef"]
+
+
+def test_body_chunk_iteration_stays_bounded(tmp_path):
+    payload = b"x" * (140 * 1024)
+    root, _ = write_fixture(tmp_path / "chunked.eggr", payload)
+    with eggreplay.Fixture(str(root)).open_body("flow-1", "request") as reader:
+        chunks = list(reader)
+    assert [len(chunk) for chunk in chunks] == [64 * 1024, 64 * 1024, 12 * 1024]
+    assert b"".join(chunks) == payload
+
+
+def test_corrupt_fixture_errors_are_redacted_and_body_digest_is_checked(tmp_path):
+    root, digest = write_fixture(tmp_path / "bad-body.eggr", b"safe")
+    fixture = eggreplay.Fixture(str(root))
+    (root / "blobs" / digest).write_bytes(b"evil")
+    try:
+        fixture.open_body("flow-1", "request").read_all(max_bytes=16)
+    except eggreplay.FixtureError as error:
+        assert "evil" not in str(error)
+        assert digest not in str(error)
+    else:
+        raise AssertionError("changed body must fail digest validation")
+
+    corrupt = tmp_path / "corrupt.eggr"
+    corrupt.mkdir()
+    (corrupt / "manifest.json").write_text("secret payload is not a manifest")
+    try:
+        eggreplay.Fixture(str(corrupt))
+    except eggreplay.FixtureError as error:
+        assert "secret" not in str(error)
+    else:
+        raise AssertionError("corrupt fixture must fail closed")
+
+
+def test_schema_and_unknown_required_extension_fail_as_fixture_errors(tmp_path):
+    schema_root, _ = write_fixture(tmp_path / "bad-schema.eggr")
+    manifest = json.loads((schema_root / "manifest.json").read_text())
+    manifest["schema_version"] = 999
+    (schema_root / "manifest.json").write_text(json.dumps(manifest))
+    with pytest.raises(eggreplay.FixtureError):
+        eggreplay.Fixture(str(schema_root))
+
+    extension_root, _ = write_fixture(tmp_path / "unknown-extension.eggr")
+    manifest = json.loads((extension_root / "manifest.json").read_text())
+    manifest["extensions"] = [
+        {"name": "future-required", "schema_version": 1, "path": "future.json", "required_for_replay": True}
+    ]
+    (extension_root / "manifest.json").write_text(json.dumps(manifest))
+    with pytest.raises(eggreplay.FixtureError):
+        eggreplay.Fixture(str(extension_root))
+
+
+def test_body_reader_propagates_symlink_rejection(tmp_path):
+    root, digest = write_fixture(tmp_path / "symlink.eggr")
+    fixture = eggreplay.Fixture(str(root))
+    blob = root / "blobs" / digest
+    backup = root / "backup"
+    blob.rename(backup)
+    target = tmp_path / "target-body"
+    target.write_bytes(b"body")
+    try:
+        blob.symlink_to(target)
+    except (OSError, NotImplementedError):
+        backup.rename(blob)
+        pytest.skip("symlink creation is unavailable")
+    try:
+        with pytest.raises(eggreplay.FixtureError):
+            fixture.open_body("flow-1", "request")
+    finally:
+        blob.unlink()
+        backup.rename(blob)
+
+
+def test_extension_summaries_are_bounded_metadata(tmp_path):
+    root, _ = write_fixture(tmp_path / "extensions.eggr", with_extensions=True)
+    fixture = eggreplay.Fixture(str(root))
+    assert fixture.websocket_summary()["conversation_count"] == 0
+    assert fixture.scenario_summary()["scenario_count"] == 0
+    assert fixture.stream_summary()["event_count"] == 0
+    assert {item["name"] for item in fixture.extension_metadata} == {
+        "websocket-messages",
+        "rules",
+        "stream-events",
+    }
+
+
+def test_rust_backed_configuration_enums_and_validation():
+    assert eggreplay.MatcherProfile.STRICT.value == "strict"
+    assert eggreplay.ConsumptionMode.REPEAT_LAST.value == "repeat-last"
+    assert eggreplay.record_policy(
+        eggreplay.RecordMode.ONCE, fixture_exists=False, upstream_configured=True
+    ) == {"mode": eggreplay.RecordMode.ONCE, "upstream_enabled": True}
+    with pytest.raises(eggreplay.ConfigurationError):
+        eggreplay.record_policy(
+            eggreplay.RecordMode.APPEND_NEW, fixture_exists=False, upstream_configured=False
+        )
+    assert eggreplay.StreamTimingMode("scaled:1.5").value == "scaled:1.5"
+    with pytest.raises(eggreplay.ConfigurationError):
+        eggreplay.StreamTimingMode("scaled:0")
+    assert "authorization" in eggreplay.RedactionConfig().to_dict()["headers"]
+    with pytest.raises(eggreplay.ConfigurationError):
+        eggreplay.ComparisonPolicy(sse_ignored=["unknown"])
+    assert eggreplay.RouteSpecification("direct").target is None
+    with pytest.raises(eggreplay.ConfigurationError):
+        eggreplay.RouteSpecification("direct", "http://proxy")
+    assert eggreplay.RouteSpecification("eggress", "socks5://127.0.0.1:1080").kind == "eggress"
+    with pytest.raises(eggreplay.ConfigurationError):
+        eggreplay.RouteSpecification("eggress", "not a route")
+    assert eggreplay.WebSocketOptions(recording_enabled=True).to_dict()["recording_enabled"]
+    route = eggreplay.RouteSpecification(
+        "eggress", "socks5://alice:do-not-print@127.0.0.1:1080"
+    )
+    assert "do-not-print" not in (route.target or "")
+    assert "do-not-print" not in repr(route)
+
+
+def test_regression_report_uses_rust_json_shape():
+    payload = {
+        "schema_version": 2,
+        "scheduler": "sequential",
+        "baseline_flow_ids": ["flow-1"],
+        "findings": [
+            {
+                "kind": "body",
+                "field": "response.body",
+                "baseline": "sha256:abc",
+                "candidate": "sha256:def",
+            }
+        ],
+    }
+    report = eggreplay.RegressionReport.from_json(json.dumps(payload))
+    assert not report.success
+    assert report.finding_count == 1
+    assert report.findings[0].kind == "body"
+    assert json.loads(report.to_json()) == report.to_dict()
+    assert report.to_dict() == payload
+    with pytest.raises(eggreplay.RegressionError):
+        eggreplay.RegressionReport.from_json("not a report")

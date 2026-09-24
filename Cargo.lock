@@ -457,8 +457,13 @@ name = "eggreplay-python"
 version = "0.1.0"
 dependencies = [
  "eggreplay-core",
+ "eggreplay-http",
+ "eggreplay-store",
  "pyo3",
  "pyo3-async-runtimes",
+ "serde",
+ "serde_json",
+ "sha2",
  "tokio",
 ]
 
