@@ -1,6 +1,6 @@
 # M012B — Fixture, Report, and Data Bindings
 
-Status: blocked
+Status: ready
 Depends on: M012A
 Parent milestone: M012
 

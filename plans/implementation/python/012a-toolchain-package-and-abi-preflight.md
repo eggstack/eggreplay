@@ -1,6 +1,6 @@
 # M012A — Python Toolchain, Package, and ABI Preflight
 
-Status: implemented (hosted qualification pending)
+Status: closed
 Depends on: M011 closure
 Parent milestone: M012
 ADR: 0007
@@ -14,12 +14,9 @@ platforms.
 
 M012B must not begin until this closes.
 
-Implementation is present in `crates/eggreplay-python` and the Python job
-exercises import, value roundtrip, await, cancellation, dependency boundaries,
-and wheel build. Local CPython 3.14 x86_64 import/async tests pass after
-explicitly targeting the host architecture. This plan remains open until the
-hosted Linux/macOS/Windows and CPython 3.11/3.14 evidence is green and a
-closure record is written.
+Implementation, local verification, artifact inspection, and hosted
+qualification are complete. See
+`plans/closure/m012a-python-toolchain-package-and-abi-preflight.md`.
 
 ## A. Package topology
 

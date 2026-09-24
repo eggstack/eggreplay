@@ -49,8 +49,8 @@ boundary.
 | M011E | `implementation/websocket/011e-candidate-regression-cli-and-diff.md` | closed | M011D | regression/report/CLI/diff |
 | M011F | `implementation/websocket/011f-hardening-qualification-and-closure.md` | closed | M011E | hardening + M011 closure |
 | M012 | `implementation/python/012-python-pytest-ecosystem.md` | ready (decomposed) | M011 closure | Python/pytest milestone umbrella |
-| M012A | `implementation/python/012a-toolchain-package-and-abi-preflight.md` | implemented (hosted qualification pending) | M011 closure | Python toolchain/package/ABI substrate |
-| M012B | `implementation/python/012b-fixture-report-and-data-bindings.md` | blocked | M012A | fixture/report/data bindings |
+| M012A | `implementation/python/012a-toolchain-package-and-abi-preflight.md` | closed | M011 closure | Python toolchain/package/ABI substrate |
+| M012B | `implementation/python/012b-fixture-report-and-data-bindings.md` | **ready** | M012A | fixture/report/data bindings |
 | M012C | `implementation/python/012c-async-lifecycle-and-network-bindings.md` | blocked | M012B | async/sync lifecycle + network operations |
 | M012D | `implementation/python/012d-pytest-vcr-and-parallel-safety.md` | blocked | M012C | pytest/VCR + parallel mutation safety |
 | M012E | `implementation/python/012e-wheel-stubs-and-distribution-qualification.md` | blocked | M012D | wheels, typing, clean install |
@@ -69,9 +69,9 @@ M011 and M011A–M011F are closed. The qualifying WebSocket run is
 132 tests, while Windows ran 130 because two symlink-construction tests are
 Unix-only.
 
-M012 is decomposed. **M012A is implemented and awaiting hosted qualification;
-it is not closed.**
-M012B–M012F and M013–M014D remain blocked by dependency order.
+M012A is closed on qualifying revision `4dd280e` with hosted run
+`35953277189`. **M012B is now the only dependency-ready implementation task.**
+M012C–M012F and M013–M014D remain blocked by dependency order.
 
 ## Canonical planning documents
 
