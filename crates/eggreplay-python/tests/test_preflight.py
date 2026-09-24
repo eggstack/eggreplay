@@ -517,6 +517,7 @@ def test_recording_gateway_finalizes_after_async_context(tmp_path):
             server = await eggreplay.recording_gateway(
                 str(fixture_path), f"http://127.0.0.1:{port}"
             )
+            assert not fixture_path.exists()
             response = await raw_request(server.address)
             assert b"200" in response and response.endswith(b"ok")
             close_task = asyncio.ensure_future(server.aclose())
@@ -543,6 +544,7 @@ def test_recording_gateway_finalizes_after_async_context(tmp_path):
             rerecorded = await eggreplay.recording_gateway(
                 str(fixture_path), f"http://127.0.0.1:{port}", record_mode="re-record"
             )
+            assert eggreplay.Fixture(str(fixture_path)).manifest["flow_count"] == 2
             assert (await raw_request(rerecorded.address)).endswith(b"ok")
             await rerecorded.aclose()
             assert eggreplay.Fixture(str(fixture_path)).manifest["flow_count"] == 1
