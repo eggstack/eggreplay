@@ -4,6 +4,9 @@ import hashlib
 import json
 from pathlib import Path
 import pytest
+import subprocess
+import sys
+from concurrent.futures import ThreadPoolExecutor
 
 import eggreplay
 from eggreplay import _native
@@ -720,13 +723,36 @@ def test_pytest_plugin_generic_update_flag_does_not_enable_writes(tmp_path, pyte
     assert not absent.exists()
 
 
-def test_pytest_plugin_read_only_workers_can_share_fixture(tmp_path, pytester):
+def test_pytest_plugin_read_only_workers_can_share_fixture(tmp_path):
     root, _ = write_fixture(tmp_path / "shared.eggr")
-    pytester.makepyfile("def test_replay(eggreplay_server): assert eggreplay_server.address")
-    first = pytester.runpytest("--eggreplay-fixture", str(root), "-q")
-    second = pytester.runpytest("--eggreplay-fixture", str(root), "-q")
-    first.assert_outcomes(passed=1)
-    second.assert_outcomes(passed=1)
+    workers = [tmp_path / "worker-a", tmp_path / "worker-b"]
+    for worker in workers:
+        worker.mkdir()
+        (worker / "test_reader.py").write_text(
+            "def test_replay(eggreplay_server): assert eggreplay_server.address\n"
+        )
+
+    def run_worker(worker):
+        return subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pytest",
+                "-q",
+                "--eggreplay-fixture",
+                str(root),
+                str(worker / "test_reader.py"),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(run_worker, workers))
+    assert all(result.returncode == 0 for result in results), [
+        result.stdout + result.stderr for result in results
+    ]
     assert not root.with_name(f".{root.name}.eggreplay.lock").exists()
 
 
