@@ -54,3 +54,19 @@ installation, actual interpreter/platform execution, asyncio/cancellation
 tests, pytest behavior, Rust authority boundary checks, and exact wheel/ABI
 metadata. Cross-compiled artifacts without runtime execution are build
 evidence only.
+
+
+For M013, ordinary functional green CI is not sufficient. M013F must record:
+
+- interception feature remains absent from default dependency/Python graphs;
+- open-proxy/SSRF/authority-coherence policy;
+- CA/private-key non-leak sentinel scans;
+- upstream TLS verification failure proof;
+- direct and Eggress-routed CONNECT/MITM;
+- local independent client interoperability;
+- Unix private-key permission evidence and truthful Windows behavior;
+- resource/cache/tunnel bounds;
+- exact protocol exclusions;
+- hosted Linux/macOS/Windows/Rust-1.89 results.
+
+No test may mutate the system/browser trust store or require public Internet.
