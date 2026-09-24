@@ -61,7 +61,7 @@ Execution is decomposed:
 
 See `implementation/python/`. M012A–M012F and the M012 umbrella are closed
 with local and hosted Rust/Python/wheel qualification. See
-`closure/m012-python-pytest-ecosystem.md`. M013 is ready.
+`closure/m012-python-pytest-ecosystem.md`.
 
 ## Stage 9 — Explicit proxy and optional interception (M013)
 
