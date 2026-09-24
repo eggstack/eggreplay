@@ -248,6 +248,19 @@ def test_body_reader_propagates_symlink_rejection(tmp_path):
         blob.symlink_to(target)
     except (OSError, NotImplementedError):
         backup.rename(blob)
+
+
+def test_repeated_fixture_children_survive_python_gc(tmp_path):
+    root, _ = write_fixture(tmp_path / "gc.eggr", payload=b"gc")
+    for _ in range(32):
+        fixture = eggreplay.Fixture(str(root))
+        iterator = fixture.iter_flows()
+        flow = next(iterator)
+        reader = fixture.open_body(flow.id, "request")
+        del iterator, fixture
+        gc.collect()
+        assert flow.request.method == "POST"
+        assert reader.read_all(max_bytes=8) == b"gc"
         pytest.skip("symlink creation is unavailable")
     try:
         with pytest.raises(eggreplay.FixtureError):
