@@ -37,8 +37,7 @@ via the `pproxy-compat` grammar only.
 ## Python quickstart
 
 The Python adapter builds from this repository and uses the same Rust fixture,
-transport, matching, and regression authorities as the CLI. The qualified
-default wheel intentionally remains interception/CA-dependency-free in M013:
+transport, matching, and regression authorities as the CLI:
 
 ```sh
 cd crates/eggreplay-python
