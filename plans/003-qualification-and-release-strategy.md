@@ -38,7 +38,6 @@ Benchmarks are decision evidence, not universal claims. Explicit limits are requ
 
 M008 must create a closure record with implementation commits, exact verification results, protocol/platform support matrix, schema version, dependency versions, known limitations, and deferred work. Source presence alone never establishes support.
 
-
 ## Post-v0.1 milestone discipline
 
 M009 and later milestones use the same evidence rule as v0.1: implementation
@@ -47,6 +46,11 @@ subplans have closure records and the final gate records one qualifying
 implementation SHA, hosted platform/MSRV results, exact dependency versions,
 resource/security evidence, and an explicit support/limitation matrix.
 
-For M011 specifically, M011F owns final hosted qualification. WebSocket support
-must not be advertised before that closure, even if earlier subplans compile or
-pass focused tests.
+M011 is closed by its hosted M011F/umbrella evidence.
+
+For M012, M012F owns final Python support claims. Neither a successful
+`maturin develop` nor a built wheel is enough. Closure requires clean-wheel
+installation, actual interpreter/platform execution, asyncio/cancellation
+tests, pytest behavior, Rust authority boundary checks, and exact wheel/ABI
+metadata. Cross-compiled artifacts without runtime execution are build
+evidence only.
