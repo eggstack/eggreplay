@@ -74,8 +74,9 @@ M012A is closed on qualifying revision `4dd280e` with hosted run
 run `35956198913`. M012C is closed on qualifying revision `9c71c36` with hosted run
 `35959113753`; that run also supplies corrected lifetime/symlink coverage for
 M012B, recorded in its closure errata. M012D is closed on qualifying revision
-`21aa5ae` with hosted run `35963105100`. M012E is now the next ready plan;
-M012F and M013–M014D remain blocked by dependency order.
+`21aa5ae` with hosted run `35963105100`. M012E remains open pending final
+wheel and standard CI qualification; M012F and M013–M014D remain blocked by
+dependency order.
 
 ## Canonical planning documents
 

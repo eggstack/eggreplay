@@ -89,6 +89,7 @@ __all__ = [
     "WebSocketRedaction",
     "MatcherProfile",
     "RecordMode",
+    "RecordPolicy",
     "record_policy",
     "recording_gateway",
     "regress_flow",

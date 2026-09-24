@@ -1,7 +1,7 @@
 from collections.abc import Callable, Iterator
 from enum import Enum
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any, TypeVar, TypedDict
 
 class EggReplayError(Exception): ...
 class FixtureError(EggReplayError): ...
@@ -24,6 +24,10 @@ class RecordMode(str, Enum):
     ONCE: RecordMode
     APPEND_NEW: RecordMode
     RE_RECORD: RecordMode
+
+class RecordPolicy(TypedDict):
+    mode: RecordMode
+    upstream_enabled: bool
 
 class WebSocketRedaction(str, Enum):
     WHOLE_MESSAGE: WebSocketRedaction
@@ -190,7 +194,7 @@ class FixtureContext:
 
 def record_policy(
     mode: RecordMode, *, fixture_exists: bool, upstream_configured: bool
-) -> dict[str, Any]: ...
+) -> RecordPolicy: ...
 
 async def replay_server(
     fixture: Fixture,
