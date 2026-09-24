@@ -33,8 +33,8 @@ v0.1 hosted qualification is closed. Qualifying implementation:
 ## Forward implementation queue
 
 ADR 0005 owns versioned session extensions, ADR 0006 owns WebSocket semantic
-conversation storage/matching, and ADR 0007 owns the Python binding/runtime
-boundary.
+conversation storage/matching, ADR 0007 owns the Python binding/runtime
+boundary, and ADR 0008 owns interception security/transport ownership.
 
 | ID | Plan | Status | Depends on | Primary result |
 |---|---|---|---|---|
@@ -55,10 +55,16 @@ boundary.
 | M012D | `implementation/python/012d-pytest-vcr-and-parallel-safety.md` | closed | M012C | pytest/VCR + parallel mutation safety |
 | M012E | `implementation/python/012e-wheel-stubs-and-distribution-qualification.md` | closed | M012D | wheels, typing, clean install |
 | M012F | `implementation/python/012f-hardening-hosted-qualification-and-closure.md` | closed | M012E | hardening + M012 closure |
-| M013 | `implementation/interception/013-explicit-proxy-and-optional-mitm.md` | ready | M012 closure | explicit proxy + opt-in HTTP/1.1 MITM |
-| M014 | `implementation/compatibility/014-compatibility-program.md` | blocked | M013 | umbrella compatibility stage |
-| M014A | `implementation/compatibility/014a-har-and-migration.md` | blocked | M013 | HAR + migration |
-| M014B | `implementation/compatibility/014b-http2-qualification.md` | blocked | M013, M010 | H2 qualification |
+| M013 | `implementation/interception/013-explicit-proxy-and-optional-mitm.md` | ready (decomposed) | M012 closure | interception milestone umbrella |
+| M013A | `implementation/interception/013a-substrate-dependency-and-threat-preflight.md` | **ready** | M012 closure | dependency/TLS/route substrate + threat model |
+| M013B | `implementation/interception/013b-explicit-http-proxy-and-connect-policy.md` | blocked | M013A | HTTP proxy + CONNECT deny/tunnel |
+| M013C | `implementation/interception/013c-ca-lifecycle-and-leaf-issuance.md` | blocked | M013B | CA/key lifecycle + leaf issuance |
+| M013D | `implementation/interception/013d-https-mitm-http1-recording.md` | blocked | M013C | HTTPS MITM H1 recording |
+| M013E | `implementation/interception/013e-cli-policy-and-operator-experience.md` | blocked | M013D | CLI/policy/operator surface |
+| M013F | `implementation/interception/013f-hardening-qualification-and-closure.md` | blocked | M013E | hardening + M013 closure |
+| M014 | `implementation/compatibility/014-compatibility-program.md` | blocked | M013 closure | umbrella compatibility stage |
+| M014A | `implementation/compatibility/014a-har-and-migration.md` | blocked | M013 closure | HAR + migration |
+| M014B | `implementation/compatibility/014b-http2-qualification.md` | blocked | M013 closure, M010 | H2 qualification |
 | M014C | `implementation/compatibility/014c-http3-feasibility-and-qualification.md` | blocked | M014B | H3 architecture/support decision |
 | M014D | `implementation/compatibility/014d-grpc-and-fault-polish.md` | blocked | M014B, M010 | gRPC view + bounded faults |
 
@@ -83,8 +89,11 @@ passed (37 tests), and the workspace suite passed (132 tests). The hosted run
 qualified CPython 3.11–3.14 and Linux x86_64/aarch64, macOS arm64/x86_64, and
 Windows x86_64 wheels. See
 `closure/m012-python-pytest-ecosystem.md` for the full matrix, commands, and
-the nonreproducing macOS test failure recorded during qualification. M013 is
-ready; M014–M014D remain blocked by their declared dependency order.
+the nonreproducing macOS test failure recorded during qualification. M013 is decomposed. **M013A is the only dependency-ready implementation task.**
+It must prove published caller-owned TLS-to-EggServe H1 handoff, Eggress raw
+CONNECT routing, EggFetch upstream TLS verification, the interception crate
+boundary, and the threat model before proxy implementation begins.
+M013B–M013F and M014–M014D remain blocked by dependency order.
 
 ## Canonical planning documents
 
