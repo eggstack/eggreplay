@@ -1,0 +1,31 @@
+[package]
+name = "eggreplay-intercept"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Optional explicit proxy and HTTPS interception for EggReplay"
+
+[dependencies]
+eggreplay-core = { path = "../eggreplay-core" }
+eggreplay-store = { path = "../eggreplay-store" }
+eggreplay-http = { path = "../eggreplay-http", features = ["eggserve", "eggress"] }
+eggserve-primitives.workspace = true
+eggserve-server.workspace = true
+eggnet-tls.workspace = true
+eggress-outbound = { workspace = true, features = ["pproxy-compat"] }
+eggfetch-core.workspace = true
+rustls.workspace = true
+tokio-rustls.workspace = true
+rcgen.workspace = true
+tokio.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+http.workspace = true
+http-body-util.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

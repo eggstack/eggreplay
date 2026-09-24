@@ -6,6 +6,7 @@ members = [
     "crates/eggreplay-http",
     "crates/eggreplay-cli",
     "crates/eggreplay-python",
+    "crates/eggreplay-intercept",
 ]
 
 [workspace.package]
@@ -62,3 +63,7 @@ eggfetch-core = { version = "0.2.0", default-features = false, features = ["nati
 eggserve-primitives = { version = "=0.2.0" }
 eggserve-server = { version = "=0.2.1" }
 eggress-outbound = { version = "=1.0.8", default-features = false }
+eggnet-tls = { version = "=0.2.0" }
+rustls = { version = "=0.23.45", default-features = false, features = ["ring", "std", "tls12"] }
+tokio-rustls = { version = "=0.26.2", default-features = false, features = ["ring", "tls12"] }
+rcgen = { version = "=0.13.2", default-features = false, features = ["ring", "pem"] }

@@ -139,3 +139,13 @@ jobs:
       # CLI Eggress grammar enables only the narrow pproxy-compat set.
       - run: cargo tree -p eggreplay-http --features eggress --edges normal --prefix none | grep -i "eggress-outbound" | head -n 5
       - run: cargo tree -p eggreplay-http --features eggress -i eggress-outbound --prefix none | grep -Ei "ssh|quic|extended" && exit 1 || echo "eggress narrow ok"
+      # M013 interception is a leaf capability; no ordinary product graph may
+      # acquire the CA generator or depend on the optional intercept crate.
+      - run: |
+          for package in eggreplay-core eggreplay-store eggreplay-http eggreplay-cli eggreplay-python; do
+            if cargo tree -p "$package" --edges normal --prefix none | grep -E '^(eggreplay-intercept|rcgen) '; then
+              echo "$package unexpectedly depends on optional interception/CA generation" >&2
+              exit 1
+            fi
+          done
+      - run: cargo check -p eggreplay-intercept --all-targets --locked
