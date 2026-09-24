@@ -67,8 +67,8 @@ jobs:
               exit 1
             fi
           done
-          if cargo tree -p eggreplay-python --edges normal --prefix none | grep -E '^eggreplay-(core|store|http) '; then
-            echo 'Python extension must remain a leaf crate' >&2
+          if cargo tree --workspace --invert eggreplay-python --edges normal --prefix none | grep -E '^eggreplay-(core|store|http|cli) '; then
+            echo 'Rust product crates must not depend on the Python extension' >&2
             exit 1
           fi
       - run: uv run --directory crates/eggreplay-python --with maturin==1.14.1 maturin build --locked
