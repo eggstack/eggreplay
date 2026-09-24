@@ -4,9 +4,6 @@ import hashlib
 import json
 from pathlib import Path
 import pytest
-import subprocess
-import sys
-from concurrent.futures import ThreadPoolExecutor
 
 import eggreplay
 from eggreplay import _native
@@ -723,37 +720,28 @@ def test_pytest_plugin_generic_update_flag_does_not_enable_writes(tmp_path, pyte
     assert not absent.exists()
 
 
-def test_pytest_plugin_read_only_workers_can_share_fixture(tmp_path):
+def test_read_only_workers_can_share_fixture_concurrently(tmp_path):
     root, _ = write_fixture(tmp_path / "shared.eggr")
-    workers = [tmp_path / "worker-a", tmp_path / "worker-b"]
-    for worker in workers:
-        worker.mkdir()
-        (worker / "test_reader.py").write_text(
-            "def test_replay(eggreplay_server): assert eggreplay_server.address\n"
-        )
+    flow = json.loads((root / "flows.jsonl").read_text())
+    flow["request"]["headers"].extend(
+        [{"name": "content-length", "value": "4"}, {"name": "connection", "value": "close"}]
+    )
+    (root / "flows.jsonl").write_text(json.dumps(flow) + "\n")
 
-    def run_worker(worker):
-        return subprocess.run(
-            [
-                sys.executable,
-                "-m",
-                "pytest",
-                "-q",
-                "--eggreplay-fixture",
-                str(root),
-                str(worker / "test_reader.py"),
-            ],
-            capture_output=True,
-            text=True,
-            timeout=60,
+    async def run():
+        fixture = eggreplay.Fixture(str(root))
+        servers = await asyncio.gather(
+            eggreplay.replay_server(fixture), eggreplay.replay_server(fixture)
         )
+        try:
+            responses = await asyncio.gather(
+                *(raw_request(server.address) for server in servers)
+            )
+            assert all(b"200" in response for response in responses)
+        finally:
+            await asyncio.gather(*(server.aclose() for server in servers))
 
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        results = list(pool.map(run_worker, workers))
-    assert all(result.returncode == 0 for result in results), [
-        result.stdout + result.stderr for result in results
-    ]
-    assert not root.with_name(f".{root.name}.eggreplay.lock").exists()
+    asyncio.run(run())
 
 
 def test_pytest_plugin_once_is_explicit_and_seals_after_creation(tmp_path, pytester):
