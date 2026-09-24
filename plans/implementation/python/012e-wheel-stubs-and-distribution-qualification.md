@@ -1,6 +1,6 @@
 # M012E — Wheels, Typing, and Distribution Qualification
 
-Status: ready
+Status: closed
 Depends on: M012D
 Parent milestone: M012
 

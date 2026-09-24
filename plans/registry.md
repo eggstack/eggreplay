@@ -53,8 +53,8 @@ boundary.
 | M012B | `implementation/python/012b-fixture-report-and-data-bindings.md` | closed | M012A | fixture/report/data bindings |
 | M012C | `implementation/python/012c-async-lifecycle-and-network-bindings.md` | closed | M012B | async/sync lifecycle + network operations |
 | M012D | `implementation/python/012d-pytest-vcr-and-parallel-safety.md` | closed | M012C | pytest/VCR + parallel mutation safety |
-| M012E | `implementation/python/012e-wheel-stubs-and-distribution-qualification.md` | ready | M012D | wheels, typing, clean install |
-| M012F | `implementation/python/012f-hardening-hosted-qualification-and-closure.md` | blocked | M012E | hardening + M012 closure |
+| M012E | `implementation/python/012e-wheel-stubs-and-distribution-qualification.md` | closed | M012D | wheels, typing, clean install |
+| M012F | `implementation/python/012f-hardening-hosted-qualification-and-closure.md` | ready | M012E | hardening + M012 closure |
 | M013 | `implementation/interception/013-explicit-proxy-and-optional-mitm.md` | blocked | M012 closure | explicit proxy + opt-in HTTP/1.1 MITM |
 | M014 | `implementation/compatibility/014-compatibility-program.md` | blocked | M013 | umbrella compatibility stage |
 | M014A | `implementation/compatibility/014a-har-and-migration.md` | blocked | M013 | HAR + migration |
@@ -74,9 +74,10 @@ M012A is closed on qualifying revision `4dd280e` with hosted run
 run `35956198913`. M012C is closed on qualifying revision `9c71c36` with hosted run
 `35959113753`; that run also supplies corrected lifetime/symlink coverage for
 M012B, recorded in its closure errata. M012D is closed on qualifying revision
-`21aa5ae` with hosted run `35963105100`. M012E remains open pending final
-wheel and standard CI qualification; M012F and M013–M014D remain blocked by
-dependency order.
+`21aa5ae` with hosted run `35963105100`. M012E is closed on qualifying
+revision `95e3686` with hosted wheel run `35967068775` and standard CI run
+`35967055070`. M012F is now ready; M013–M014D remain blocked by dependency
+order.
 
 ## Canonical planning documents
 
