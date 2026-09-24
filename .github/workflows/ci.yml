@@ -72,6 +72,33 @@ jobs:
             exit 1
           fi
       - run: uv run --directory crates/eggreplay-python --with maturin==1.14.1 maturin build --locked
+      - if: matrix.os == 'ubuntu-latest' && matrix.python == '3.11'
+        run: uv run --directory crates/eggreplay-python --with maturin==1.14.1 maturin build --locked --out $GITHUB_WORKSPACE/target/python-artifacts
+      - if: matrix.os == 'ubuntu-latest' && matrix.python == '3.11'
+        run: uv run --directory crates/eggreplay-python --with maturin==1.14.1 maturin sdist --out $GITHUB_WORKSPACE/target/python-artifacts
+      - if: matrix.os == 'ubuntu-latest' && matrix.python == '3.11'
+        name: Check wheel and source archive contents
+        run: |
+          python - <<'PY'
+          import glob
+          import pathlib
+          import tarfile
+          import zipfile
+
+          root = pathlib.Path("target/python-artifacts")
+          archives = [*root.glob("*.whl"), *root.glob("*.tar.gz")]
+          assert len(archives) == 2, archives
+          forbidden = {".venv", ".pytest_cache", "__pycache__", "fixtures", "target"}
+          for archive in archives:
+              if archive.suffix == ".whl":
+                  with zipfile.ZipFile(archive) as bundle:
+                      members = bundle.namelist()
+              else:
+                  with tarfile.open(archive, "r:gz") as bundle:
+                      members = bundle.getnames()
+              bad = [name for name in members if forbidden.intersection(pathlib.PurePosixPath(name).parts) or name.endswith((".pyc", ".pyo"))]
+              assert not bad, f"unexpected files in {archive}: {bad}"
+          PY
 
   python-abi3-cross-version:
     runs-on: ubuntu-latest
