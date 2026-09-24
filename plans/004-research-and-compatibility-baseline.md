@@ -59,18 +59,15 @@ qualify its own CPython/ABI/runtime set. The planned initial product target is
 CPython 3.11–3.14 GIL builds with `abi3-py311` preferred. Python 3.15 and
 free-threaded support remain evidence-gated.
 
-## Remaining evidence-gated questions
+## Post-M012 resolution
 
-- whether EggReplay's async surface qualifies under `abi3-py311` or needs
-  per-interpreter wheels;
-- Linux aarch64 runtime wheel qualification;
-- Python 3.15/free-threaded promotion;
-- H2/H3 promotion;
-- HAR/migration interoperability;
-- interception and later protocol-specific extensions.
+M012 qualified `abi3-py311` for CPython 3.11–3.14 and qualified the declared
+Linux x86_64/aarch64, macOS arm64/x86_64, and Windows x86_64 wheel matrix.
 
-These questions belong to M012–M014 rather than speculative changes to earlier
-closed milestones.
+Remaining evidence-gated questions are Python 3.15/free-threaded promotion,
+M013 interception qualification, H2/H3 promotion, HAR/migration
+interoperability, and later protocol-specific extensions. These belong to
+their owning later milestones rather than speculative changes to closed work.
 
 
 ## Interception baseline — 2026-09-24
