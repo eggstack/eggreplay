@@ -12,14 +12,16 @@ streaming timing/SSE, and M011 semantic WebSocket record/replay/regression are
 closed with hosted cross-platform evidence.
 
 M012 Python/pytest integration is closed under ADR 0007 with hosted
-Rust/Python and wheel qualification. M013 is ready; M014 remains downstream
-of M013.
+Rust/Python and wheel qualification. M013 explicit-proxy/optional HTTPS
+interception is decomposed under ADR 0008. M013A substrate/dependency/threat
+preflight is the only ready task; interception is not yet part of the supported
+product baseline. M014 remains downstream of M013.
 
 The support baseline includes direct HTTP/1.1 acquisition and EggServe inbound
 HTTP/1.1 replay with optional listener-free Eggress routing. WebSocket support
 covers RFC 6455 over cleartext HTTP/1.1 Upgrade (`ws://`) with bounded semantic
-text, binary, ping, pong, and close messages. WSS, inbound TLS, H2/H3,
-negotiated extensions, and wire-frame fidelity remain outside the claim.
+text, binary, ping, pong, and close messages. WSS, interception, inbound TLS,
+H2/H3, negotiated extensions, and wire-frame fidelity remain outside the claim.
 
 ## Quickstart routes
 
@@ -45,9 +47,11 @@ python -c 'import eggreplay; print(eggreplay.__version__)'
 ```
 
 Python exposes `.eggr` directory fixtures and managed replay/recording
-lifecycles. See [`crates/eggreplay-python/README.md`](crates/eggreplay-python/README.md)
-for pytest fixtures, explicit record modes, and migration notes for VCR.py
-users. It is not a drop-in VCR.py replacement.
+lifecycles. The qualified default wheel intentionally does not include the
+future M013 interception/CA feature. See
+[`crates/eggreplay-python/README.md`](crates/eggreplay-python/README.md) for
+pytest fixtures, explicit record modes, and migration notes for VCR.py users.
+It is not a drop-in VCR.py replacement.
 
 ## Development
 
