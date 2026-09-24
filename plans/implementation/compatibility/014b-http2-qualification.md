@@ -1,7 +1,7 @@
 # M014B — HTTP/2 End-to-End Qualification
 
 Status: blocked
-Depends on: M013, M010
+Depends on: M013 closure, M010
 Parent: M014
 
 ## Objective
