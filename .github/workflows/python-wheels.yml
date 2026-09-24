@@ -2,6 +2,12 @@ name: Python wheel qualification
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/python-wheels.yml'
+      - 'crates/eggreplay-python/**'
+      - 'tools/python/**'
 
 permissions:
   contents: read
