@@ -9,7 +9,8 @@ them:
 - **eggserve** owns inbound HTTP serving/runtime mechanics and generic tunnel handoff.
 - **eggress** owns optional listener-free outbound routing/proxy chains.
 - **eggreplay** owns the semantic models, storage, matching, replay, redaction, scenarios, regression, and orchestration.
-- **Python bindings** are adapters over those Rust authorities, not a second implementation.
+- **eggreplay-intercept** is the optional privileged acquisition leaf for M013.
+- **Python bindings** remain adapters over non-interception Rust authorities in M013.
 
 ## Planning convention
 
@@ -37,8 +38,10 @@ closes a plan.
 
 v0.1/C001–C006, M009, M010/M010-C1, and M011/M011A–M011F are closed.
 
-M012 is decomposed under ADR 0007 into M012A–M012F, all closed with hosted
-qualification. M013 is ready; M014 remains downstream of M013 and blocked.
+M012 is closed under ADR 0007. M013 is decomposed under ADR 0008 into
+M013A–M013F. **M013A — Interception Substrate, Dependency, and Threat
+Preflight** is the only dependency-ready task. M013B–M013F and M014 remain
+blocked in dependency order.
 
 See `registry.md` for the exact handoff state.
 
