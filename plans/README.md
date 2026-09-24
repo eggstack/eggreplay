@@ -8,7 +8,8 @@ them:
 - **eggfetch** owns outbound HTTP/TLS, pooling, streaming bodies, trailers, and upgraded connection IO.
 - **eggserve** owns inbound HTTP serving/runtime mechanics and generic tunnel handoff.
 - **eggress** owns optional listener-free outbound routing/proxy chains.
-- **eggreplay** owns the flow/conversation model, storage format, normalization, matching, replay semantics, redaction, scenarios, diff/regression logic, and CLI orchestration.
+- **eggreplay** owns the semantic models, storage, matching, replay, redaction, scenarios, regression, and orchestration.
+- **Python bindings** are adapters over those Rust authorities, not a second implementation.
 
 ## Planning convention
 
@@ -34,12 +35,13 @@ closes a plan.
 
 ## Current execution
 
-v0.1/C001–C006, M009, and M010/M010-C1 are closed.
+v0.1/C001–C006, M009, M010/M010-C1, and M011/M011A–M011F are closed.
 
-M011 and M011A–M011F are closed under ADR 0006. Hosted qualification passed on
-Ubuntu stable, Ubuntu Rust 1.89, macOS stable, Windows stable, and the
-dependency-boundary job. M012 is ready; see `registry.md` for the exact
-handoff state.
+M012 is decomposed under ADR 0007 into M012A–M012F. **M012A — Python Toolchain,
+Package, and ABI Preflight** is the only dependency-ready task. M012B–M012F and
+M013–M014 remain blocked in dependency order.
+
+See `registry.md` for the exact handoff state.
 
 Do not start a blocked milestone by duplicating a dependency-owned subsystem.
 If repository evidence invalidates a plan assumption, update the plan and
