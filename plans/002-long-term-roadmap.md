@@ -59,9 +59,9 @@ Execution is decomposed:
 - M012E — wheels, typing, distribution qualification;
 - M012F — hardening, hosted qualification, milestone closure.
 
-See `implementation/python/`. M012A–M012E are closed; M012F is in final
-hardening and hosted qualification. M013 remains blocked until the M012
-umbrella closure is recorded.
+See `implementation/python/`. M012A–M012F and the M012 umbrella are closed
+with local and hosted Rust/Python/wheel qualification. See
+`closure/m012-python-pytest-ecosystem.md`. M013 is ready.
 
 ## Stage 9 — Optional interception (M013)
 

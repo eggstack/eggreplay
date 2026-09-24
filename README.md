@@ -11,9 +11,9 @@ v0.1 is fully qualified through C001–C006. M009 stateful/dynamic replay, M010
 streaming timing/SSE, and M011 semantic WebSocket record/replay/regression are
 closed with hosted cross-platform evidence.
 
-M012 Python/pytest integration has completed its implementation and is in
-final hardening and hosted qualification under ADR 0007. M013 remains blocked
-until the M012 closure record is complete; M014 remains downstream of M013.
+M012 Python/pytest integration is closed under ADR 0007 with hosted
+Rust/Python and wheel qualification. M013 is ready; M014 remains downstream
+of M013.
 
 The support baseline includes direct HTTP/1.1 acquisition and EggServe inbound
 HTTP/1.1 replay with optional listener-free Eggress routing. WebSocket support

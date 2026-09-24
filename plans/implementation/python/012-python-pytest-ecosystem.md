@@ -1,6 +1,6 @@
 # M012 — Python Bindings and Pytest/VCR-Style Integration
 
-Status: active (M012F final closure in progress)
+Status: closed
 Depends on: M011 closure
 Roadmap stage: 8
 Architecture: ADR 0007
@@ -64,4 +64,4 @@ coherent hosted Rust/Python/wheel evidence set exist.
 Final closure:
 `plans/closure/m012-python-pytest-ecosystem.md`.
 
-M013 remains blocked until M012 closes.
+M013 is ready following M012 closure.

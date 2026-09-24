@@ -37,9 +37,8 @@ closes a plan.
 
 v0.1/C001–C006, M009, M010/M010-C1, and M011/M011A–M011F are closed.
 
-M012 is decomposed under ADR 0007 into M012A–M012F. M012A–M012E are closed;
-M012F is active for final hardening and hosted qualification. M013 remains
-blocked until M012 closure; M014 remains downstream of M013.
+M012 is decomposed under ADR 0007 into M012A–M012F, all closed with hosted
+qualification. M013 is ready; M014 remains downstream of M013 and blocked.
 
 See `registry.md` for the exact handoff state.
 

@@ -48,14 +48,14 @@ boundary.
 | M011D | `implementation/websocket/011d-offline-replay.md` | closed | M011C | deterministic offline replay |
 | M011E | `implementation/websocket/011e-candidate-regression-cli-and-diff.md` | closed | M011D | regression/report/CLI/diff |
 | M011F | `implementation/websocket/011f-hardening-qualification-and-closure.md` | closed | M011E | hardening + M011 closure |
-| M012 | `implementation/python/012-python-pytest-ecosystem.md` | active (final closure) | M011 closure | Python/pytest milestone umbrella |
+| M012 | `implementation/python/012-python-pytest-ecosystem.md` | closed | M011 closure | Python/pytest milestone umbrella |
 | M012A | `implementation/python/012a-toolchain-package-and-abi-preflight.md` | closed | M011 closure | Python toolchain/package/ABI substrate |
 | M012B | `implementation/python/012b-fixture-report-and-data-bindings.md` | closed | M012A | fixture/report/data bindings |
 | M012C | `implementation/python/012c-async-lifecycle-and-network-bindings.md` | closed | M012B | async/sync lifecycle + network operations |
 | M012D | `implementation/python/012d-pytest-vcr-and-parallel-safety.md` | closed | M012C | pytest/VCR + parallel mutation safety |
 | M012E | `implementation/python/012e-wheel-stubs-and-distribution-qualification.md` | closed | M012D | wheels, typing, clean install |
-| M012F | `implementation/python/012f-hardening-hosted-qualification-and-closure.md` | active | M012E | hardening + M012 closure |
-| M013 | `implementation/interception/013-explicit-proxy-and-optional-mitm.md` | blocked | M012 closure | explicit proxy + opt-in HTTP/1.1 MITM |
+| M012F | `implementation/python/012f-hardening-hosted-qualification-and-closure.md` | closed | M012E | hardening + M012 closure |
+| M013 | `implementation/interception/013-explicit-proxy-and-optional-mitm.md` | ready | M012 closure | explicit proxy + opt-in HTTP/1.1 MITM |
 | M014 | `implementation/compatibility/014-compatibility-program.md` | blocked | M013 | umbrella compatibility stage |
 | M014A | `implementation/compatibility/014a-har-and-migration.md` | blocked | M013 | HAR + migration |
 | M014B | `implementation/compatibility/014b-http2-qualification.md` | blocked | M013, M010 | H2 qualification |
@@ -76,12 +76,15 @@ run `35956198913`. M012C is closed on qualifying revision `9c71c36` with hosted 
 M012B, recorded in its closure errata. M012D is closed on qualifying revision
 `21aa5ae` with hosted run `35963105100`. M012E is closed on qualifying
 revision `95e3686` with hosted wheel run `35967068775` and standard CI run
-`35967055070`. M012F hardening is active. Local Python 3.14 tests currently
-pass (37 tests), including xdist shared reads, stale-lock diagnostics,
-relative-path confinement, interpreter-exit fallback, pytest failure-output
-redaction, and persisted-blob redaction. Final hosted full checks and wheel
-qualification remain required before closing M012; M013–M014D remain blocked
-by dependency order.
+`35967055070`. M012 and M012F are closed on qualifying revision
+`d7d64de3249ab2e7aab639262be68051454fcdaa`, with hosted standard CI run
+`35970168269` and full wheel/sdist run `35970168143`. Local Python 3.14 tests
+passed (37 tests), and the workspace suite passed (132 tests). The hosted run
+qualified CPython 3.11–3.14 and Linux x86_64/aarch64, macOS arm64/x86_64, and
+Windows x86_64 wheels. See
+`closure/m012-python-pytest-ecosystem.md` for the full matrix, commands, and
+the nonreproducing macOS test failure recorded during qualification. M013 is
+ready; M014–M014D remain blocked by their declared dependency order.
 
 ## Canonical planning documents
 

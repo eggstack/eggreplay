@@ -1,6 +1,6 @@
 # M013 — Explicit Proxy Acquisition and Optional HTTPS Interception
 
-Status: blocked
+Status: ready
 Depends on: M012
 Roadmap stage: 9
 

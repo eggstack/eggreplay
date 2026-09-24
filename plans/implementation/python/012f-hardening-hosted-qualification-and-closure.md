@@ -1,6 +1,6 @@
 # M012F — Python Hardening, Hosted Qualification, and M012 Closure
 
-Status: active
+Status: closed
 Depends on: M012E
 Parent milestone: M012
 
