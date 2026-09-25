@@ -1,6 +1,6 @@
 # M013 — Explicit Proxy Acquisition and Optional HTTPS Interception
 
-Status: ready (decomposed; execute M013A first)
+Status: ready (decomposed; M013A closed, execute M013B0 next)
 Depends on: M012 closure
 Roadmap stage: 9
 Architecture: ADR 0008
@@ -23,14 +23,15 @@ EggReplay library/Python builds.
 | ID | Plan | Result |
 |---|---|---|
 | M013A | `013a-substrate-dependency-and-threat-preflight.md` | crate/dependency/TLS-stream substrate + threat model |
+| M013B0 | `013b0-eggserve-0-3-adoption-and-absolute-form-qualification.md` | adopt/qualify EggServe 0.3 + absolute-form seam |
 | M013B | `013b-explicit-http-proxy-and-connect-policy.md` | absolute-form HTTP proxy + CONNECT deny/tunnel |
 | M013C | `013c-ca-lifecycle-and-leaf-issuance.md` | CA/key lifecycle + bounded exact-host leaf issuance |
 | M013D | `013d-https-mitm-http1-recording.md` | policy-gated HTTPS MITM recording |
 | M013E | `013e-cli-policy-and-operator-experience.md` | optional CLI, policy files, trust/operator UX |
 | M013F | `013f-hardening-qualification-and-closure.md` | security/resource/interoperability qualification + closure |
 
-Only M013A is ready initially. Later subplans must not begin before their
-dependency closes.
+M013A is closed. M013B0 is the current ready task. M013B and later subplans
+must not begin before their dependency closes.
 
 ## Ownership boundary
 
