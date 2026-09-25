@@ -590,6 +590,57 @@ async fn read_tls_body(
     }
 }
 
+/// Durably recorded response facts for large-transfer diagnostics.
+struct RecordedResponse {
+    body_len: Option<u64>,
+    status: Option<u16>,
+    upstream_error: Option<String>,
+}
+
+/// Read the finalized fixture's recorded response length/status plus any
+/// upstream response stream-error event (which marks a mid-body upstream
+/// failure that still records a partial 200 flow).
+fn read_recorded_response(fixture: &std::path::Path) -> RecordedResponse {
+    let mut out = RecordedResponse {
+        body_len: None,
+        status: None,
+        upstream_error: None,
+    };
+    let Ok(session) = eggreplay_store::Session::open(fixture, StoreLimits::default()) else {
+        return out;
+    };
+    if let Ok(flows) = session.iter_flows() {
+        for flow in flows.flatten() {
+            if let eggreplay_core::FlowOutcome::Response(response) = flow.outcome {
+                out.status = Some(response.status);
+                out.body_len = match &response.body {
+                    eggreplay_core::BodyRef::Blob(blob) => Some(blob.length),
+                    _ => Some(0),
+                };
+                break;
+            }
+        }
+    }
+    if let Ok(Some(bytes)) = session.read_extension("stream-events")
+        && let Ok(events) = serde_json::from_slice::<eggreplay_core::StreamEvents>(&bytes)
+    {
+        for flow_events in &events.flows {
+            for event in &flow_events.response {
+                if let eggreplay_core::StreamEventKind::Error {
+                    offset,
+                    category,
+                    phase,
+                } = &event.event
+                {
+                    out.upstream_error =
+                        Some(format!("offset={offset} category={category} phase={phase}"));
+                }
+            }
+        }
+    }
+    out
+}
+
 /// Decode a raw chunked H1 body (the MITM re-chunks streamed upstream
 /// bodies on egress, mirroring the plain proxy path).
 fn decode_chunked(mut bytes: &[u8]) -> Vec<u8> {
@@ -829,16 +880,42 @@ async fn mitm_streams_large_bodies_both_directions() {
     let response_head = read_tls_head(&mut tls).await;
     let body = read_tls_body(&mut tls, &response_head).await;
     assert!(status_line(&response_head).starts_with("HTTP/1.1 200"));
-    assert_eq!(body.len(), 300_000);
-    assert!(body.iter().all(|byte| *byte == b'z'));
     // Explicit client close ends the decrypted H1 connection deterministically
     // on every platform; proxy shutdown then has nothing to race.
     tls.shutdown().await.ok();
     drop(tls);
     assert_eq!(captured.lock().await.len(), 1);
     assert_eq!(proxy.session.flow_count(), 1);
-    finish_mitm(proxy).await;
+    let dir = proxy.dir.path().to_owned();
+    proxy.handle.shutdown();
+    proxy.handle.wait().await;
+    proxy.session.shutdown();
+    proxy.session.finish().unwrap();
     origin_task.abort();
+    // Diagnose large-transfer truncations (observed on Windows runners):
+    // compare the wire body against the durably recorded body and surface
+    // any upstream stream-error event, so a failure names the losing leg.
+    let recorded = read_recorded_response(&dir.join("fixture"));
+    eprintln!(
+        "large-body diag: wire_len={} recorded_len={:?} recorded_status={:?} upstream_error={:?} wire_head={:?}",
+        body.len(),
+        recorded.body_len,
+        recorded.status,
+        recorded.upstream_error,
+        String::from_utf8_lossy(&response_head)
+    );
+    assert_eq!(body.len(), 300_000, "wire body must be complete");
+    assert!(body.iter().all(|byte| *byte == b'z'));
+    assert_eq!(
+        recorded.body_len,
+        Some(300_000),
+        "recorded flow body must be complete"
+    );
+    assert!(
+        recorded.upstream_error.is_none(),
+        "upstream must end cleanly: {:?}",
+        recorded.upstream_error
+    );
 }
 
 #[tokio::test]
