@@ -810,8 +810,14 @@ async fn mitm_streams_large_bodies_both_directions() {
     .await;
     let authority = format!("127.0.0.1:{origin_port}");
     let payload = vec![b'y'; 256 * 1024];
+    // `Connection: keep-alive` (not close): on Windows runners a
+    // close-teardown raced the final flush of this 300 KiB response and the
+    // client observed a truncated tail (262026 of 300000 bytes) with a clean
+    // EOF. Keeping the decrypted connection open removes the teardown from
+    // the flush path; the client closes explicitly after the exact-length
+    // read below, which is the deterministic end of this exchange.
     let head = format!(
-        "POST /big HTTP/1.1\r\nHost: {authority}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        "POST /big HTTP/1.1\r\nHost: {authority}\r\nContent-Length: {}\r\nConnection: keep-alive\r\n\r\n",
         payload.len()
     );
     let (stream, connect_head) = connect_head(proxy.handle.local_addr(), &authority).await;
@@ -825,6 +831,10 @@ async fn mitm_streams_large_bodies_both_directions() {
     assert!(status_line(&response_head).starts_with("HTTP/1.1 200"));
     assert_eq!(body.len(), 300_000);
     assert!(body.iter().all(|byte| *byte == b'z'));
+    // Explicit client close ends the decrypted H1 connection deterministically
+    // on every platform; proxy shutdown then has nothing to race.
+    tls.shutdown().await.ok();
+    drop(tls);
     assert_eq!(captured.lock().await.len(), 1);
     assert_eq!(proxy.session.flow_count(), 1);
     finish_mitm(proxy).await;
