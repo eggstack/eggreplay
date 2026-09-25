@@ -56,12 +56,13 @@ url = { version = "2", features = ["serde"] }
 uuid = { version = "1", features = ["serde", "v4"] }
 tokio-tungstenite = { version = "=0.30.0", default-features = false, features = ["handshake"] }
 
-# Published and temporary sibling seams. Keep these pre-1.0 APIs deliberately
-# bounded; Eggress remains on the last qualified release until upstream fixes
-# its pooled route-isolation and metadata blockers.
+# Published sibling seams. EggServe uses only its direct runtime; Core, Static,
+# and Tower surfaces remain outside the EggReplay graph. Eggress remains on the
+# last qualified release until upstream fixes its pooled route-isolation and
+# metadata blockers.
 eggfetch-core = { version = "0.2.0", default-features = false, features = ["native-http1", "high-level-url", "tls-rustls", "tls-native-roots"] }
-eggserve-primitives = { version = "=0.2.0" }
-eggserve-server = { version = "=0.2.1" }
+eggserve-primitives = { version = "=0.2.1" }
+eggserve-server = { version = "=0.3.0" }
 eggress-outbound = { version = "=1.0.8", default-features = false }
 eggnet-tls = { version = "=0.2.0" }
 rustls = { version = "=0.23.45", default-features = false, features = ["ring", "std", "tls12"] }

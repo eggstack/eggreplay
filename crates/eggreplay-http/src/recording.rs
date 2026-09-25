@@ -820,7 +820,10 @@ pub async fn start_recording_gateway_with_websockets(
     // service policy so the effective limit is the caller's bound.
     let builder = eggserve_server::RuntimeConfig::builder()
         .bind(bind)
-        .max_request_body_bytes(max_body_bytes);
+        .max_request_body_bytes(max_body_bytes)
+        .http1_request_target_mode(eggserve_server::Http1RequestTargetMode::OriginOnly)
+        .policy_ownership(eggserve_server::H1PolicyOwnership::eggserve_owned())
+        .admission_ownership(eggserve_server::AdmissionOwnership::eggserve_owned());
     let builder = if websocket.enabled {
         builder
             .max_active_tunnels(websocket.max_active_tunnels)
@@ -2680,6 +2683,54 @@ mod tests {
             }
         });
         (addr, timings, handle)
+    }
+
+    #[cfg(feature = "eggserve")]
+    #[tokio::test]
+    async fn ordinary_recording_gateway_rejects_absolute_form_before_service() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let dir = c002_temp("ordinary-origin-only");
+        let session =
+            RecordingSession::create(&dir, SessionMetadata::default(), StoreLimits::default())
+                .unwrap();
+        let server = start_recording_gateway(
+            "127.0.0.1:0".parse().unwrap(),
+            "http://127.0.0.1:9".parse().unwrap(),
+            Client::builder().retry_canceled_requests(false).build(),
+            session.clone(),
+            StoreLimits::default().max_blob_bytes,
+            RedactionConfig::default_secure(),
+            "default-v1".to_string(),
+            eggreplay_core::DEFAULT_MAX_STRUCTURED_REDACTION_BYTES,
+            eggreplay_core::PhysicalRoute {
+                kind: "direct".into(),
+                description: Some("direct".into()),
+            },
+        )
+        .await
+        .unwrap();
+        let authority = server.local_addr().to_string();
+        let request = format!(
+            "GET http://{authority}/must-not-record HTTP/1.1\r\nHost: {authority}\r\nConnection: close\r\n\r\n"
+        );
+        let mut client = tokio::net::TcpStream::connect(server.local_addr())
+            .await
+            .unwrap();
+        client.write_all(request.as_bytes()).await.unwrap();
+        let mut response = Vec::new();
+        client.read_to_end(&mut response).await.unwrap();
+        assert!(
+            response.starts_with(b"HTTP/1.1 400"),
+            "absolute-form request must be rejected before recording dispatch: {}",
+            String::from_utf8_lossy(&response)
+        );
+        assert_eq!(session.flow_count(), 0);
+        server.shutdown();
+        server.wait().await;
+        session.shutdown();
+        session.finish().unwrap();
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[tokio::test]

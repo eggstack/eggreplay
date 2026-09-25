@@ -82,10 +82,13 @@ not acquire new WebSocket conversations.
 EggFetch 0.2.0 is consumed from crates.io and exposes the owned
 `UpgradedStream` API needed for 101/CONNECT handoff.
 
-EggServe uses the published `eggserve-server 0.2.1` and
-`eggserve-primitives 0.2.0` artifacts, pinned exactly while their APIs remain
-pre-1.0. M011A qualifies tunnel/read-ahead/lifecycle behavior from these
-registry artifacts.
+EggServe uses the published `eggserve-server 0.3.0` and
+`eggserve-primitives 0.2.1` artifacts, pinned exactly while their APIs remain
+pre-1.0. M013B0 qualifies the direct runtime without `eggserve-core`,
+`eggserve-static`, or an EggServe Tower feature. Ordinary record/replay
+gateways remain `OriginOnly` with EggServe-owned policy and admission; the
+M013B interception helper opts into `OriginOrAbsolute` while retaining
+EggServe-owned bounds and one tunnel-admission authority.
 
 Eggress remains intentionally narrow. EggReplay enables only
 `eggress-outbound/pproxy-compat`. Eggress 1.0.8 is pinned exactly as the

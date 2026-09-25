@@ -32,9 +32,9 @@ Reference:
 ## Current Eggstack seams
 
 EggFetch 0.2.0 is the published outbound authority used by EggReplay.
-EggServe's qualified downstream set is `eggserve-server 0.2.1` with
-`eggserve-primitives 0.2.0`. EggReplay currently uses
-`eggress-outbound 1.0.8` with only `pproxy-compat`.
+EggServe's qualified downstream set is `eggserve-server 0.3.0` with
+`eggserve-primitives 0.2.1`. EggReplay uses `eggress-outbound 1.0.8` with
+only `pproxy-compat`.
 
 M011 qualified direct/routed cleartext H1 WebSocket upgrade semantics and is
 closed. WSS/H2/H3 remain later compatibility work.
@@ -72,7 +72,7 @@ their owning later milestones rather than speculative changes to closed work.
 
 ## Interception baseline — 2026-09-24
 
-M013 planning is based on current sibling evidence:
+M013 planning was based on the M013A-era sibling evidence:
 
 - `eggserve-server 0.2.1` already publishes generic caller-owned
   `serve_http1_connection`, so a decrypted rustls stream can feed the
@@ -83,7 +83,7 @@ M013 planning is based on current sibling evidence:
   patch is `eggserve-core` for Tower/HTTP interop; unchanged direct server
   crates were intentionally not republished;
 - EggServe's neutral `eggnet-tls` source exposes bounded identity/trust
-  parsing and rustls server-configuration helpers. M013A must query its exact
+  parsing and rustls server-configuration helpers. M013A queried its exact
   published version before depending on it;
 - EggReplay remains on `eggress-outbound 1.0.8`. Eggress main is preparing
   1.0.10, but that release is currently blocked on an H2 TLS-override
@@ -96,10 +96,12 @@ for opaque CONNECT route establishment, uses EggFetch for intercepted semantic
 HTTP, and keeps CA generation/private-key state outside fixtures/default
 Python packaging.
 
-The remaining M013 evidence gates are the exact published `eggnet-tls` and
+The M013A evidence gates were the exact published `eggnet-tls` and
 certificate-generation versions, cross-platform CA file protection,
 independent local client interoperability, and final release-binary feature
-policy.
+policy. M013B0 now qualifies the direct EggServe dependency line; CA
+lifecycle, independent client interoperability, and release-binary feature
+policy remain later interception work.
 
 
 ## EggServe embedding update — 2026-09-24
@@ -119,10 +121,10 @@ interception work:
   composition;
 - `eggnet-tls` remains 0.2.0.
 
-EggReplay itself still pins server 0.2.1/primitives 0.2.0 until M013B0
-migrates and qualifies 0.3.0. Do not describe the repository as already
-running on the new line before that closure.
+EggReplay has adopted server 0.3.0/primitives 0.2.1 and locally qualified the
+line. Hosted qualification and closure evidence remain required before the
+repository declares M013B0 closed.
 
 M013B0 intentionally keeps ordinary EggReplay services on EggServe-owned
 policy/admission defaults. M013B will use `OriginOrAbsolute` explicitly for
-the proxy listener after the migration is proven.
+the proxy listener after closure.

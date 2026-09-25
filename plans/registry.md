@@ -57,7 +57,7 @@ boundary, and ADR 0008 owns interception security/transport ownership.
 | M012F | `implementation/python/012f-hardening-hosted-qualification-and-closure.md` | closed | M012E | hardening + M012 closure |
 | M013 | `implementation/interception/013-explicit-proxy-and-optional-mitm.md` | ready (decomposed) | M012 closure | interception milestone umbrella |
 | M013A | `implementation/interception/013a-substrate-dependency-and-threat-preflight.md` | closed | M012 closure | dependency/TLS/route substrate + threat model |
-| M013B0 | `implementation/interception/013b0-eggserve-0-3-adoption-and-absolute-form-qualification.md` | **ready** | M013A + published EggServe Plan-286 artifacts | EggServe 0.3 adoption + absolute-form qualification |
+| M013B0 | `implementation/interception/013b0-eggserve-0-3-adoption-and-absolute-form-qualification.md` | **implemented** | M013A + published EggServe Plan-286 artifacts | EggServe 0.3 adoption + absolute-form qualification |
 | M013B | `implementation/interception/013b-explicit-http-proxy-and-connect-policy.md` | blocked | M013B0 | HTTP proxy + CONNECT deny/tunnel |
 | M013C | `implementation/interception/013c-ca-lifecycle-and-leaf-issuance.md` | blocked | M013B | CA/key lifecycle + leaf issuance |
 | M013D | `implementation/interception/013d-https-mitm-http1-recording.md` | blocked | M013C | HTTPS MITM H1 recording |
@@ -97,13 +97,12 @@ interception crate boundary, and the threat model qualified on Linux stable/
 Rust 1.89, macOS stable, Windows stable, and dependency-boundary CI. See
 `closure/m013a-interception-substrate-and-threat-preflight.md`.
 
-EggServe Plan 286 has now published `eggserve-primitives 0.2.1` and
+EggServe Plan 286 published `eggserve-primitives 0.2.1` and
 `eggserve-server 0.3.0`, including the opt-in absolute-form H1 service seam
-and direct-runtime policy APIs required by M013B. EggReplay still pins the
-older 0.2.x server baseline, so **M013B0 is the only dependency-ready task**.
-It must migrate and requalify ordinary record/replay/WebSocket behavior plus
-the new absolute-form interception substrate before M013B begins. M013B–M013F
-and M014–M014D remain blocked by dependency order.
+and direct-runtime policy APIs required by M013B. M013B0 has adopted and
+locally qualified that line; hosted qualification and closure evidence remain
+required before M013B begins. M013B–M013F and M014–M014D remain blocked by
+dependency order.
 
 ## Canonical planning documents
 

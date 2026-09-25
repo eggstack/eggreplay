@@ -717,9 +717,9 @@ dependencies = [
 
 [[package]]
 name = "eggserve-primitives"
-version = "0.2.0"
+version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8732e77fae06b395f992cb1dd163ca30750e2f44d1fed3824eb8fc4650dafc03"
+checksum = "ba5372af39cb279fab9cc672608fe83c3ac5ca16d8f8ce058c2400626ef3a101"
 dependencies = [
  "bytes",
  "futures-util",
@@ -727,9 +727,9 @@ dependencies = [
 
 [[package]]
 name = "eggserve-server"
-version = "0.2.1"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "255c1e95d0e6c6f7db8c26ea128267b3a1851dafe0f13a8229cdbec38a630feb"
+checksum = "b26bcaeb357dfafeb780649c789765c7b6545d85388ecdbb446a47ff78aac082"
 dependencies = [
  "bytes",
  "eggserve-primitives",

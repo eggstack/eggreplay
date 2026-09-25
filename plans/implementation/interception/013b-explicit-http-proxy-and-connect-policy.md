@@ -11,13 +11,10 @@ published `eggserve-primitives 0.2.1` and `eggserve-server 0.3.0` with an
 explicit `Http1RequestTargetMode::OriginOrAbsolute` path and canonical
 absolute target form/scheme/authority/path/query metadata.
 
-EggReplay has not yet adopted or qualified that source-incompatible 0.3 direct
-runtime. M013B therefore remains blocked on M013B0.
-
-Do not implement proxy behavior against the old 0.2.1 dependency and do not
-combine the dependency migration with this plan. M013B begins only after the
-M013B0 closure proves ordinary EggReplay record/replay/WebSocket regressions
-and the published absolute-form service seam.
+M013B0 has adopted and locally qualified that source-incompatible 0.3 direct
+runtime, including the opt-in absolute-form service seam. Its hosted
+qualification and closure evidence remain required before M013B begins, so
+M013B remains blocked on M013B0.
 
 ## Objective
 

@@ -1,6 +1,6 @@
 # M013B0 — EggServe 0.3 Adoption and Absolute-Form Qualification
 
-Status: ready
+Status: implemented
 Depends on: M013A closure + published EggServe Plan-286 artifacts
 Parent milestone: M013
 Unblocks: M013B
@@ -52,14 +52,14 @@ Plans 280–286 introduced source-visible direct-runtime policy ownership and
 admission ownership, a projected `H1ConnectionPolicy`, typed runtime rejection
 presentation, and updated runtime-state semantics.
 
-EggReplay currently pins:
+At plan issue, EggReplay pinned:
 
 ```text
 eggserve-primitives = 0.2.0
 eggserve-server     = 0.2.1
 ```
 
-and M013A's caller-owned TLS proof uses a direct
+and M013A's caller-owned TLS proof used a direct
 `RuntimeConfig { ..Default::default() }` construction plus
 `RuntimeState::new`.
 

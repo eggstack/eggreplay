@@ -408,7 +408,10 @@ impl ReplayFixture {
             .unwrap_or(false);
         let builder = eggserve_server::RuntimeConfig::builder()
             .bind(bind)
-            .max_request_body_bytes(max_body_bytes);
+            .max_request_body_bytes(max_body_bytes)
+            .http1_request_target_mode(eggserve_server::Http1RequestTargetMode::OriginOnly)
+            .policy_ownership(eggserve_server::H1PolicyOwnership::eggserve_owned())
+            .admission_ownership(eggserve_server::AdmissionOwnership::eggserve_owned());
         let builder = if has_websockets {
             builder
                 .max_active_tunnels(16)
@@ -2232,6 +2235,60 @@ mod tests {
         a.unwrap();
         b.unwrap();
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(feature = "eggserve")]
+    #[tokio::test]
+    async fn ordinary_replay_server_rejects_absolute_form_before_service() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let dir = temp_path("ordinary-origin-only");
+        let writer =
+            SessionWriter::create(&dir, SessionMetadata::default(), test_limits()).unwrap();
+        let session = writer.finish().unwrap();
+        let fixture = ReplayFixture::load(&session).unwrap();
+        assert_eq!(fixture.candidate_count(), 0);
+        let server = fixture
+            .start("127.0.0.1:0".parse().unwrap(), 1024)
+            .await
+            .unwrap();
+        let authority = server.local_addr().to_string();
+        let request = format!(
+            "GET http://{authority}/must-not-run HTTP/1.1\r\nHost: {authority}\r\nConnection: close\r\n\r\n"
+        );
+        let mut client = tokio::net::TcpStream::connect(server.local_addr())
+            .await
+            .unwrap();
+        client.write_all(request.as_bytes()).await.unwrap();
+        let mut response = Vec::new();
+        client.read_to_end(&mut response).await.unwrap();
+        assert!(
+            response.starts_with(b"HTTP/1.1 400"),
+            "absolute-form request must be rejected before replay dispatch: {}",
+            String::from_utf8_lossy(&response)
+        );
+        let mut control_client = tokio::net::TcpStream::connect(server.local_addr())
+            .await
+            .unwrap();
+        control_client
+            .write_all(
+                format!(
+                    "GET /service-control HTTP/1.1\r\nHost: {authority}\r\nConnection: close\r\n\r\n"
+                )
+                .as_bytes(),
+            )
+            .await
+            .unwrap();
+        let mut control = Vec::new();
+        control_client.read_to_end(&mut control).await.unwrap();
+        assert!(
+            control.starts_with(b"HTTP/1.1 404"),
+            "origin-form control request must reach the empty replay service: {}",
+            String::from_utf8_lossy(&control)
+        );
+        server.shutdown();
+        server.wait().await;
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[tokio::test]

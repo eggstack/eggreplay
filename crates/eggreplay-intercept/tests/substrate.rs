@@ -2,10 +2,13 @@
 
 use std::sync::Arc;
 
-use eggserve_primitives::{Response, ResponseBody, StatusCode, connection_info::TlsInfo};
+use eggserve_primitives::{
+    Response, ResponseBody, StatusCode, connection_info::TlsInfo, request_target::RequestTargetForm,
+};
 use eggserve_server::{
-    ConnectionContext, ConnectionShutdown, RuntimeConfig, RuntimeState,
-    connection::serve_http1_connection, service_fn,
+    AdmissionOwnership, ConnectionContext, ConnectionShutdown, H1PolicyOwnership,
+    Http1RequestTargetMode, RuntimeConfig, RuntimeState,
+    connection::serve_http1_connection_with_policy, service_fn,
 };
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, ServerName};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -63,11 +66,22 @@ async fn published_eggserve_h1_driver_accepts_decrypted_tls_stream() {
             eggserve_primitives::connection_info::Scheme::Https
         );
 
-        let config = Arc::new(RuntimeConfig {
-            max_requests_per_connection: Some(1),
-            ..RuntimeConfig::default()
-        });
-        let state = Arc::new(RuntimeState::new(&config));
+        let config = Arc::new(
+            RuntimeConfig::builder()
+                .http1_request_target_mode(Http1RequestTargetMode::OriginOnly)
+                .policy_ownership(H1PolicyOwnership::eggserve_owned())
+                .admission_ownership(AdmissionOwnership::eggserve_owned())
+                .max_requests_per_connection(Some(1))
+                .build()
+                .expect("qualified M013A caller-owned profile"),
+        );
+        let policy = Arc::new(
+            config
+                .h1_connection_policy()
+                .expect("validated H1 policy projection"),
+        );
+        let state =
+            Arc::new(RuntimeState::try_new(&config).expect("validated runtime admission state"));
         let shutdown = ConnectionShutdown::new();
         let service = service_fn(|_request| async {
             Ok(Response::builder()
@@ -75,7 +89,7 @@ async fn published_eggserve_h1_driver_accepts_decrypted_tls_stream() {
                 .body(ResponseBody::Bytes(b"substrate-ok".to_vec()))
                 .unwrap())
         });
-        serve_http1_connection(stream, service, config, context, state, &shutdown).await
+        serve_http1_connection_with_policy(stream, service, policy, context, state, &shutdown).await
     });
 
     let socket = tokio::net::TcpStream::connect(addr).await.unwrap();
@@ -364,4 +378,497 @@ async fn eggfetch_requires_explicit_ca_and_checks_hostname_and_sni() {
 fn egress_connector(route: &str) -> eggress_outbound::OutboundConnector {
     eggress_outbound::OutboundConnector::from_pproxy_uri(route)
         .expect("qualified pproxy-compatible route")
+}
+
+#[derive(Debug, Default)]
+struct AbsoluteObservation {
+    target_form: Option<eggserve_primitives::request_target::RequestTargetForm>,
+    scheme: Option<String>,
+    uri_authority: Option<String>,
+    path: Option<String>,
+    query: Option<String>,
+    raw_target: Option<String>,
+    authority: Option<String>,
+    header_order: Vec<String>,
+    body_bytes: Vec<u8>,
+    body_complete: bool,
+    trailers: Vec<(String, String)>,
+    called: bool,
+}
+
+async fn observe_request(
+    request: eggserve_primitives::Request,
+    observation: std::sync::Arc<tokio::sync::Mutex<AbsoluteObservation>>,
+) -> Result<eggserve_primitives::Response, eggserve_server::ServiceError> {
+    let (head, mut body) = request.into_head_and_body();
+    let header_order = head
+        .headers()
+        .iter()
+        .map(|field| {
+            format!(
+                "{}:{}",
+                field.name.as_str(),
+                std::str::from_utf8(field.value.as_bytes()).unwrap_or("<binary>")
+            )
+        })
+        .collect();
+    let mut collected = AbsoluteObservation {
+        target_form: Some(head.target().form()),
+        scheme: head.target().scheme().map(str::to_owned),
+        uri_authority: head
+            .target()
+            .uri_authority()
+            .map(|authority| authority.as_str().to_owned()),
+        path: Some(head.target().path().to_owned()),
+        query: head.target().query().map(str::to_owned),
+        raw_target: Some(head.target().raw().to_owned()),
+        authority: head
+            .authority()
+            .map(|authority| authority.as_str().to_owned()),
+        header_order,
+        body_bytes: Vec::new(),
+        body_complete: false,
+        trailers: Vec::new(),
+        called: true,
+    };
+    while let Some(chunk) = body
+        .next_chunk()
+        .await
+        .map_err(|error| eggserve_server::ServiceError::internal(error.to_string()))?
+    {
+        collected.body_bytes.extend_from_slice(&chunk);
+    }
+    collected.body_complete = true;
+    if let Some(trailers) = body
+        .trailers()
+        .await
+        .map_err(|error| eggserve_server::ServiceError::internal(error.to_string()))?
+    {
+        collected.trailers = trailers
+            .as_block()
+            .iter()
+            .map(|field| {
+                (
+                    field.name.as_str().to_owned(),
+                    std::str::from_utf8(field.value.as_bytes())
+                        .unwrap_or("")
+                        .to_owned(),
+                )
+            })
+            .collect();
+    }
+    *observation.lock().await = collected;
+    Ok(eggserve_primitives::Response::builder()
+        .status(eggserve_primitives::StatusCode::OK)
+        .body(eggserve_primitives::ResponseBody::Empty)
+        .unwrap())
+}
+
+async fn drive_request(
+    config: eggserve_server::RuntimeConfig,
+    body_policy: eggserve_primitives::RequestBodyPolicy,
+    request: &[u8],
+) -> (Vec<u8>, AbsoluteObservation) {
+    let config = std::sync::Arc::new(config);
+    let policy = std::sync::Arc::new(
+        config
+            .h1_connection_policy()
+            .expect("validated H1 policy projection"),
+    );
+    let state = std::sync::Arc::new(
+        eggserve_server::RuntimeState::try_new(&config).expect("validated runtime state"),
+    );
+    let observation: std::sync::Arc<tokio::sync::Mutex<AbsoluteObservation>> =
+        std::sync::Arc::new(tokio::sync::Mutex::new(AbsoluteObservation::default()));
+    let observation_service = observation.clone();
+    let service = eggserve_server::service_fn_with_policy(
+        move |request: eggserve_primitives::Request| {
+            observe_request(request, observation_service.clone())
+        },
+        body_policy,
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let shutdown = eggserve_server::ConnectionShutdown::new();
+    let driver_task = tokio::spawn(async move {
+        let (socket, _peer) = listener.accept().await.unwrap();
+        let local = socket.local_addr().unwrap();
+        let context = eggserve_server::ConnectionContext::for_tcp(local, addr, None);
+        eggserve_server::connection::serve_http1_connection_with_policy(
+            socket, service, policy, context, state, &shutdown,
+        )
+        .await
+    });
+
+    let mut client = tokio::net::TcpStream::connect(addr).await.unwrap();
+    client.write_all(request).await.unwrap();
+    let mut response = Vec::new();
+    client.read_to_end(&mut response).await.unwrap();
+    let _ = driver_task.await.unwrap();
+    let observation = std::sync::Arc::try_unwrap(observation)
+        .expect("service observation must be uniquely owned after driver drains")
+        .into_inner();
+    (response, observation)
+}
+
+fn interception_profile_config() -> eggserve_server::RuntimeConfig {
+    eggreplay_intercept::InterceptionProfile::loopback("127.0.0.1:0".parse().unwrap())
+        .build_runtime_config()
+        .expect("qualified M013B interception profile")
+}
+
+#[tokio::test]
+async fn interception_listener_exposes_absolute_target_metadata() {
+    let raw = b"GET http://example.test:8080/a?b=1 HTTP/1.1\r\nHost: example.test:8080\r\nConnection: close\r\nX-Dup: first\r\nX-Dup: second\r\n\r\n";
+    let (response, observation) = drive_request(
+        interception_profile_config(),
+        eggserve_primitives::RequestBodyPolicy::Reject,
+        raw,
+    )
+    .await;
+    assert!(
+        response.starts_with(b"HTTP/1.1 200"),
+        "absolute-form request must reach the service; got: {}",
+        String::from_utf8_lossy(&response)
+    );
+
+    assert!(
+        observation.called,
+        "service must observe absolute-form request"
+    );
+    assert_eq!(observation.target_form, Some(RequestTargetForm::Absolute));
+    assert_eq!(observation.scheme.as_deref(), Some("http"));
+    assert_eq!(
+        observation.uri_authority.as_deref(),
+        Some("example.test:8080")
+    );
+    assert_eq!(observation.path.as_deref(), Some("/a"));
+    assert_eq!(observation.query.as_deref(), Some("b=1"));
+    assert_eq!(
+        observation.raw_target.as_deref(),
+        Some("http://example.test:8080/a?b=1")
+    );
+    assert_eq!(
+        observation.authority.as_deref(),
+        Some("example.test:8080"),
+        "canonical request authority must align with URI authority + Host"
+    );
+    let dup_indices: Vec<_> = observation
+        .header_order
+        .iter()
+        .enumerate()
+        .filter(|(_, value)| value.starts_with("x-dup:"))
+        .map(|(index, _)| index)
+        .collect();
+    assert_eq!(
+        dup_indices.len(),
+        2,
+        "duplicate non-Host headers must be preserved"
+    );
+    let first = observation.header_order[dup_indices[0]].clone();
+    let second = observation.header_order[dup_indices[1]].clone();
+    assert_eq!(first, "x-dup:first");
+    assert_eq!(second, "x-dup:second");
+}
+
+#[tokio::test]
+async fn interception_listener_rejects_host_authority_mismatch_before_service() {
+    let (response, observation) = drive_request(
+        interception_profile_config(),
+        eggserve_primitives::RequestBodyPolicy::Reject,
+        b"GET http://example.test:8080/a HTTP/1.1\r\nHost: other.test\r\nConnection: close\r\n\r\n",
+    )
+    .await;
+    let text = String::from_utf8_lossy(&response);
+    assert!(
+        text.starts_with("HTTP/1.1 400"),
+        "Host/URI authority mismatch must yield 400; got: {text}"
+    );
+    assert!(
+        !observation.called,
+        "service must not run when authority is contradictory"
+    );
+}
+
+#[tokio::test]
+async fn interception_listener_rejects_oversized_absolute_target_before_service() {
+    let mut path = String::from("/");
+    while path.len() < 300 {
+        path.push('a');
+    }
+    let request = format!(
+        "GET http://example.test{path} HTTP/1.1\r\nHost: example.test\r\nConnection: close\r\n\r\n"
+    );
+    let config = eggserve_server::RuntimeConfig::builder()
+        .bind("127.0.0.1:0".parse().unwrap())
+        .http1_request_target_mode(eggserve_server::Http1RequestTargetMode::OriginOrAbsolute)
+        .policy_ownership(eggserve_server::H1PolicyOwnership::eggserve_owned())
+        .admission_ownership(eggserve_server::AdmissionOwnership::eggserve_owned())
+        .max_request_target_bytes(128)
+        .build()
+        .expect("qualified narrowed target ceiling");
+    let (response, observation) = drive_request(
+        config,
+        eggserve_primitives::RequestBodyPolicy::Reject,
+        request.as_bytes(),
+    )
+    .await;
+    let text = String::from_utf8_lossy(&response);
+    assert!(
+        text.starts_with("HTTP/1.1 414"),
+        "absolute-form target over the ceiling must yield 414; got: {text}"
+    );
+    assert!(
+        !observation.called,
+        "service must not run when target exceeds the ceiling"
+    );
+}
+
+#[tokio::test]
+async fn interception_listener_origin_form_still_succeeds_under_origin_or_absolute() {
+    let (response, observation) = drive_request(
+        interception_profile_config(),
+        eggserve_primitives::RequestBodyPolicy::Reject,
+        b"GET /origin HTTP/1.1\r\nHost: example.test:8080\r\nConnection: close\r\n\r\n",
+    )
+    .await;
+    let text = String::from_utf8_lossy(&response);
+    assert!(
+        text.starts_with("HTTP/1.1 200"),
+        "origin-form must still succeed under OriginOrAbsolute; got: {text}"
+    );
+    assert!(observation.called);
+    assert_eq!(observation.target_form, Some(RequestTargetForm::Origin));
+    assert_eq!(observation.scheme, None);
+    assert_eq!(observation.uri_authority, None);
+    assert_eq!(observation.path.as_deref(), Some("/origin"));
+    assert_eq!(observation.authority.as_deref(), Some("example.test:8080"));
+}
+
+#[tokio::test]
+async fn interception_listener_connect_authority_form_takes_the_tunnel_path() {
+    use eggserve_server::tunnel::TunnelIo;
+    let config = std::sync::Arc::new(interception_profile_config());
+    let policy = std::sync::Arc::new(
+        config
+            .h1_connection_policy()
+            .expect("validated H1 policy projection"),
+    );
+    let state = std::sync::Arc::new(
+        eggserve_server::RuntimeState::try_new(&config).expect("validated runtime state"),
+    );
+    let service = eggserve_server::service_fn_with_tunnel(
+        |request: eggserve_primitives::Request,
+         tunnel: Option<eggserve_server::tunnel::TunnelCapability>| async move {
+            if let Some(capability) = tunnel {
+                let target = capability
+                    .request()
+                    .authority()
+                    .map(|authority| authority.as_str().to_owned())
+                    .unwrap_or_default();
+                let echo = format!(
+                    "CONNECT {}\r\nEchoed-Target: {}\r\n",
+                    target,
+                    request.head().target().raw()
+                );
+                let handler = move |mut io: TunnelIo| async move {
+                    let _ = io.write_all(echo.as_bytes()).await;
+                };
+                return capability
+                    .accept(eggserve_primitives::HeaderBlock::new(), handler)
+                    .map_err(|error| eggserve_server::ServiceError::internal(error.to_string()));
+            }
+            Ok(eggserve_primitives::Response::builder()
+                .status(eggserve_primitives::StatusCode::OK)
+                .body(eggserve_primitives::ResponseBody::Empty)
+                .unwrap())
+        },
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let shutdown = eggserve_server::ConnectionShutdown::new();
+    let driver_task = tokio::spawn(async move {
+        let (socket, _peer) = listener.accept().await.unwrap();
+        let local = socket.local_addr().unwrap();
+        let context = eggserve_server::ConnectionContext::for_tcp(local, addr, None);
+        eggserve_server::connection::serve_http1_connection_with_policy(
+            socket, service, policy, context, state, &shutdown,
+        )
+        .await
+    });
+    let mut client = tokio::net::TcpStream::connect(addr).await.unwrap();
+    client
+        .write_all(b"CONNECT example.test:443 HTTP/1.1\r\nHost: example.test:443\r\n\r\n")
+        .await
+        .unwrap();
+    let mut response = Vec::new();
+    client.read_to_end(&mut response).await.unwrap();
+    let text = String::from_utf8_lossy(&response);
+    assert!(
+        text.starts_with("HTTP/1.1 200"),
+        "CONNECT must reach the tunnel acceptance path; got: {text}"
+    );
+    assert!(
+        text.contains("CONNECT example.test:443"),
+        "tunnel echo must include the authority-form target, not an absolute form"
+    );
+    let _ = driver_task.await.unwrap();
+}
+
+#[tokio::test]
+async fn interception_listener_streams_absolute_form_chunked_body_with_trailers() {
+    let head = b"POST http://example.test:8080/upload?kind=chunked HTTP/1.1\r\nHost: example.test:8080\r\nTransfer-Encoding: chunked\r\nX-Dup: one\r\nX-Dup: two\r\nConnection: close\r\n\r\n";
+    let chunks = b"5\r\nhello\r\n6\r\n world\r\n0\r\nX-Trailer: done\r\nX-Other: ok\r\n\r\n";
+    let mut request = Vec::new();
+    request.extend_from_slice(head);
+    request.extend_from_slice(chunks);
+
+    let (response, observation) = drive_request(
+        interception_profile_config(),
+        eggserve_primitives::RequestBodyPolicy::Stream { max_bytes: 1024 },
+        &request,
+    )
+    .await;
+    let text = String::from_utf8_lossy(&response);
+    assert!(
+        text.starts_with("HTTP/1.1 200"),
+        "absolute-form chunked POST must reach the service; got: {text}"
+    );
+    assert!(observation.called);
+    assert_eq!(observation.target_form, Some(RequestTargetForm::Absolute));
+    assert_eq!(observation.scheme.as_deref(), Some("http"));
+    assert_eq!(
+        observation.uri_authority.as_deref(),
+        Some("example.test:8080")
+    );
+    assert_eq!(observation.path.as_deref(), Some("/upload"));
+    assert_eq!(observation.query.as_deref(), Some("kind=chunked"));
+    assert_eq!(
+        observation.raw_target.as_deref(),
+        Some("http://example.test:8080/upload?kind=chunked")
+    );
+    assert_eq!(observation.authority.as_deref(), Some("example.test:8080"));
+    let dup_indices: Vec<_> = observation
+        .header_order
+        .iter()
+        .enumerate()
+        .filter(|(_, value)| value.starts_with("x-dup:"))
+        .map(|(index, _)| index)
+        .collect();
+    assert_eq!(
+        dup_indices.len(),
+        2,
+        "duplicate end-to-end headers must preserve original order"
+    );
+    assert_eq!(observation.header_order[dup_indices[0]], "x-dup:one");
+    assert_eq!(observation.header_order[dup_indices[1]], "x-dup:two");
+    assert_eq!(observation.body_bytes, b"hello world");
+    assert!(observation.body_complete);
+    assert!(
+        observation
+            .trailers
+            .iter()
+            .any(|(name, _)| name == "x-trailer"),
+        "terminal trailers must reach the service; got: {:?}",
+        observation.trailers
+    );
+}
+
+#[tokio::test]
+async fn ordinary_origin_only_listener_rejects_absolute_form_before_service() {
+    let config = eggserve_server::RuntimeConfig::builder()
+        .bind("127.0.0.1:0".parse().unwrap())
+        .http1_request_target_mode(eggserve_server::Http1RequestTargetMode::OriginOnly)
+        .policy_ownership(eggserve_server::H1PolicyOwnership::eggserve_owned())
+        .admission_ownership(eggserve_server::AdmissionOwnership::eggserve_owned())
+        .build()
+        .expect("qualified OriginOnly profile");
+    let (response, observation) = drive_request(
+        config,
+        eggserve_primitives::RequestBodyPolicy::Reject,
+        b"GET http://example.test:8080/a HTTP/1.1\r\nHost: example.test:8080\r\nConnection: close\r\n\r\n",
+    )
+    .await;
+    let text = String::from_utf8_lossy(&response);
+    assert!(
+        text.starts_with("HTTP/1.1 400"),
+        "ordinary OriginOnly listener must reject absolute-form with 400; got: {text}"
+    );
+    assert!(
+        !observation.called,
+        "service must not run for an absolute-form request on an OriginOnly listener"
+    );
+}
+
+#[test]
+fn interception_profile_keeps_eggserve_owned_defaults_with_origin_or_absolute() {
+    let profile =
+        eggreplay_intercept::InterceptionProfile::loopback("127.0.0.1:0".parse().unwrap());
+    let config = profile
+        .build_runtime_config()
+        .expect("qualified M013B interception profile");
+    assert_eq!(
+        config.http1_request_target_mode,
+        eggserve_server::Http1RequestTargetMode::OriginOrAbsolute
+    );
+    let policy = config.policy_ownership;
+    assert_eq!(
+        policy.handler_deadline,
+        eggserve_server::PolicyOwner::EggServe
+    );
+    assert_eq!(
+        policy.request_body_deadline,
+        eggserve_server::PolicyOwner::EggServe
+    );
+    assert_eq!(
+        policy.keep_alive_idle_deadline,
+        eggserve_server::PolicyOwner::EggServe
+    );
+    assert_eq!(
+        policy.response_write_progress_deadline,
+        eggserve_server::PolicyOwner::EggServe
+    );
+    assert_eq!(
+        policy.global_request_body_ceiling,
+        eggserve_server::PolicyOwner::EggServe
+    );
+    assert_eq!(
+        policy.request_target_ceiling,
+        eggserve_server::PolicyOwner::EggServe
+    );
+    assert_eq!(
+        config.admission_ownership.tunnels,
+        eggserve_server::AdmissionOwner::EggServe
+    );
+    assert_eq!(
+        config.admission_ownership.service_calls,
+        eggserve_server::AdmissionOwner::EggServe
+    );
+    assert_eq!(config.bind, profile.bind);
+    assert_eq!(config.max_connections, profile.max_connections);
+    assert_eq!(
+        config.max_in_flight_requests,
+        profile.max_in_flight_requests
+    );
+    assert_eq!(config.max_active_tunnels, profile.max_active_tunnels);
+    assert_eq!(
+        config.max_request_body_bytes,
+        profile.max_request_body_bytes
+    );
+    assert_eq!(
+        config.max_request_target_bytes,
+        profile.max_request_target_bytes
+    );
+    assert_eq!(
+        config.connection_total_timeout,
+        profile.connection_total_timeout
+    );
+    assert_eq!(
+        config.keep_alive_idle_timeout,
+        profile.keep_alive_idle_timeout
+    );
+    assert_eq!(
+        config.response_write_timeout,
+        profile.response_write_timeout
+    );
 }

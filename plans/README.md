@@ -39,10 +39,9 @@ closes a plan.
 v0.1/C001–C006, M009, M010/M010-C1, and M011/M011A–M011F are closed.
 
 M012 is closed under ADR 0007. M013 is decomposed under ADR 0008 into
-M013A–M013F plus the M013B0 dependency-adoption gate. M013A is closed.
-EggServe has published the required 0.3 absolute-form seam; **M013B0 —
-EggServe 0.3 Adoption and Absolute-Form Qualification is the only ready task**.
-M013B–M013F and M014 remain blocked in dependency order.
+M013A–M013F plus the M013B0 dependency-adoption gate. M013A is closed and
+M013B0 implementation is complete locally, awaiting hosted qualification and
+closure. M013B–M013F and M014 remain blocked in dependency order.
 
 See `registry.md` for the exact handoff state.
 
