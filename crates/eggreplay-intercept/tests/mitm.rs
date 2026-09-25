@@ -958,32 +958,48 @@ async fn eggfetch_direct_downloads_full_large_tls_response() {
     let origin_pem = origin_cert.cert_pem.clone();
     let (origin_port, _captured, origin_task) =
         start_tls_origin(origin_cert, |_| fixed_response(&vec![b'z'; DIRECT_LEN])).await;
-    let client = eggfetch_core::Client::builder()
-        .retry_canceled_requests(false)
-        .dialer(eggreplay_http::EggressDialer::direct())
-        .tls_config(
-            eggfetch_core::TlsConfig::builder()
-                .ca_certificate_pem(origin_pem.as_bytes())
-                .unwrap()
-                .build(),
-        )
-        .build();
-    let mut response = client
-        .get(&format!("https://127.0.0.1:{origin_port}/big"))
-        .unwrap()
-        .send()
-        .await
-        .expect("direct download sends");
-    eprintln!("direct diag: status={}", response.status());
-    assert_eq!(response.status(), http::StatusCode::OK);
-    let text = response.text().await.expect("direct download reads");
-    eprintln!("direct diag: downloaded_len={}", text.len());
-    assert_eq!(
-        text.len(),
-        DIRECT_LEN,
-        "direct EggFetch download must be complete"
-    );
-    assert!(text.bytes().all(|byte| byte == b'z'));
+    // Two dialers pin the defect site: the default TCP stack vs the
+    // `Eggress` outbound connector our proxy always routes through. Both
+    // must deliver the full body; a split verdict names the faulty layer.
+    for (label, dialer) in [
+        ("plain-tcp", None),
+        (
+            "eggress-direct",
+            Some(eggreplay_http::EggressDialer::direct()),
+        ),
+    ] {
+        let mut builder = eggfetch_core::Client::builder().retry_canceled_requests(false);
+        if let Some(dialer) = dialer {
+            builder = builder.dialer(dialer);
+        }
+        let probe = builder
+            .tls_config(
+                eggfetch_core::TlsConfig::builder()
+                    .ca_certificate_pem(origin_pem.as_bytes())
+                    .unwrap()
+                    .build(),
+            )
+            .build();
+        let mut response = probe
+            .get(&format!("https://127.0.0.1:{origin_port}/big"))
+            .unwrap()
+            .send()
+            .await
+            .unwrap_or_else(|error| panic!("direct download ({label}) sends: {error}"));
+        eprintln!("direct diag [{label}]: status={}", response.status());
+        assert_eq!(response.status(), http::StatusCode::OK);
+        let text = response
+            .text()
+            .await
+            .unwrap_or_else(|error| panic!("direct download ({label}) reads: {error}"));
+        eprintln!("direct diag [{label}]: downloaded_len={}", text.len());
+        assert_eq!(
+            text.len(),
+            DIRECT_LEN,
+            "direct EggFetch download ({label}) must be complete"
+        );
+        assert!(text.bytes().all(|byte| byte == b'z'));
+    }
     origin_task.abort();
 }
 
