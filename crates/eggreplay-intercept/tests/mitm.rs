@@ -263,7 +263,19 @@ async fn start_tls_origin(
                     };
                     let response = responder(&request);
                     captured.lock().await.push(request);
-                    if tls.write_all(&response).await.is_err() {
+                    // Stream large responses in bounded chunks like real
+                    // servers do: a single multi-hundred-KiB `write_all`
+                    // stalled deterministically on Windows loopback runners
+                    // (upstream frame error at byte 262026 of a 300120-byte
+                    // response, cleanly recorded as a partial 200 flow).
+                    let mut wrote_all = true;
+                    for chunk in response.chunks(32 * 1024) {
+                        if tls.write_all(chunk).await.is_err() {
+                            wrote_all = false;
+                            break;
+                        }
+                    }
+                    if !wrote_all {
                         break;
                     }
                 }
