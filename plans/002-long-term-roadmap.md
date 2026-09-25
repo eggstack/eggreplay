@@ -74,8 +74,7 @@ ADR: `adrs/0008-interception-security-and-transport-boundary.md`.
 Execution is decomposed:
 
 - M013A — substrate/dependency/threat preflight (closed);
-- M013B0 — EggServe 0.3 adoption + absolute-form qualification
-  (implemented locally; hosted closure pending);
+- M013B0 — EggServe 0.3 adoption + absolute-form qualification (closed);
 - M013B — explicit HTTP proxy + CONNECT deny/tunnel;
 - M013C — CA lifecycle + bounded exact-host leaf issuance;
 - M013D — HTTPS MITM HTTP/1.1 recording;
@@ -83,8 +82,8 @@ Execution is decomposed:
 - M013F — hardening, hosted qualification, closure.
 
 EggServe's upstream absolute-form blocker is published under Plan 286. M013B0
-has adopted the 0.3 line and is awaiting hosted qualification and closure;
-M013B and later work remain blocked until that closure.
+is closed on the qualified 0.3 line; M013B is the sole ready task, and later
+work remains blocked by its declared dependencies.
 
 ## Stage 10 — broader compatibility (M014)
 

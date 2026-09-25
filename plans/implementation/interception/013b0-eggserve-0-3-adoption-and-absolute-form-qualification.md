@@ -1,6 +1,6 @@
 # M013B0 — EggServe 0.3 Adoption and Absolute-Form Qualification
 
-Status: implemented
+Status: closed
 Depends on: M013A closure + published EggServe Plan-286 artifacts
 Parent milestone: M013
 Unblocks: M013B
@@ -366,23 +366,23 @@ No public Internet is required for behavioral tests.
 
 ## Acceptance criteria
 
-- [ ] EggReplay resolves exactly `eggserve-primitives 0.2.1` and
+- [x] EggReplay resolves exactly `eggserve-primitives 0.2.1` and
       `eggserve-server 0.3.0`.
-- [ ] no duplicate old EggServe server/primitives remain in the lock graph.
-- [ ] no core/static/PHF dependency enters the direct EggReplay path.
-- [ ] ordinary replay/recording remains `OriginOnly` and EggServe-owned.
-- [ ] existing recording/replay/WebSocket behavior remains green.
-- [ ] M013A caller-owned TLS proof uses the validated 0.3 policy path.
-- [ ] interception preflight explicitly enables `OriginOrAbsolute`.
-- [ ] absolute target form/scheme/authority/path/query are observed from the
+- [x] no duplicate old EggServe server/primitives remain in the lock graph.
+- [x] no core/static/PHF dependency enters the direct EggReplay path.
+- [x] ordinary replay/recording remains `OriginOnly` and EggServe-owned.
+- [x] existing recording/replay/WebSocket behavior remains green.
+- [x] M013A caller-owned TLS proof uses the validated 0.3 policy path.
+- [x] interception preflight explicitly enables `OriginOrAbsolute`.
+- [x] absolute target form/scheme/authority/path/query are observed from the
       canonical service request.
-- [ ] Host mismatch and full-target 414 fail before service.
-- [ ] CONNECT remains tunnel-form behavior.
-- [ ] absolute-form streamed body + trailers reach the service correctly.
-- [ ] M013B ownership profile has exactly one tunnel-admission authority.
-- [ ] default Python wheel remains interception-free.
-- [ ] Rust 1.89 and the full hosted platform matrix pass.
-- [ ] closure evidence exists before M013B becomes ready.
+- [x] Host mismatch and full-target 414 fail before service.
+- [x] CONNECT remains tunnel-form behavior.
+- [x] absolute-form streamed body + trailers reach the service correctly.
+- [x] M013B ownership profile has exactly one tunnel-admission authority.
+- [x] default Python wheel remains interception-free.
+- [x] Rust 1.89 and the full hosted platform matrix pass.
+- [x] closure evidence exists before M013B becomes ready.
 
 ## Non-goals
 

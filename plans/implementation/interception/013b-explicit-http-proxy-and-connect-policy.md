@@ -1,6 +1,6 @@
 # M013B — Explicit HTTP Proxy and CONNECT Policy
 
-Status: blocked
+Status: ready
 Depends on: M013B0
 Parent milestone: M013
 
@@ -11,10 +11,12 @@ published `eggserve-primitives 0.2.1` and `eggserve-server 0.3.0` with an
 explicit `Http1RequestTargetMode::OriginOrAbsolute` path and canonical
 absolute target form/scheme/authority/path/query metadata.
 
-M013B0 has adopted and locally qualified that source-incompatible 0.3 direct
-runtime, including the opt-in absolute-form service seam. Its hosted
-qualification and closure evidence remain required before M013B begins, so
-M013B remains blocked on M013B0.
+M013B0 is closed. EggReplay is pinned and qualified on
+`eggserve-primitives 0.2.1` and `eggserve-server 0.3.0`, including the
+opt-in absolute-form service seam. Its closure proves ordinary
+record/replay/WebSocket regressions, the real gateway rejection boundary,
+and caller-owned TLS qualification. M013B may begin against this baseline;
+another dependency migration remains outside M013B.
 
 ## Objective
 

@@ -121,10 +121,10 @@ interception work:
   composition;
 - `eggnet-tls` remains 0.2.0.
 
-EggReplay has adopted server 0.3.0/primitives 0.2.1 and locally qualified the
-line. Hosted qualification and closure evidence remain required before the
-repository declares M013B0 closed.
+EggReplay has adopted and qualified server 0.3.0/primitives 0.2.1. The
+M013B0 closure records the exact dependency graph, local verification, and
+hosted cross-platform evidence.
 
 M013B0 intentionally keeps ordinary EggReplay services on EggServe-owned
 policy/admission defaults. M013B will use `OriginOrAbsolute` explicitly for
-the proxy listener after closure.
+the proxy listener.
