@@ -58,11 +58,11 @@ boundary, and ADR 0008 owns interception security/transport ownership.
 | M013 | `implementation/interception/013-explicit-proxy-and-optional-mitm.md` | ready (decomposed) | M012 closure | interception milestone umbrella |
 | M013A | `implementation/interception/013a-substrate-dependency-and-threat-preflight.md` | closed | M012 closure | dependency/TLS/route substrate + threat model |
 | M013B0 | `implementation/interception/013b0-eggserve-0-3-adoption-and-absolute-form-qualification.md` | **closed** | M013A + published EggServe Plan-286 artifacts | EggServe 0.3 adoption + absolute-form qualification |
-| M013B | `implementation/interception/013b-explicit-http-proxy-and-connect-policy.md` | **ready** | M013B0 | HTTP proxy + CONNECT deny/tunnel |
-| M013C | `implementation/interception/013c-ca-lifecycle-and-leaf-issuance.md` | blocked | M013B | CA/key lifecycle + leaf issuance |
-| M013D | `implementation/interception/013d-https-mitm-http1-recording.md` | blocked | M013C | HTTPS MITM H1 recording |
-| M013E | `implementation/interception/013e-cli-policy-and-operator-experience.md` | blocked | M013D | CLI/policy/operator surface |
-| M013F | `implementation/interception/013f-hardening-qualification-and-closure.md` | blocked | M013E | hardening + M013 closure |
+| M013B | `implementation/interception/013b-explicit-http-proxy-and-connect-policy.md` | **closed** | M013B0 | HTTP proxy + CONNECT deny/tunnel |
+| M013C | `implementation/interception/013c-ca-lifecycle-and-leaf-issuance.md` | **closed** | M013B | CA/key lifecycle + leaf issuance |
+| M013D | `implementation/interception/013d-https-mitm-http1-recording.md` | **closed** | M013C | HTTPS MITM H1 recording |
+| M013E | `implementation/interception/013e-cli-policy-and-operator-experience.md` | **closed** | M013D | CLI/policy/operator surface |
+| M013F | `implementation/interception/013f-hardening-qualification-and-closure.md` | **ready** | M013E | hardening + M013 closure |
 | M014 | `implementation/compatibility/014-compatibility-program.md` | blocked | M013 closure | umbrella compatibility stage |
 | M014A | `implementation/compatibility/014a-har-and-migration.md` | blocked | M013 closure | HAR + migration |
 | M014B | `implementation/compatibility/014b-http2-qualification.md` | blocked | M013 closure, M010 | H2 qualification |
@@ -103,8 +103,23 @@ and direct-runtime policy APIs required by M013B. M013B0 is closed on
 implementation revision `86cf2ff` with hosted run `36094432787`; its closure
 qualifies ordinary record/replay/WebSocket regressions, the real gateway
 rejection boundary, the caller-owned TLS path, and the interception
-absolute-form seam. M013B is the sole ready task. M013C–M013F and M014–M014D
-remain blocked by dependency order. See
+absolute-form seam. M013B is closed with local verification green (188 workspace tests:
+19 new `eggreplay-intercept` unit tests and 23 new `proxy_policy`
+integration tests). See
+`closure/m013b-explicit-http-proxy-and-connect-policy.md`. M013C is closed
+with local verification green (223 workspace tests: 24 new
+`eggreplay-intercept` unit tests and 11 new `ca_leaf` integration tests). See
+`closure/m013c-ca-lifecycle-and-leaf-issuance.md`. M013D is closed
+with local verification green (256 workspace tests: 10 new lib unit + 23
+new `mitm` integration tests). See
+`closure/m013d-https-mitm-http1-recording.md`. M013E is closed
+with local verification green (288 workspace tests). See
+`closure/m013e-cli-policy-and-operator-experience.md`. M013F is the sole
+ready task (local hardening portion in progress: resource-bounds pinning,
+secret-audit `hardening.rs`, curl interop, dedicated `interception` CI job,
+threat-model verification table; statuses unchanged pending hosted green).
+M014–M014D remain blocked on M013 closure.
+See also
 `closure/m013b0-eggserve-0-3-adoption-and-absolute-form-qualification.md`.
 
 ## Canonical planning documents

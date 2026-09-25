@@ -1,8 +1,9 @@
 # M013E — CLI, Policy, and Operator Experience
 
-Status: blocked
+Status: closed
 Depends on: M013D
 Parent milestone: M013
+Unblocks: M013F
 
 ## Objective
 

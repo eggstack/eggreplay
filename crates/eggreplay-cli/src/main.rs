@@ -1,3 +1,7 @@
+//! `EggReplay` command-line interface: semantic HTTP recording, replay, and
+//! regression testing, plus the optional M013E interception operator surface
+//! (`proxy`/`ca`, compiled only with the `intercept` Cargo feature).
+
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use eggreplay_core::{
     ComparisonPolicy, FlowOutcome, Matcher, PhysicalRoute, ReportScheduler, SessionMetadata,
@@ -7,8 +11,12 @@ use eggreplay_http::{EggressDialer, ReplayFixture, execute_candidate};
 use eggreplay_store::{RecordingSession, Session, StoreLimits};
 use serde::Serialize;
 use serde_json::json;
+use std::fmt::Write as _;
+use std::io::Read as _;
 use std::path::PathBuf;
 use std::process::ExitCode;
+
+mod intercept;
 
 fn websocket_options(
     enabled: bool,
@@ -43,20 +51,23 @@ enum Command {
     Diff(DiffArgs),
     Inspect(InspectArgs),
     Validate(ValidateArgs),
+    Proxy(intercept::ProxyArgs),
+    Ca(intercept::CaArgs),
 }
 
 #[derive(Debug, Clone, Args)]
-struct OutputArgs {
+pub(crate) struct OutputArgs {
     #[arg(long, value_enum, default_value_t = OutputChoice::Human)]
     output: OutputChoice,
 }
 #[derive(Debug, Clone, Copy, ValueEnum)]
-enum OutputChoice {
+pub(crate) enum OutputChoice {
     Human,
     Json,
     Junit,
 }
 #[derive(Debug, Args)]
+#[allow(clippy::struct_excessive_bools)]
 struct RecordArgs {
     #[arg(long)]
     listen: std::net::SocketAddr,
@@ -98,6 +109,7 @@ struct RecordArgs {
     output: OutputArgs,
 }
 #[derive(Debug, Args)]
+#[allow(clippy::struct_excessive_bools)]
 struct ServeArgs {
     #[arg(long)]
     fixture: PathBuf,
@@ -303,6 +315,7 @@ struct DiffArgs {
     output: OutputArgs,
 }
 #[derive(Debug, Args)]
+#[allow(clippy::struct_excessive_bools)]
 struct InspectArgs {
     #[arg(long)]
     fixture: PathBuf,
@@ -401,9 +414,11 @@ async fn run(cli: Cli) -> Result<(), (String, String)> {
             )
             .await
         }
-        Command::Diff(args) => diff(args).await,
-        Command::Inspect(args) => inspect(args).await,
-        Command::Validate(args) => validate(args).await,
+        Command::Diff(args) => diff(&args),
+        Command::Inspect(args) => inspect(&args),
+        Command::Validate(args) => validate(&args),
+        Command::Proxy(args) => intercept::run_proxy(args).await,
+        Command::Ca(args) => intercept::run_ca(&args),
     }
 }
 
@@ -892,6 +907,7 @@ fn recover_fixture_transactionally(target: &std::path::Path) -> Result<(), Strin
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_lines)]
 async fn regression(
     fixture: PathBuf,
     target: String,
@@ -1249,7 +1265,8 @@ async fn compare_candidate_flow(
     Ok(report)
 }
 
-async fn diff(args: DiffArgs) -> Result<(), (String, String)> {
+#[allow(clippy::too_many_lines)]
+fn diff(args: &DiffArgs) -> Result<(), (String, String)> {
     let policy = comparison_policy(&args.comparison)?;
     let baseline = Session::open(&args.baseline, StoreLimits::default())
         .map_err(|error| ("fixture".into(), error.to_string()))?;
@@ -1417,7 +1434,7 @@ async fn diff(args: DiffArgs) -> Result<(), (String, String)> {
                         left_ws,
                         right_ws,
                         policy.websocket_cadence_tolerance_ns,
-                    ))
+                    ));
                 }
                 _ => {
                     return Err((
@@ -1432,7 +1449,10 @@ async fn diff(args: DiffArgs) -> Result<(), (String, String)> {
         }
         reports.push(report);
     }
-    let success = left.len() == right.len() && reports.iter().all(|report| report.is_success());
+    let success = left.len() == right.len()
+        && reports
+            .iter()
+            .all(eggreplay_core::RegressionReport::is_success);
     let flow_ids = left.iter().map(|flow| flow.id.clone()).collect::<Vec<_>>();
     emit_reports(
         "diff",
@@ -1450,7 +1470,8 @@ async fn diff(args: DiffArgs) -> Result<(), (String, String)> {
     Ok(())
 }
 
-async fn inspect(args: InspectArgs) -> Result<(), (String, String)> {
+#[allow(clippy::too_many_lines)]
+fn inspect(args: &InspectArgs) -> Result<(), (String, String)> {
     let session = Session::open(&args.fixture, StoreLimits::default())
         .map_err(|error| ("fixture".into(), error.to_string()))?;
     let mut flows = Vec::new();
@@ -1586,6 +1607,7 @@ fn fixture_websockets(
         .collect())
 }
 
+#[allow(clippy::too_many_lines)]
 fn compare_fixture_websockets(
     baseline: &Session,
     candidate: &Session,
@@ -1601,7 +1623,7 @@ fn compare_fixture_websockets(
             field,
             baseline,
             candidate,
-        })
+        });
     };
     if left.selected_subprotocol != right.selected_subprotocol {
         finding(
@@ -1770,8 +1792,11 @@ fn inspect_body(
             };
             let total = handle.len();
             let mut file = handle.into_file();
-            use std::io::Read;
-            let mut buf = vec![0u8; (total.min(max_bytes)) as usize];
+            // u64->usize: `total.min(max_bytes)` is already bounded by the CLI
+            // `--max-body-bytes`; `try_from` rejects >usize::MAX on 32-bit
+            // instead of silently truncating.
+            let capped = usize::try_from(total.min(max_bytes)).unwrap_or(usize::MAX);
+            let mut buf = vec![0u8; capped];
             let read = std::io::Read::by_ref(&mut file)
                 .take(max_bytes)
                 .read(&mut buf)
@@ -1802,8 +1827,9 @@ fn inspect_body(
                     for (index, byte) in chunk.iter().enumerate() {
                         triple[index] = *byte;
                     }
-                    let combined =
-                        ((triple[0] as u32) << 16) | ((triple[1] as u32) << 8) | (triple[2] as u32);
+                    let combined = (u32::from(triple[0]) << 16)
+                        | (u32::from(triple[1]) << 8)
+                        | u32::from(triple[2]);
                     let pad = 3 - chunk.len();
                     for index in 0..4 - pad {
                         encoded.push(B64[((combined >> (18 - 6 * index)) & 63) as usize] as char);
@@ -1905,7 +1931,7 @@ fn redaction_policy(
     }
 }
 
-async fn validate(args: ValidateArgs) -> Result<(), (String, String)> {
+fn validate(args: &ValidateArgs) -> Result<(), (String, String)> {
     let session = Session::open(&args.fixture, StoreLimits::default())
         .map_err(|error| ("fixture".into(), error.to_string()))?;
     emit(
@@ -1928,17 +1954,17 @@ fn body(
     }
 }
 fn redact_url(value: &str) -> String {
-    value
-        .parse::<url::Url>()
-        .map(|mut url| {
+    value.parse::<url::Url>().map_or_else(
+        |_| "<invalid-url>".into(),
+        |mut url| {
             if !url.username().is_empty() {
                 let _ = url.set_username("<redacted>");
             }
             let _ = url.set_password(None);
             url.set_query(None);
             url.to_string()
-        })
-        .unwrap_or_else(|_| "<invalid-url>".into())
+        },
+    )
 }
 
 fn escape_xml(input: &str) -> String {
@@ -1983,16 +2009,14 @@ fn junit_for_reports(
             }
             _ => (false, String::new()),
         };
-        out.push_str(&format!(
+        let _ = write!(
+            out,
             "<testcase name=\"{}\" classname=\"{}\">",
             escape_xml(flow_id),
             escape_xml(command)
-        ));
+        );
         if failed {
-            out.push_str(&format!(
-                "<failure message=\"mismatch\">{}</failure>",
-                details
-            ));
+            let _ = write!(out, "<failure message=\"mismatch\">{details}</failure>");
         }
         out.push_str("</testcase>");
     }
@@ -2055,6 +2079,17 @@ fn emit(
     failure: Option<&str>,
     payload: serde_json::Value,
 ) {
+    emit_with_warnings(command, output, success, failure, payload, Vec::new());
+}
+
+fn emit_with_warnings(
+    command: &str,
+    output: OutputChoice,
+    success: bool,
+    failure: Option<&str>,
+    payload: serde_json::Value,
+    warnings: Vec<String>,
+) {
     match output {
         OutputChoice::Json => {
             let envelope = Envelope {
@@ -2062,7 +2097,7 @@ fn emit(
                 schema_version: 1,
                 success,
                 failure_class: failure.map(str::to_owned),
-                warnings: Vec::new(),
+                warnings,
                 payload,
             };
             println!(

@@ -48,6 +48,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 tempfile = "3"
+time = { version = "0.3", default-features = false, features = ["std"] }
+x509-parser = { version = "0.16", features = ["verify"] }
 thiserror = "2"
 tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
 tracing = "0.1"
@@ -67,4 +69,4 @@ eggress-outbound = { version = "=1.0.8", default-features = false }
 eggnet-tls = { version = "=0.2.0" }
 rustls = { version = "=0.23.45", default-features = false, features = ["ring", "std", "tls12"] }
 tokio-rustls = { version = "=0.26.2", default-features = false, features = ["ring", "tls12"] }
-rcgen = { version = "=0.13.2", default-features = false, features = ["ring", "pem"] }
+rcgen = { version = "=0.13.2", default-features = false, features = ["ring", "pem", "x509-parser"] }

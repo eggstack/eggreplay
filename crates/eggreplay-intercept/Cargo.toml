@@ -8,6 +8,7 @@ repository.workspace = true
 description = "Optional explicit proxy and HTTPS interception for EggReplay"
 
 [dependencies]
+eggfetch-core.workspace = true
 eggreplay-core = { path = "../eggreplay-core" }
 eggreplay-store = { path = "../eggreplay-store" }
 eggreplay-http = { path = "../eggreplay-http", features = ["eggserve", "eggress"] }
@@ -15,17 +16,31 @@ eggserve-primitives.workspace = true
 eggserve-server.workspace = true
 eggnet-tls.workspace = true
 eggress-outbound = { workspace = true, features = ["pproxy-compat"] }
-eggfetch-core.workspace = true
 rustls.workspace = true
 tokio-rustls.workspace = true
 rcgen.workspace = true
+bytes.workspace = true
+futures-util.workspace = true
+http.workspace = true
+http-body.workspace = true
+http-body-util.workspace = true
 tokio.workspace = true
 thiserror.workspace = true
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tempfile.workspace = true
+time.workspace = true
+x509-parser.workspace = true
 
 [dev-dependencies]
+eggfetch-core = { workspace = true, features = ["proxy"] }
 http.workspace = true
 http-body-util.workspace = true
+serde_json.workspace = true
 tempfile.workspace = true
+tokio.workspace = true
 
 [lints]
 workspace = true

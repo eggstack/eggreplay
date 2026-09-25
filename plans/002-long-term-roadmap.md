@@ -75,15 +75,18 @@ Execution is decomposed:
 
 - M013A — substrate/dependency/threat preflight (closed);
 - M013B0 — EggServe 0.3 adoption + absolute-form qualification (closed);
-- M013B — explicit HTTP proxy + CONNECT deny/tunnel;
-- M013C — CA lifecycle + bounded exact-host leaf issuance;
-- M013D — HTTPS MITM HTTP/1.1 recording;
-- M013E — CLI/policy/operator UX;
-- M013F — hardening, hosted qualification, closure.
+- M013B — explicit HTTP proxy + CONNECT deny/tunnel (closed, local);
+- M013C — CA lifecycle + bounded exact-host leaf issuance (closed, local);
+- M013D — HTTPS MITM HTTP/1.1 recording (closed, local);
+- M013E — CLI/policy/operator UX (closed, local);
+- M013F — hardening, hosted qualification, closure (ready; local portion in progress).
 
 EggServe's upstream absolute-form blocker is published under Plan 286. M013B0
-is closed on the qualified 0.3 line; M013B is the sole ready task, and later
-work remains blocked by its declared dependencies.
+is closed on the qualified 0.3 line; M013B, M013C, M013D, and M013E are
+closed (local verification; hosted qualification deferred to M013F).
+M013F hardening/qualification is the sole ready task, and later work remains
+blocked by its declared dependencies. M013 itself stays open until hosted
+green evidence closes it through the coordinator's formal closure record.
 
 ## Stage 10 — broader compatibility (M014)
 

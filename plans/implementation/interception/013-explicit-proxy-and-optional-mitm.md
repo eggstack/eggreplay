@@ -1,6 +1,6 @@
 # M013 — Explicit Proxy Acquisition and Optional HTTPS Interception
 
-Status: ready (decomposed; M013A and M013B0 closed, execute M013B next)
+Status: ready (decomposed; M013A, M013B0, M013B, M013C, M013D, and M013E closed, execute M013F next)
 Depends on: M012 closure
 Roadmap stage: 9
 Architecture: ADR 0008
@@ -30,8 +30,8 @@ EggReplay library/Python builds.
 | M013E | `013e-cli-policy-and-operator-experience.md` | optional CLI, policy files, trust/operator UX |
 | M013F | `013f-hardening-qualification-and-closure.md` | security/resource/interoperability qualification + closure |
 
-M013A and M013B0 are closed. M013B is the sole ready task; M013C and later
-subplans remain blocked by their declared dependencies.
+M013A, M013B0, M013B, M013C, M013D, and M013E are closed. M013F is
+the sole ready task; M014 remains blocked on M013 closure.
 
 ## Ownership boundary
 

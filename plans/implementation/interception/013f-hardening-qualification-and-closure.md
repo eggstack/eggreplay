@@ -1,8 +1,9 @@
 # M013F — Interception Hardening, Qualification, and M013 Closure
 
-Status: blocked
+Status: ready
 Depends on: M013E
 Parent milestone: M013
+Unblocks: M014, M014A, M014B
 
 ## Objective
 

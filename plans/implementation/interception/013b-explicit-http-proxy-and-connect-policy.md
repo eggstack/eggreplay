@@ -1,8 +1,9 @@
 # M013B — Explicit HTTP Proxy and CONNECT Policy
 
-Status: ready
+Status: closed
 Depends on: M013B0
 Parent milestone: M013
+Unblocks: M013C
 
 ## Current dependency gate
 

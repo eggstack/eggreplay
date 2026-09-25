@@ -1,5 +1,6 @@
 //! C004 subprocess CLI contracts: routes, exit codes, JSON/JUnit, inspect bodies.
-use std::io::Write;
+use std::fmt::Write as _;
+use std::io::{Read as _, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -227,7 +228,6 @@ fn per_flow_junit_counts_are_correct() {
         for stream in listener.incoming().flatten() {
             let mut stream = stream;
             let mut buf = [0u8; 4096];
-            use std::io::Read;
             let _ = stream.read(&mut buf);
             let _ = stream
                 .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
@@ -308,6 +308,7 @@ fn per_flow_junit_counts_are_correct() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn eggress_http_proxy_route_replays_from_cli() {
     use std::io::{Read, Write as IoWrite};
     // Target server returning fixed body.
@@ -335,7 +336,7 @@ fn eggress_http_proxy_route_replays_from_cli() {
                 let mut tmp = [0u8; 4096];
                 loop {
                     match client.read(&mut tmp) {
-                        Ok(0) => return,
+                        Ok(0) | Err(_) => return,
                         Ok(n) => {
                             buf.extend_from_slice(&tmp[..n]);
                             if buf.windows(4).any(|window| window == b"\r\n\r\n") {
@@ -345,7 +346,6 @@ fn eggress_http_proxy_route_replays_from_cli() {
                                 return;
                             }
                         }
-                        Err(_) => return,
                     }
                 }
                 let text = String::from_utf8_lossy(&buf).into_owned();
@@ -388,9 +388,10 @@ fn eggress_http_proxy_route_replays_from_cli() {
                     forwarded.push_str("\r\n");
                     forwarded.push_str(line);
                 }
-                forwarded.push_str(&format!(
+                let _ = write!(
+                    forwarded,
                     "\r\nHost: {authority}\r\nConnection: close\r\n\r\n"
-                ));
+                );
                 if upstream.write_all(forwarded.as_bytes()).is_err() {
                     return;
                 }

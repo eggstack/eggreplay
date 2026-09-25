@@ -1,8 +1,9 @@
 # M013D — HTTPS MITM HTTP/1.1 Recording
 
-Status: blocked
+Status: closed
 Depends on: M013C
 Parent milestone: M013
+Unblocks: M013E
 
 ## Objective
 

@@ -1,8 +1,9 @@
 # M013C — Interception CA Lifecycle and Leaf Issuance
 
-Status: blocked
+Status: closed
 Depends on: M013B
 Parent milestone: M013
+Unblocks: M013D
 
 ## Objective
 

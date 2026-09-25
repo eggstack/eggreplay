@@ -149,3 +149,30 @@ jobs:
             fi
           done
       - run: cargo check -p eggreplay-intercept --all-targets --locked
+
+  interception:
+    # M013F qualification lane: deterministic local CA/CONNECT/MITM coverage
+    # that the ordinary all-features matrix also runs, pinned here so the
+    # interception evidence stays attributable to one job. Runs wherever the
+    # `verify` matrix runs (Ubuntu/macOS/Windows) plus the minimum-feature
+    # graphs that prove the capability stays optional.
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      # Minimum-feature graphs: default builds stay interception-free (tree
+      # queries need metadata only, so the Python wheel lane needs no
+      # interpreter here; the python-bindings jobs still own the wheel).
+      - run: cargo check -p eggreplay-cli --no-default-features --locked
+      - run: cargo check -p eggreplay-intercept --all-targets --locked
+      - run: cargo tree -p eggreplay-python --edges normal --prefix none | grep -E '^(eggreplay-intercept|rcgen) ' && exit 1 || echo "python wheel lane interception-free"
+      # Full interception qualification: CA lifecycle, CONNECT policy,
+      # MITM recording, hardening/secret audit, resource bounds, curl interop
+      # (curl-gated tests skip where curl is absent, never fail).
+      - run: cargo test -p eggreplay-intercept --all-features --locked
+      - run: cargo test -p eggreplay-cli --features intercept --locked
