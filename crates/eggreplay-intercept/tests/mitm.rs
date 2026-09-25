@@ -262,20 +262,30 @@ async fn start_tls_origin(
                         break;
                     };
                     let response = responder(&request);
-                    captured.lock().await.push(request);
                     // Stream large responses in bounded chunks like real
-                    // servers do: a single multi-hundred-KiB `write_all`
-                    // stalled deterministically on Windows loopback runners
-                    // (upstream frame error at byte 262026 of a 300120-byte
-                    // response, cleanly recorded as a partial 200 flow).
-                    let mut wrote_all = true;
+                    // servers do. (A single multi-hundred-KiB `write_all`
+                    // was ruled out as the Windows truncation cause: chunking
+                    // did not move the identical 262026-byte cut.)
+                    // Captured test output surfaces write health on failure.
+                    let mut written = 0usize;
+                    let mut write_error = None;
                     for chunk in response.chunks(32 * 1024) {
-                        if tls.write_all(chunk).await.is_err() {
-                            wrote_all = false;
+                        if let Err(error) = tls.write_all(chunk).await {
+                            write_error = Some(error.to_string());
                             break;
                         }
+                        written += chunk.len();
                     }
-                    if !wrote_all {
+                    eprintln!(
+                        "origin diag: response_len={} written={} write_error={:?} method={} target={}",
+                        response.len(),
+                        written,
+                        write_error,
+                        request.method,
+                        request.target,
+                    );
+                    captured.lock().await.push(request);
+                    if write_error.is_some() {
                         break;
                     }
                 }
@@ -928,6 +938,45 @@ async fn mitm_streams_large_bodies_both_directions() {
         "upstream must end cleanly: {:?}",
         recorded.upstream_error
     );
+}
+
+/// Leg isolation for the Windows large-body truncation: `EggFetch` straight
+/// at the test origin with no proxy/recording in between. If this fails the
+/// same way, the defect is in the origin helper or `EggFetch` on Windows (not
+/// interception logic); if it passes, the record path is implicated.
+#[tokio::test]
+async fn eggfetch_direct_downloads_full_large_tls_response() {
+    let origin_cert = make_origin_cert(&["localhost", "127.0.0.1"]);
+    let origin_pem = origin_cert.cert_pem.clone();
+    let (origin_port, _captured, origin_task) =
+        start_tls_origin(origin_cert, |_| fixed_response(&vec![b'z'; 300_000])).await;
+    let client = eggfetch_core::Client::builder()
+        .retry_canceled_requests(false)
+        .dialer(eggreplay_http::EggressDialer::direct())
+        .tls_config(
+            eggfetch_core::TlsConfig::builder()
+                .ca_certificate_pem(origin_pem.as_bytes())
+                .unwrap()
+                .build(),
+        )
+        .build();
+    let mut response = client
+        .get(&format!("https://127.0.0.1:{origin_port}/big"))
+        .unwrap()
+        .send()
+        .await
+        .expect("direct download sends");
+    eprintln!("direct diag: status={}", response.status());
+    assert_eq!(response.status(), http::StatusCode::OK);
+    let text = response.text().await.expect("direct download reads");
+    eprintln!("direct diag: downloaded_len={}", text.len());
+    assert_eq!(
+        text.len(),
+        300_000,
+        "direct EggFetch download must be complete"
+    );
+    assert!(text.bytes().all(|byte| byte == b'z'));
+    origin_task.abort();
 }
 
 #[tokio::test]
