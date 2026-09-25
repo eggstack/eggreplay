@@ -310,10 +310,23 @@ async fn curl_https_connect_mitm_records() {
     // against the exported interception CA, and negotiates http/1.1.
     // (`--proxy-cacert` exists only on newer curl; the proxy leg itself is
     // plaintext HTTP so it is unnecessary here — probe before using it.)
-    let supports_proxy_cacert = Command::new("curl")
-        .arg("--help")
-        .output()
-        .is_ok_and(|output| String::from_utf8_lossy(&output.stdout).contains("proxy-cacert"));
+    let version_output = Command::new("curl").arg("--version").output();
+    let version_text = version_output.map_or_else(
+        |_| String::new(),
+        |output| String::from_utf8_lossy(&output.stdout).into_owned(),
+    );
+    let help_text = Command::new("curl").arg("--help").output().map_or_else(
+        |_| String::new(),
+        |output| String::from_utf8_lossy(&output.stdout).into_owned(),
+    );
+    let supports_proxy_cacert = help_text.contains("proxy-cacert");
+    // Windows schannel curl performs revocation checking even against
+    // `--cacert` anchors; M013 mints test leaves without CRL/OCSP (no
+    // OCSP/CRL plumbing by plan), so schannel reports
+    // CERT_TRUST_REVOCATION_STATUS_UNKNOWN. Disable only that check for the
+    // hermetic test CA. The flag is schannel-only: probe before using it so
+    // OpenSSL/Rustls curl builds never see an unknown option.
+    let is_schannel = version_text.to_lowercase().contains("schannel");
     let mut args: Vec<String> = vec![
         "--silent".to_owned(),
         "--show-error".to_owned(),
@@ -324,6 +337,9 @@ async fn curl_https_connect_mitm_records() {
         "--cacert".to_owned(),
         ca_pem.to_str().unwrap().to_owned(),
     ];
+    if is_schannel {
+        args.push("--ssl-no-revoke".to_owned());
+    }
     if supports_proxy_cacert {
         args.push("--proxy-cacert".to_owned());
         args.push(ca_pem.to_str().unwrap().to_owned());

@@ -565,7 +565,7 @@ pub fn repair_ca_permissions(dir: &Path) -> Result<(), CaError> {
     #[cfg(not(unix))]
     {
         let _ = dir;
-        return Err(CaError::PermissionRepairUnsupported);
+        Err(CaError::PermissionRepairUnsupported)
     }
     #[cfg(unix)]
     {
@@ -896,11 +896,14 @@ fn write_new_file(
 }
 
 /// Enforce directory/key permissions (Unix only; documented no-op elsewhere).
+// On non-Unix targets the function trivially succeeds (no `mode`-based
+// enforcement exists there); the allow documents that platform split.
+#[cfg_attr(not(unix), allow(clippy::unnecessary_wraps))]
 fn check_permissions(dir: &Path) -> Result<(), CaError> {
     #[cfg(not(unix))]
     {
         let _ = dir;
-        return Ok(());
+        Ok(())
     }
     #[cfg(unix)]
     {
