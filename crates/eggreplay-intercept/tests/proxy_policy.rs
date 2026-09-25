@@ -1042,8 +1042,15 @@ async fn connect_tunnel_applies_backpressure() {
         .unwrap();
     let head = read_response_head(&mut stream).await;
     assert!(String::from_utf8_lossy(&head).starts_with("HTTP/1.1 200"));
-    let payload = vec![b'p'; 2 * 1024 * 1024];
-    let blocked = tokio::time::timeout(Duration::from_secs(1), stream.write_all(&payload)).await;
+    // 16 MiB cannot fit in the ~100 KiB of requested socket buffers plus the
+    // relay's bounded internal buffer, so the write must stay pending while
+    // the target holds without reading. (2 MiB proved too small: fast hosted
+    // loopback stacks absorbed it within the timeout despite the 8 KiB
+    // buffer requests.) The 5 s budget only needs to be shorter than the
+    // time any correct backpressured relay would need to drain 16 MiB into
+    // a non-reading peer (effectively never).
+    let payload = vec![b'p'; 16 * 1024 * 1024];
+    let blocked = tokio::time::timeout(Duration::from_secs(5), stream.write_all(&payload)).await;
     assert!(
         blocked.is_err(),
         "relay must exert backpressure instead of buffering unboundedly"

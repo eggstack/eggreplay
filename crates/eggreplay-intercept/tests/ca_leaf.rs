@@ -179,19 +179,25 @@ fn tampered_cert_breaks_fingerprint_binding() {
     let (dir, _ca) = create_ca(root.path(), "ca");
     let cert_path = dir.join("ca-cert.pem");
     let text = fs::read_to_string(&cert_path).expect("read cert");
-    // Deterministic tamper: flip one base64 body char to a different valid
-    // alphabet char so the PEM armor stays parseable but the DER changes.
+    // Deterministic tamper: flip one base64 body char well inside the
+    // payload (not the final quantum, whose low bits may be padding and can
+    // decode to identical DER, letting a tampered cert open successfully).
     // Either rejection proves the fingerprint binding holds: Mismatch when
     // the DER still parses but no longer matches metadata, Unparseable when
     // the flip lands on framing-sensitive bits.
-    let header_end = text.find("-----END").expect("footer");
-    let body_end = text[..header_end]
-        .rfind(char::is_alphanumeric)
-        .expect("body");
+    let first_newline = text.find('\n').expect("armor header") + 1;
+    let body_mid = first_newline + 10;
+    assert!(
+        body_mid < text.len() && text.as_bytes()[body_mid] != b'\n',
+        "tamper offset must land inside the base64 body"
+    );
     let mut bytes = text.into_bytes();
-    let original = bytes[body_end];
-    let replacement = if original == b'A' { b'B' } else { b'A' };
-    bytes[body_end] = replacement;
+    let original = bytes[body_mid];
+    assert!(
+        original.is_ascii_alphanumeric() || original == b'+' || original == b'/',
+        "tamper offset must be a base64 payload char"
+    );
+    bytes[body_mid] = if original == b'A' { b'B' } else { b'A' };
     fs::write(&cert_path, &bytes).expect("tamper");
     assert!(
         matches!(

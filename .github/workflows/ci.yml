@@ -168,11 +168,18 @@ jobs:
       # Minimum-feature graphs: default builds stay interception-free (tree
       # queries need metadata only, so the Python wheel lane needs no
       # interpreter here; the python-bindings jobs still own the wheel).
+      # `shell: bash` keeps pipe/`&&`/`||` chains portable (Windows runners
+      # default to pwsh, where `grep` chaining fails the step spuriously).
       - run: cargo check -p eggreplay-cli --no-default-features --locked
+        shell: bash
       - run: cargo check -p eggreplay-intercept --all-targets --locked
+        shell: bash
       - run: cargo tree -p eggreplay-python --edges normal --prefix none | grep -E '^(eggreplay-intercept|rcgen) ' && exit 1 || echo "python wheel lane interception-free"
+        shell: bash
       # Full interception qualification: CA lifecycle, CONNECT policy,
       # MITM recording, hardening/secret audit, resource bounds, curl interop
       # (curl-gated tests skip where curl is absent, never fail).
       - run: cargo test -p eggreplay-intercept --all-features --locked
+        shell: bash
       - run: cargo test -p eggreplay-cli --features intercept --locked
+        shell: bash
