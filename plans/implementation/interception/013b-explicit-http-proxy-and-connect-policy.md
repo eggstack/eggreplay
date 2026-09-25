@@ -1,23 +1,23 @@
 # M013B — Explicit HTTP Proxy and CONNECT Policy
 
 Status: blocked
-Depends on: M013A
+Depends on: M013B0
 Parent milestone: M013
 
-## Current blocker
+## Current dependency gate
 
-Published `eggserve-server 0.2.1` rejects HTTP/1 absolute-form request targets
-inside its canonical request adapter before the service is invoked
-(`connection/request.rs`, the `scheme_str().is_some()` check). M013B requires
-the proxy service to receive and validate the absolute URI before deriving
-the logical origin and removing proxy-only headers. The current public
-EggServe service API cannot provide that request to the service.
+The upstream EggServe capability blocker is resolved. EggServe Plan 286
+published `eggserve-primitives 0.2.1` and `eggserve-server 0.3.0` with an
+explicit `Http1RequestTargetMode::OriginOrAbsolute` path and canonical
+absolute target form/scheme/authority/path/query metadata.
 
-M013B is blocked pending an EggServe-owned API change that safely exposes
-absolute-form HTTP/1 requests to the caller-owned service path. Keep HTTP
-parsing and transport ownership in EggServe; do not introduce another parser
-or Hyper server in EggReplay. Reassess this plan after the upstream seam is
-published and qualified.
+EggReplay has not yet adopted or qualified that source-incompatible 0.3 direct
+runtime. M013B therefore remains blocked on M013B0.
+
+Do not implement proxy behavior against the old 0.2.1 dependency and do not
+combine the dependency migration with this plan. M013B begins only after the
+M013B0 closure proves ordinary EggReplay record/replay/WebSocket regressions
+and the published absolute-form service seam.
 
 ## Objective
 
