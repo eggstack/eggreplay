@@ -100,3 +100,29 @@ The remaining M013 evidence gates are the exact published `eggnet-tls` and
 certificate-generation versions, cross-platform CA file protection,
 independent local client interoperability, and final release-binary feature
 policy.
+
+
+## EggServe embedding update — 2026-09-24
+
+EggServe Plan 286 supersedes the M013A-era direct-server baseline for new
+interception work:
+
+- `eggserve-primitives 0.2.1` is published;
+- `eggserve-server 0.3.0` is published;
+- 0.3.0 includes opt-in
+  `Http1RequestTargetMode::OriginOrAbsolute`, transport-neutral
+  `RequestTargetForm::Absolute` metadata, projected `H1ConnectionPolicy`,
+  and explicit policy/admission ownership;
+- exact crates.io-only upstream consumers qualified default origin-only
+  behavior, absolute-form metadata/bounds, duplicate headers, streaming
+  bodies/trailers, caller-owned TLS H1, tunnels, shutdown, and Tower
+  composition;
+- `eggnet-tls` remains 0.2.0.
+
+EggReplay itself still pins server 0.2.1/primitives 0.2.0 until M013B0
+migrates and qualifies 0.3.0. Do not describe the repository as already
+running on the new line before that closure.
+
+M013B0 intentionally keeps ordinary EggReplay services on EggServe-owned
+policy/admission defaults. M013B will use `OriginOrAbsolute` explicitly for
+the proxy listener after the migration is proven.
