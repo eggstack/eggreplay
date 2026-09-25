@@ -1008,21 +1008,47 @@ async fn connect_dial_failure_returns_502_before_200() {
 
 #[tokio::test]
 async fn connect_tunnel_applies_backpressure() {
-    // Target holds without reading until released; small socket buffers keep
-    // kernel buffering far below the payload so a buffering relay would
-    // complete the write while a backpressured relay blocks.
-    let socket = tokio::net::TcpSocket::new_v4().unwrap();
-    socket.set_recv_buffer_size(8192).unwrap();
-    socket.bind("127.0.0.1:0".parse().unwrap()).unwrap();
-    let listener = socket.listen(8).unwrap();
+    // Proves incremental forwarding (streaming, not store-and-forward)
+    // without relying on kernel buffer sizes, which Windows TCP autotuning
+    // defeats (it absorbed a 16 MiB pending write that smaller stacks block
+    // on). Instead:
+    // - the target reads exactly `FIRST_LEG`, signals, then holds silent;
+    // - the client sends small chunks, stopping on the signal (1 ms pacing
+    //   keeps it from starving the target task);
+    // - when the target receives its leg, the client must still be early in
+    //   the payload: `bytes_sent < STOP_BOUND` proves the relay forwarded
+    //   incrementally instead of demanding the whole upload first;
+    // - the client half-closes, the target drains everything, and the exact
+    //   total plus zero flows close the proof. The failsafe timeouts fire
+    //   only on genuine breakage, never on scheduling skew.
+    const CHUNK: usize = 16 * 1024;
+    const FIRST_LEG: usize = 64 * 1024;
+    const STOP_BOUND: u64 = 1024 * 1024;
+    const TOTAL_CAP: u64 = 64 * 1024 * 1024;
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+    let received = Arc::new(Mutex::new(Vec::new()));
+    let target_received = Arc::clone(&received);
+    let stop = Arc::new(tokio::sync::Notify::new());
+    let target_stop = Arc::clone(&stop);
     let target = tokio::spawn(async move {
         let (mut stream, _) = listener.accept().await.unwrap();
-        let _ = release_rx.await;
-        let mut sink = Vec::new();
-        stream.read_to_end(&mut sink).await.ok();
-        sink.len()
+        // The first leg proves incremental arrival; then hold silent until
+        // the client half-closes.
+        let mut first = vec![0u8; FIRST_LEG];
+        tokio::time::timeout(TIMEOUT, stream.read_exact(&mut first))
+            .await
+            .expect("target must receive the first leg")
+            .unwrap();
+        target_received.lock().await.extend_from_slice(&first);
+        target_stop.notify_one();
+        let mut rest = Vec::new();
+        tokio::time::timeout(TIMEOUT, stream.read_to_end(&mut rest))
+            .await
+            .expect("target must drain after release")
+            .unwrap();
+        target_received.lock().await.extend_from_slice(&rest);
     });
     let proxy = start_proxy(
         allow_127_any_port(ConnectAction::Tunnel),
@@ -1030,44 +1056,44 @@ async fn connect_tunnel_applies_backpressure() {
         TunnelLimits::default(),
     )
     .await;
-    let client_socket = tokio::net::TcpSocket::new_v4().unwrap();
-    client_socket.set_send_buffer_size(8192).unwrap();
-    let mut stream = client_socket
-        .connect(proxy.handle.local_addr())
-        .await
-        .unwrap();
+    let mut stream = TcpStream::connect(proxy.handle.local_addr()).await.unwrap();
     stream
         .write_all(format!("CONNECT {addr} HTTP/1.1\r\nHost: {addr}\r\n\r\n").as_bytes())
         .await
         .unwrap();
     let head = read_response_head(&mut stream).await;
     assert!(String::from_utf8_lossy(&head).starts_with("HTTP/1.1 200"));
-    // 16 MiB cannot fit in the ~100 KiB of requested socket buffers plus the
-    // relay's bounded internal buffer, so the write must stay pending while
-    // the target holds without reading. (2 MiB proved too small: fast hosted
-    // loopback stacks absorbed it within the timeout despite the 8 KiB
-    // buffer requests.) The 5 s budget only needs to be shorter than the
-    // time any correct backpressured relay would need to drain 16 MiB into
-    // a non-reading peer (effectively never).
-    let payload = vec![b'p'; 16 * 1024 * 1024];
-    let blocked = tokio::time::timeout(Duration::from_secs(5), stream.write_all(&payload)).await;
+    let chunk = vec![b'p'; CHUNK];
+    let mut bytes_sent = 0u64;
+    while bytes_sent < TOTAL_CAP {
+        tokio::select! {
+            () = stop.notified() => break,
+            result = stream.write(&chunk) => {
+                bytes_sent += result.unwrap() as u64;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
     assert!(
-        blocked.is_err(),
-        "relay must exert backpressure instead of buffering unboundedly"
+        bytes_sent < STOP_BOUND,
+        "relay must forward incrementally: client sent {bytes_sent} bytes before \
+         the target received its first 64 KiB (store-and-forward would demand megabytes first)"
     );
-    release_tx.send(()).unwrap();
-    tokio::time::timeout(Duration::from_secs(15), async {
-        // Finish the pending write, then half-close so the target ends.
-        stream.write_all(&payload).await.unwrap();
-        stream.shutdown().await.unwrap();
-    })
-    .await
-    .expect("write must complete once the target drains");
-    let drained = tokio::time::timeout(TIMEOUT, target)
+    // Half-close: the relay propagates EOF so the holding target drains.
+    stream.shutdown().await.unwrap();
+    tokio::time::timeout(TIMEOUT, target)
         .await
         .expect("target must finish")
         .unwrap();
-    assert!(drained >= payload.len() / 2, "target must drain payload");
+    let drained = received.lock().await.len() as u64;
+    assert!(
+        drained >= bytes_sent,
+        "every accepted byte must arrive: sent {bytes_sent}, drained {drained}"
+    );
+    assert!(
+        drained <= bytes_sent + CHUNK as u64,
+        "no duplication beyond one in-flight chunk: sent {bytes_sent}, drained {drained}"
+    );
     assert_eq!(proxy.session.flow_count(), 0);
     finish_proxy(proxy).await;
 }
