@@ -252,15 +252,12 @@ async fn start_tls_origin(
                 };
                 let sni = tls.get_ref().1.server_name().map(str::to_owned);
                 let mut tls = tls;
-                loop {
-                    let Ok(Ok(request)) = tokio::time::timeout(
-                        Duration::from_secs(5),
-                        read_origin_request(&mut tls, sni.clone()),
-                    )
-                    .await
-                    else {
-                        break;
-                    };
+                if let Ok(Ok(request)) = tokio::time::timeout(
+                    Duration::from_secs(5),
+                    read_origin_request(&mut tls, sni.clone()),
+                )
+                .await
+                {
                     let response = responder(&request);
                     // Stream large responses in bounded chunks like real
                     // servers do. Captured test output surfaces write health
@@ -283,7 +280,6 @@ async fn start_tls_origin(
                         request.target,
                     );
                     captured.lock().await.push(request);
-                    break;
                 }
                 // Close TLS cleanly after the single request and give the
                 // peer time to return its close_notify before dropping TCP.
