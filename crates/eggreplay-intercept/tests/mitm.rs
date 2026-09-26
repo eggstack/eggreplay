@@ -263,10 +263,8 @@ async fn start_tls_origin(
                     };
                     let response = responder(&request);
                     // Stream large responses in bounded chunks like real
-                    // servers do. (A single multi-hundred-KiB `write_all`
-                    // was ruled out as the Windows truncation cause: chunking
-                    // did not move the identical 262026-byte cut.)
-                    // Captured test output surfaces write health on failure.
+                    // servers do. Captured test output surfaces write health
+                    // on failure.
                     let mut written = 0usize;
                     let mut write_error = None;
                     for chunk in response.chunks(32 * 1024) {
@@ -285,10 +283,18 @@ async fn start_tls_origin(
                         request.target,
                     );
                     captured.lock().await.push(request);
-                    if write_error.is_some() {
-                        break;
-                    }
+                    break;
                 }
+                // Close TLS cleanly after the single request and give the
+                // peer time to return its close_notify before dropping TCP.
+                // This mirrors a well-behaved origin's shutdown/linger path.
+                let _ = tokio::time::timeout(Duration::from_secs(2), async {
+                    if tls.shutdown().await.is_ok() {
+                        let mut byte = [0u8; 1];
+                        while tls.read(&mut byte).await.unwrap_or(0) != 0 {}
+                    }
+                })
+                .await;
             });
         }
     };
@@ -868,15 +874,7 @@ async fn mitm_records_post_with_chunked_body_and_response() {
 
 #[tokio::test]
 async fn mitm_streams_large_bodies_both_directions() {
-    // Response size note: a 300 KiB origin response truncates deterministically
-    // on Windows runners (262026 bytes staged, upstream frame error, partial
-    // 200 flow) while the origin provably writes every byte and the identical
-    // failure occurs proxy-less (`eggfetch_direct_...` below), exonerating the
-    // interception record path: the loss is inside `EggFetch`'s Windows read
-    // path for large TLS responses (upstream follow-up filed in the M013F
-    // closure). 128 KiB still proves multi-record bidirectional streaming
-    // with exact wire/record assertions on every platform.
-    const RESPONSE_LEN: usize = 128 * 1024;
+    const RESPONSE_LEN: usize = 300 * 1024;
     let origin_cert = make_origin_cert(&["localhost", "127.0.0.1"]);
     let origin_pem = origin_cert.cert_pem.clone();
     let (origin_port, captured, origin_task) = start_tls_origin(origin_cert, |request| {
@@ -920,9 +918,8 @@ async fn mitm_streams_large_bodies_both_directions() {
     proxy.session.shutdown();
     proxy.session.finish().unwrap();
     origin_task.abort();
-    // Diagnose large-transfer truncations (observed on Windows runners):
-    // compare the wire body against the durably recorded body and surface
-    // any upstream stream-error event, so a failure names the losing leg.
+    // Compare the wire body against the durably recorded body and surface
+    // any upstream stream-error event if the two paths disagree.
     let recorded = read_recorded_response(&dir.join("fixture"));
     eprintln!(
         "large-body diag: wire_len={} recorded_len={:?} recorded_status={:?} upstream_error={:?} wire_head={:?}",
@@ -947,13 +944,10 @@ async fn mitm_streams_large_bodies_both_directions() {
 }
 
 /// Leg isolation for large TLS downloads: `EggFetch` straight at the test
-/// origin with no proxy/recording in between. A 300 KiB response fails this
-/// identically on Windows runners (origin provably writes all bytes), which
-/// pins the loss to `EggFetch`'s Windows read path rather than interception
-/// logic; 128 KiB guards the supported envelope on every platform.
+/// origin with no proxy/recording in between.
 #[tokio::test]
 async fn eggfetch_direct_downloads_full_large_tls_response() {
-    const DIRECT_LEN: usize = 128 * 1024;
+    const DIRECT_LEN: usize = 300 * 1024;
     let origin_cert = make_origin_cert(&["localhost", "127.0.0.1"]);
     let origin_pem = origin_cert.cert_pem.clone();
     let (origin_port, _captured, origin_task) =

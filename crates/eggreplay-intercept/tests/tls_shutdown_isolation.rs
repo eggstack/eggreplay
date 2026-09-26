@@ -1,12 +1,6 @@
-//! M006 transport isolation: graceful-vs-abrupt TLS shutdown and
-//! raw-`rustls`/minimal-`Hyper` bisection for the Windows large-response
-//! truncation.
-//!
-//! Background: on Windows runners, a 131190-byte (and 300118-byte) TLS
-//! response delivered only `floor(total / 64 KiB) * 64 KiB` bytes before the
-//! stream errored, while the origin provably wrote every byte. The loss was
-//! identical with and without the proxy, so these tests bisect the remaining
-//! layers without touching production transport code:
+//! TLS shutdown and transport isolation coverage using raw `rustls` and
+//! minimal `Hyper` exchanges. These tests compare graceful and abrupt TLS
+//! shutdown and verify exact transfer over plaintext and TLS:
 //!
 //! - raw `rustls` byte transfer with graceful (`close_notify`) vs abrupt
 //!   (flush + drop, no alert) server shutdown;
