@@ -33,8 +33,8 @@ EggReplay library/Python builds.
 M013A, M013B0, M013B, M013C, M013D, M013E, and M013F are all closed on
 qualifying revision `5efc6f9` (Actions runs
 [36211265347](https://github.com/eggstack/eggreplay/actions/runs/36211265347)
-and [36456063917](https://github.com/eggstack/eggreplay/actions/runs/36456063917)
-on the closure commit `be922d2`); see
+and [36456906216](https://github.com/eggstack/eggreplay/actions/runs/36456906216)
+on the closure commit `2bcf493`); see
 `plans/closure/m013-explicit-proxy-and-optional-mitm.md` for the umbrella
 evidence. M014 (umbrella compatibility program), M014A (HAR interchange),
 and M014B (HTTP/2 qualification) become ready; M014C and M014D remain
@@ -101,6 +101,6 @@ Final closure:
 `plans/closure/m013-explicit-proxy-and-optional-mitm.md`.
 
 M013 closed on qualifying revision `5efc6f9` (Actions runs 36211265347 and
-36456063917 on the closure commit `be922d2`). M014 / M014A / M014B became
+36456906216 on the closure commit `2bcf493`). M014 / M014A / M014B became
 ready per their declared dependencies; M014C and M014D remain blocked on
 M014B.

@@ -16,7 +16,7 @@ Rust/Python and wheel qualification. M013 explicit-proxy/optional HTTPS
 interception is closed under ADR 0008 on qualifying revision `5efc6f9`
 (Actions runs [36211265347](https://github.com/eggstack/eggreplay/actions/runs/36211265347)
 on the implementation SHA and
-[36456063917](https://github.com/eggstack/eggreplay/actions/runs/36456063917)
+[36456906216](https://github.com/eggstack/eggreplay/actions/runs/36456906216)
 on the closure commit); M013A substrate/dependency/threat preflight,
 M013B0 EggServe 0.3 adoption, M013B proxy/CONNECT policy, M013C CA/leaf
 lifecycle, M013D HTTPS MITM recording, M013E CLI/policy/operator UX, and

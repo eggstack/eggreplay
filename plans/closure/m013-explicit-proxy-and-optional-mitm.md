@@ -6,8 +6,8 @@ M013 and its full subplan decomposition (M013A, M013B0, M013B, M013C, M013D,
 M013E, and M013F) are closed on implementation revision
 `5efc6f9c892bb5b1c2e84330a0c40a38f1de0de7`. The qualifying hosted Actions run
 on the M013 closure commit is
-[36456063917](https://github.com/eggstack/eggreplay/actions/runs/36456063917)
-(revision `be922d20286ed93572df86bfbeb78e99abf883e5`); the earlier
+[36456906216](https://github.com/eggstack/eggreplay/actions/runs/36456906216)
+(revision `2bcf4933209dc56a60f2ca7b6982df2266832720`); the earlier
 implementation-SHA run
 [36211265347](https://github.com/eggstack/eggreplay/actions/runs/36211265347)
 on `5efc6f9` is the same matrix with only docs additions in between. The
@@ -44,8 +44,8 @@ finalizes hardening and qualification:
   — local 288-test suite; `proxy` / `ca` namespaces, versioned policy file,
   bounded `ProxyStats`.
 - **M013F hardening and qualification — this record plus runs 36211265347
-  (implementation SHA `5efc6f9`) and 36456063917 (closure commit
-  `be922d2`).**
+  (implementation SHA `5efc6f9`) and 36456906216 (closure commit
+  `2bcf493`).**
 
 ## Implementation surface
 
@@ -231,8 +231,8 @@ All green on `5efc6f9`:
 ## Full hosted evidence (qualifying runs)
 
 All thirteen jobs in
-[run 36456063917](https://github.com/eggstack/eggreplay/actions/runs/36456063917)
-on the closure commit `be922d2` passed:
+[run 36456906216](https://github.com/eggstack/eggreplay/actions/runs/36456906216)
+on the closure commit `2bcf493` passed:
 
 | Job | Result |
 |---|---|
@@ -266,7 +266,7 @@ curl-gated tests skip where curl is absent), and
 ## M013 support matrix
 
 The M013 claim if hosted qualification passes (now proven by runs
-36211265347 and 36456063917):
+36211265347 and 36456906216):
 
 | Capability | M013 |
 |---|---|

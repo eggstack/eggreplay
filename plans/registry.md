@@ -117,8 +117,8 @@ with local verification green (288 workspace tests). See
 `closure/m013e-cli-policy-and-operator-experience.md`. M013F is closed on
 qualifying revision `5efc6f9` (Actions run
 [36211265347](https://github.com/eggstack/eggreplay/actions/runs/36211265347))
-with the closure commit `be922d2` re-qualified in Actions run
-[36456063917](https://github.com/eggstack/eggreplay/actions/runs/36456063917);
+with the closure commit `2bcf493` re-qualified in Actions run
+[36456906216](https://github.com/eggstack/eggreplay/actions/runs/36456906216);
 both runs passed every job including the dedicated `interception` lane on
 Ubuntu, macOS, and Windows, the `dependency-boundary` lane, and the four
 `python-bindings` lanes. Workspace suite: 316 tests passed across 22 suites.

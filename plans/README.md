@@ -41,7 +41,7 @@ are closed.
 
 M013 is closed under ADR 0008 on qualifying revision `5efc6f9` (Actions
 runs [36211265347](https://github.com/eggstack/eggreplay/actions/runs/36211265347)
-and [36456063917](https://github.com/eggstack/eggreplay/actions/runs/36456063917)
+and [36456906216](https://github.com/eggstack/eggreplay/actions/runs/36456906216)
 on the closure commit); M013A, M013B0, M013B, M013C, M013D, M013E, and
 M013F are all closed. M014 becomes ready (decomposed) and M014A / M014B
 become ready; M014C and M014D remain blocked on M014B per their declared
