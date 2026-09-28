@@ -1,6 +1,6 @@
 # M013 — Explicit Proxy Acquisition and Optional HTTPS Interception
 
-Status: ready (decomposed; M013A, M013B0, M013B, M013C, M013D, and M013E closed, execute M013F next)
+Status: closed (M013A–M013F all closed; qualifying revision `5efc6f9`, Actions run 36211265347)
 Depends on: M012 closure
 Roadmap stage: 9
 Architecture: ADR 0008
@@ -30,8 +30,15 @@ EggReplay library/Python builds.
 | M013E | `013e-cli-policy-and-operator-experience.md` | optional CLI, policy files, trust/operator UX |
 | M013F | `013f-hardening-qualification-and-closure.md` | security/resource/interoperability qualification + closure |
 
-M013A, M013B0, M013B, M013C, M013D, and M013E are closed. M013F is
-the sole ready task; M014 remains blocked on M013 closure.
+M013A, M013B0, M013B, M013C, M013D, M013E, and M013F are all closed on
+qualifying revision `5efc6f9` (Actions runs
+[36211265347](https://github.com/eggstack/eggreplay/actions/runs/36211265347)
+and [36456063917](https://github.com/eggstack/eggreplay/actions/runs/36456063917)
+on the closure commit `be922d2`); see
+`plans/closure/m013-explicit-proxy-and-optional-mitm.md` for the umbrella
+evidence. M014 (umbrella compatibility program), M014A (HAR interchange),
+and M014B (HTTP/2 qualification) become ready; M014C and M014D remain
+blocked on M014B per their declared dependencies.
 
 ## Ownership boundary
 
@@ -93,4 +100,7 @@ resource bounds, and platform behavior.
 Final closure:
 `plans/closure/m013-explicit-proxy-and-optional-mitm.md`.
 
-M014 and its currently M013-dependent tracks remain blocked until M013 closes.
+M013 closed on qualifying revision `5efc6f9` (Actions runs 36211265347 and
+36456063917 on the closure commit `be922d2`). M014 / M014A / M014B became
+ready per their declared dependencies; M014C and M014D remain blocked on
+M014B.

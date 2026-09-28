@@ -1,6 +1,7 @@
 # M014 — Broader Compatibility Program
 
-Status: blocked
+Status: ready (decomposed; M013 closed on `5efc6f9` per
+`plans/closure/m013-explicit-proxy-and-optional-mitm.md`)
 Depends on: M013 closure
 Roadmap stage: 10
 

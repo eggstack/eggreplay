@@ -13,26 +13,34 @@ closed with hosted cross-platform evidence.
 
 M012 Python/pytest integration is closed under ADR 0007 with hosted
 Rust/Python and wheel qualification. M013 explicit-proxy/optional HTTPS
-interception is decomposed under ADR 0008. M013A substrate/dependency/threat
-preflight, M013B0 EggServe 0.3 adoption, M013B proxy/CONNECT policy, M013C
-CA/leaf lifecycle, M013D HTTPS MITM recording, and M013E CLI/policy/operator
-UX are closed on local verification with hosted qualification deferred to
-M013F, which is the sole ready task. Interception is not yet part of the
-supported product baseline. M014 remains downstream of M013.
+interception is closed under ADR 0008 on qualifying revision `5efc6f9`
+(Actions runs [36211265347](https://github.com/eggstack/eggreplay/actions/runs/36211265347)
+on the implementation SHA and
+[36456063917](https://github.com/eggstack/eggreplay/actions/runs/36456063917)
+on the closure commit); M013A substrate/dependency/threat preflight,
+M013B0 EggServe 0.3 adoption, M013B proxy/CONNECT policy, M013C CA/leaf
+lifecycle, M013D HTTPS MITM recording, M013E CLI/policy/operator UX, and
+M013F hardening/qualification are all closed. Explicit HTTP/1.1 proxying
+and policy-gated CONNECT deny / tunnel / MITM recording are part of the
+supported product baseline when the CLI is compiled with
+`--features intercept`; default library and Python builds remain
+interception-free. M014 (compatibility program), M014A (HAR interchange),
+and M014B (HTTP/2 qualification) become ready; M014C (HTTP/3 feasibility)
+and M014D (gRPC + bounded faults) remain blocked on M014B per their declared
+dependencies.
 
 The support baseline includes direct HTTP/1.1 acquisition and EggServe inbound
 HTTP/1.1 replay with optional listener-free Eggress routing. WebSocket support
 covers RFC 6455 over cleartext HTTP/1.1 Upgrade (`ws://`) with bounded semantic
-text, binary, ping, pong, and close messages. WSS, interception, inbound TLS,
-H2/H3, negotiated extensions, and wire-frame fidelity remain outside the claim.
+text, binary, ping, pong, and close messages. WSS, H2/H3, negotiated
+extensions, and wire-frame fidelity remain outside the claim.
 
-## Interception support matrix (M013, pending hosted closure)
+## Interception support matrix (M013)
 
 Explicit-proxy acquisition and optional HTTPS interception are separately
 compiled (`--features intercept`), loopback-first, policy-gated, and outside
 default library/Python builds. No matrix row may expand without
-corresponding tests. M013F is the hardening/qualification lane; M013 closes
-only on hosted green evidence.
+corresponding tests.
 
 | Capability | M013 |
 |---|---|
@@ -75,7 +83,8 @@ python -c 'import eggreplay; print(eggreplay.__version__)'
 
 Python exposes `.eggr` directory fixtures and managed replay/recording
 lifecycles. The qualified default wheel intentionally does not include the
-future M013 interception/CA feature. See
+M013 interception/CA feature (which lives in the `--features intercept`
+CLI build only). See
 [`crates/eggreplay-python/README.md`](crates/eggreplay-python/README.md) for
 pytest fixtures, explicit record modes, and migration notes for VCR.py users.
 It is not a drop-in VCR.py replacement.

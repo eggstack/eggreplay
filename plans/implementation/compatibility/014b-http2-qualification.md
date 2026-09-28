@@ -1,6 +1,6 @@
 # M014B — HTTP/2 End-to-End Qualification
 
-Status: blocked
+Status: ready
 Depends on: M013 closure, M010
 Parent: M014
 

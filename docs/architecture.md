@@ -92,9 +92,9 @@ EggServe-owned bounds and one tunnel-admission authority.
 
 Eggress remains intentionally narrow. EggReplay enables only
 `eggress-outbound/pproxy-compat`. Eggress 1.0.8 is pinned exactly as the
-published qualified baseline. Eggress 1.0.9 is currently upstream-blocked on
-pooled route-isolation/metadata correctness work, so M011 must not adopt it
-until that release is requalified.
+published qualified baseline. Eggress 1.0.9 and 1.0.10 remain
+upstream-pinned and are not adopted for M013 closure; M014 may revisit the
+adoption in a separate decision once any new release is requalified.
 
 No default library feature enables Eggress, WebSocket codec, or TLS
 interception. Direct HTTP remains the default acquisition route.

@@ -36,12 +36,16 @@ closes a plan.
 
 ## Current execution
 
-v0.1/C001–C006, M009, M010/M010-C1, and M011/M011A–M011F are closed.
+v0.1/C001–C006, M009, M010/M010-C1, M011/M011A–M011F, and M012/M012A–M012F
+are closed.
 
-M012 is closed under ADR 0007. M013 is decomposed under ADR 0008 into
-M013A–M013F plus the M013B0 dependency-adoption gate. M013A, M013B0, M013B,
-M013C, M013D, and M013E are closed; M013F is the sole ready task. M014
-remains blocked on M013 closure.
+M013 is closed under ADR 0008 on qualifying revision `5efc6f9` (Actions
+runs [36211265347](https://github.com/eggstack/eggreplay/actions/runs/36211265347)
+and [36456063917](https://github.com/eggstack/eggreplay/actions/runs/36456063917)
+on the closure commit); M013A, M013B0, M013B, M013C, M013D, M013E, and
+M013F are all closed. M014 becomes ready (decomposed) and M014A / M014B
+become ready; M014C and M014D remain blocked on M014B per their declared
+dependencies.
 
 See `registry.md` for the exact handoff state.
 

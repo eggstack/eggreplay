@@ -55,17 +55,17 @@ boundary, and ADR 0008 owns interception security/transport ownership.
 | M012D | `implementation/python/012d-pytest-vcr-and-parallel-safety.md` | closed | M012C | pytest/VCR + parallel mutation safety |
 | M012E | `implementation/python/012e-wheel-stubs-and-distribution-qualification.md` | closed | M012D | wheels, typing, clean install |
 | M012F | `implementation/python/012f-hardening-hosted-qualification-and-closure.md` | closed | M012E | hardening + M012 closure |
-| M013 | `implementation/interception/013-explicit-proxy-and-optional-mitm.md` | ready (decomposed) | M012 closure | interception milestone umbrella |
+| M013 | `implementation/interception/013-explicit-proxy-and-optional-mitm.md` | **closed** | M012 closure | interception milestone umbrella |
 | M013A | `implementation/interception/013a-substrate-dependency-and-threat-preflight.md` | closed | M012 closure | dependency/TLS/route substrate + threat model |
 | M013B0 | `implementation/interception/013b0-eggserve-0-3-adoption-and-absolute-form-qualification.md` | **closed** | M013A + published EggServe Plan-286 artifacts | EggServe 0.3 adoption + absolute-form qualification |
 | M013B | `implementation/interception/013b-explicit-http-proxy-and-connect-policy.md` | **closed** | M013B0 | HTTP proxy + CONNECT deny/tunnel |
 | M013C | `implementation/interception/013c-ca-lifecycle-and-leaf-issuance.md` | **closed** | M013B | CA/key lifecycle + leaf issuance |
 | M013D | `implementation/interception/013d-https-mitm-http1-recording.md` | **closed** | M013C | HTTPS MITM H1 recording |
 | M013E | `implementation/interception/013e-cli-policy-and-operator-experience.md` | **closed** | M013D | CLI/policy/operator surface |
-| M013F | `implementation/interception/013f-hardening-qualification-and-closure.md` | **ready** | M013E | hardening + M013 closure |
-| M014 | `implementation/compatibility/014-compatibility-program.md` | blocked | M013 closure | umbrella compatibility stage |
-| M014A | `implementation/compatibility/014a-har-and-migration.md` | blocked | M013 closure | HAR + migration |
-| M014B | `implementation/compatibility/014b-http2-qualification.md` | blocked | M013 closure, M010 | H2 qualification |
+| M013F | `implementation/interception/013f-hardening-qualification-and-closure.md` | **closed** | M013E | hardening + M013 closure |
+| M014 | `implementation/compatibility/014-compatibility-program.md` | ready (decomposed) | M013 closure | umbrella compatibility stage |
+| M014A | `implementation/compatibility/014a-har-and-migration.md` | ready | M013 closure | HAR + migration |
+| M014B | `implementation/compatibility/014b-http2-qualification.md` | ready | M013 closure, M010 | H2 qualification |
 | M014C | `implementation/compatibility/014c-http3-feasibility-and-qualification.md` | blocked | M014B | H3 architecture/support decision |
 | M014D | `implementation/compatibility/014d-grpc-and-fault-polish.md` | blocked | M014B, M010 | gRPC view + bounded faults |
 
@@ -114,11 +114,19 @@ with local verification green (256 workspace tests: 10 new lib unit + 23
 new `mitm` integration tests). See
 `closure/m013d-https-mitm-http1-recording.md`. M013E is closed
 with local verification green (288 workspace tests). See
-`closure/m013e-cli-policy-and-operator-experience.md`. M013F is the sole
-ready task (local hardening portion in progress: resource-bounds pinning,
-secret-audit `hardening.rs`, curl interop, dedicated `interception` CI job,
-threat-model verification table; statuses unchanged pending hosted green).
-M014–M014D remain blocked on M013 closure.
+`closure/m013e-cli-policy-and-operator-experience.md`. M013F is closed on
+qualifying revision `5efc6f9` (Actions run
+[36211265347](https://github.com/eggstack/eggreplay/actions/runs/36211265347))
+with the closure commit `be922d2` re-qualified in Actions run
+[36456063917](https://github.com/eggstack/eggreplay/actions/runs/36456063917);
+both runs passed every job including the dedicated `interception` lane on
+Ubuntu, macOS, and Windows, the `dependency-boundary` lane, and the four
+`python-bindings` lanes. Workspace suite: 316 tests passed across 22 suites.
+See `closure/m013-explicit-proxy-and-optional-mitm.md` for the umbrella
+evidence and the `hardening.rs`, `resource_bounds.rs`, `curl_interop.rs`,
+`tls_shutdown_isolation.rs`, and `substrate.rs` pinning. M014 becomes
+ready (decomposed) and M014A / M014B become ready; M014C and M014D remain
+blocked on M014B per their declared dependencies.
 See also
 `closure/m013b0-eggserve-0-3-adoption-and-absolute-form-qualification.md`.
 

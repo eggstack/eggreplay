@@ -1,6 +1,6 @@
 # M014A — HAR Interchange and Fixture Migration Tooling
 
-Status: blocked
+Status: ready
 Depends on: M013 closure
 Parent: M014
 

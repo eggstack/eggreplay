@@ -88,12 +88,13 @@ the normalized policy), and `eggreplay ca
 init|import|inspect|export|rotate ...` (operator-owned CA lifecycle; public
 metadata only, no overwrites, no trust installation). These commands exist
 only in `intercept`-feature builds; other builds fail them with a capability
-message. Default builds do not enable the feature. Release-binary
-recommendation (M013F): keep `intercept` default-off in release binaries
-until the hosted qualification matrix is green, then revisit post-M013 in a
-separate decision; source builds always require the explicit
-`--features intercept` opt-in. Default features are unchanged by M013F. JSON output reports the bind address, compiled
-capability, CA public fingerprint, policy counts, accepted/rejected/
-tunneled/intercepted counters, recorded flow count, and bounded categorized
-failures, and never key contents, key paths, credentials, or decrypted
-payloads. See `docs/interception-ca-trust.md` for manual trust setup.
+message. Default builds do not enable the feature. M013 closed the
+qualification matrix on hosted evidence; default features are unchanged by
+M013F, and any change to the release-binary default for `intercept` is a
+separate post-M013 decision. Source builds always require the explicit
+`--features intercept` opt-in. JSON output reports the bind address,
+compiled capability, CA public fingerprint, policy counts,
+accepted/rejected/tunneled/intercepted counters, recorded flow count, and
+bounded categorized failures, and never key contents, key paths,
+credentials, or decrypted payloads. See `docs/interception-ca-trust.md` for
+manual trust setup.
