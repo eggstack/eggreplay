@@ -39,6 +39,7 @@ base64 = "0.22"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 clap = { version = "4", features = ["derive", "env"] }
 futures-util = "0.3"
+h2 = "0.4"
 http = "1"
 http-body = "1"
 http-body-util = "0.1"

@@ -12,6 +12,11 @@ default = ["direct"]
 direct = []
 eggserve = ["dep:eggserve-primitives", "dep:eggserve-server"]
 websocket = ["dep:base64", "dep:tokio-tungstenite"]
+# Experimental HTTP/2 outbound qualification (M014B). Capability only: H1
+# remains the default policy everywhere; H2 requires an explicit
+# `HttpVersionPolicy` on the caller-constructed EggFetch client. Inbound H2
+# (EggServe replay/gateway) and H2 interception remain unsupported.
+h2 = ["eggfetch-core/native-http2"]
 # Narrow Eggress feature: only pproxy-compat grammar for listener-free routing.
 # Do not enable extended, SSH, QUIC, listener, or server surfaces.
 eggress = ["dep:eggress-outbound", "eggress-outbound/pproxy-compat"]
@@ -41,3 +46,10 @@ eggress-outbound = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile.workspace = true
+futures-util.workspace = true
+h2.workspace = true
+hyper = { workspace = true, features = ["http2"] }
+hyper-util = { workspace = true }
+rcgen.workspace = true
+rustls.workspace = true
+tokio-rustls.workspace = true

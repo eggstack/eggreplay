@@ -8,6 +8,8 @@ pub const DEFAULT_MODE: &str = "direct";
 
 #[cfg(feature = "eggress")]
 pub mod eggress;
+#[cfg(feature = "h2")]
+pub mod h2;
 pub mod recording;
 pub mod regression;
 pub mod replay;

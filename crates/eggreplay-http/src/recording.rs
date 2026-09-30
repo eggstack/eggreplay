@@ -137,6 +137,21 @@ fn transform_body(
     Ok((original.to_vec(), Vec::new()))
 }
 
+/// Diagnostic annotation for the negotiated response transport version.
+///
+/// Returns `Some(("transport", "http-version:h2"))` for H2 responses and
+/// `None` for all other versions, so H1 flows keep their existing
+/// annotation shape while H2 observations are explicitly marked.
+/// The annotation is diagnostic only and never a match dimension.
+/// Also re-exported from the experimental [`crate::h2`] module.
+#[must_use]
+pub fn negotiated_version_annotation(version: http::Version) -> Option<(String, String)> {
+    match version {
+        http::Version::HTTP_2 => Some(("transport".to_string(), "http-version:h2".to_string())),
+        _ => None,
+    }
+}
+
 /// Execute one request through EggFetch and append one semantic flow.
 ///
 /// The redaction policy is explicit. Without structured body selectors, DATA
@@ -184,9 +199,11 @@ where
     semantic_request.trailers = request_trailers;
 
     let mut response_events = Vec::new();
+    let mut transport_note: Option<(String, String)> = None;
     let outcome = match result {
         Ok(response) => {
             let (parts, body) = response.into_parts();
+            transport_note = negotiated_version_annotation(parts.version);
             let resp_content_type = content_type(&parts.headers);
             let response_sink = Arc::new(Mutex::new(Some(writer.begin_blob()?)));
             let mut body = Box::pin(body);
@@ -341,6 +358,9 @@ where
 
     let mut flow = Flow::new(semantic_request, outcome, started_at_ms);
     flow.completed_at_ms = Some(now_ms());
+    if let Some(note) = transport_note {
+        flow.annotations.push(note);
+    }
     flow.provenance.mode = "eggfetch-native".into();
     flow.provenance.observer = "eggreplay-http".into();
     flow.physical_route = physical_route.clone();
@@ -432,9 +452,11 @@ where
     semantic_request.trailers = request_trailers;
 
     let mut response_events = Vec::new();
+    let mut transport_note: Option<(String, String)> = None;
     let outcome = match result {
         Ok(response) => {
             let (parts, body) = response.into_parts();
+            transport_note = negotiated_version_annotation(parts.version);
             let resp_content_type = content_type(&parts.headers);
             let response_sink: Arc<Mutex<Option<RecordingBodyWriter>>> =
                 Arc::new(Mutex::new(Some(session.begin_blob()?)));
@@ -586,6 +608,9 @@ where
 
     let mut flow = Flow::new(semantic_request, outcome, started_at_ms);
     flow.completed_at_ms = Some(now_ms());
+    if let Some(note) = transport_note {
+        flow.annotations.push(note);
+    }
     flow.provenance.mode = "eggfetch-native".into();
     flow.provenance.observer = "eggreplay-http".into();
     flow.physical_route = physical_route.clone();
