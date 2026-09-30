@@ -79,6 +79,28 @@ fn router(request: Request<hyper::body::Incoming>) -> Result<Response<H2Body>, S
             .body(body)
             .map_err(|error| SvcError(error.to_string()));
     }
+    if path == "/grpc" {
+        // Two length-prefixed frames: uncompressed protobuf payload plus
+        // an opaque compressed frame, with grpc-status trailers.
+        let mut framed = vec![0x00];
+        framed.extend_from_slice(&3u32.to_be_bytes());
+        framed.extend_from_slice(&[0x0A, 0x01, b'x']);
+        framed.push(0x01);
+        framed.extend_from_slice(&6u32.to_be_bytes());
+        framed.extend_from_slice(b"opaque");
+        let frames = vec![Ok::<_, SvcError>(Frame::data(Bytes::from(framed)))];
+        let mut trailers = http::HeaderMap::new();
+        trailers.insert("grpc-status", "0".parse().expect("valid trailer"));
+        trailers.insert("grpc-message", "ok".parse().expect("valid trailer"));
+        let mut frames = frames;
+        frames.push(Ok(Frame::trailers(trailers)));
+        let body = StreamBody::new(futures_util::stream::iter(frames)).boxed();
+        return Response::builder()
+            .status(StatusCode::OK)
+            .header("content-type", "application/grpc")
+            .body(body)
+            .map_err(|error| SvcError(error.to_string()));
+    }
     if path == "/headers" {
         let names: Vec<String> = request
             .headers()
@@ -767,6 +789,43 @@ async fn relay_socks(
 }
 
 #[tokio::test]
+async fn grpc_view_over_h2_recorded_flow() {
+    use eggreplay_core::{grpc_status_from_trailers, grpc_view, is_grpc_content_type};
+
+    let harness = start_harness().await;
+    let client = h2_client(&harness.cert);
+    let (flow, session) =
+        record_once(&client, &format!("{}/grpc", harness.base()), "grpc", None).await;
+    let FlowOutcome::Response(response) = &flow.outcome else {
+        panic!("expected response");
+    };
+    let content_type = response
+        .headers
+        .iter()
+        .find(|entry| entry.name.eq_ignore_ascii_case("content-type"))
+        .map(|entry| entry.value.as_str());
+    assert!(is_grpc_content_type(content_type));
+
+    let body = response_body(&session, &flow);
+    let view = grpc_view(&body, &response.trailers, None).expect("view");
+    assert_eq!(view.messages.len(), 2);
+    assert!(!view.messages[0].compressed);
+    assert_eq!(view.messages[0].length, 3);
+    assert!(view.messages[1].compressed);
+    assert!(view.messages[1].decoded.is_none());
+    let status = grpc_status_from_trailers(&response.trailers).expect("status");
+    assert_eq!(status.code, 0);
+    assert_eq!(status.message, "ok");
+    assert_eq!(view.status, Some(status));
+    // Deterministic repeated projection.
+    let again = grpc_view(&body, &response.trailers, None).expect("view");
+    assert_eq!(
+        serde_json::to_value(&view).expect("json"),
+        serde_json::to_value(&again).expect("json")
+    );
+}
+
+#[tokio::test]
 async fn strict_and_practical_matching_on_h2_flows() {
     let harness = start_harness().await;
     let client = h2_client(&harness.cert);
@@ -855,6 +914,7 @@ async fn scenario_advance_on_h2_recorded_request() {
                     headers: Vec::new(),
                     body_template: "scenario-h2".to_string(),
                     json_pointer_replacements: Vec::new(),
+                    fault: None,
                 },
                 next_state: "s1".to_string(),
             }],
@@ -916,6 +976,7 @@ async fn regression_over_h2_and_scenario_replay_over_h1() {
                     headers: Vec::new(),
                     body_template: "replayed-over-h1".to_string(),
                     json_pointer_replacements: Vec::new(),
+                    fault: None,
                 },
                 next_state: "s0".to_string(),
             }],

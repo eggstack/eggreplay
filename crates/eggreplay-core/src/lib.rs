@@ -6,6 +6,7 @@
 pub mod config;
 pub mod error;
 pub mod flow;
+pub mod grpc;
 pub mod matching;
 pub mod report;
 pub mod scenario;
@@ -21,6 +22,11 @@ pub use flow::{
     BlobRef, BodyRef, Flow, FlowId, FlowOutcome, HeaderEntry, HttpRequest, HttpResponse,
     PhysicalRoute, Provenance, QueryPair, RedactionMarker, SessionMetadata, Trailers,
 };
+pub use grpc::{
+    GRPC_MAX_BODY_BYTES, GRPC_MAX_DESCRIPTOR_BYTES, GRPC_MAX_FRAMES, GrpcError, GrpcFrame,
+    GrpcMessageView, GrpcStatus, GrpcView, decode_grpc_payload, grpc_status_from_trailers,
+    grpc_view, is_grpc_content_type, parse_grpc_frames,
+};
 pub use matching::{
     BodyMatchMode, CandidateBody, ConsumptionMode, MatchCandidate, MatchDimension, MatchResult,
     Matcher, MatcherSession, NearMiss, NormalizedRequest,
@@ -31,9 +37,10 @@ pub use report::{
     compare_flows_with_timing_and_policy, compare_stream_events,
 };
 pub use scenario::{
-    ExtractionFailureBehavior, JsonPointerReplacement, RULES_SCHEMA_VERSION,
-    RenderedScenarioResponse, RequestPredicate, Scenario, ScenarioResponse, ScenarioRules,
-    ScenarioRuntime, ScenarioStep, ScenarioTransition, VariableExtraction, VariableSource,
+    ExtractionFailureBehavior, JsonPointerReplacement, MAX_FAULT_CHUNK_BYTES, MAX_FAULT_DELAY_MS,
+    RULES_SCHEMA_VERSION, RenderedScenarioResponse, RequestPredicate, Scenario, ScenarioFault,
+    ScenarioResponse, ScenarioRules, ScenarioRuntime, ScenarioStep, ScenarioTransition,
+    VariableExtraction, VariableSource,
 };
 pub use security::{
     BODY_JSON_MARKER_PREFIX, DEFAULT_MAX_STRUCTURED_REDACTION_BYTES,

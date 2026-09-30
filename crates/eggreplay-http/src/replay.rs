@@ -12,7 +12,10 @@ use std::sync::{Arc, Mutex};
 use thiserror::Error;
 
 #[cfg(feature = "eggserve")]
-use eggserve_primitives::{HeaderBlock, RequestBodyPolicy, Response, ResponseBody, StatusCode};
+use eggserve_primitives::{
+    HeaderBlock, RequestBodyPolicy, Response, ResponseBody, ResponseStream, ResponseStreamError,
+    StatusCode,
+};
 #[cfg(feature = "eggserve")]
 use eggserve_server::{Server, ServerHandle, ServiceError};
 
@@ -527,22 +530,23 @@ async fn handle_request(
         .map_err(|error| ServiceError::internal(error.to_string()))?;
     let actual = request_from_eggserve(&head, &connection, &body, trailers.as_ref())
         .map_err(ServiceError::internal)?;
-    {
+    // The state lock never spans the awaited fault sleeps below: the
+    // rendered response is cloned out first so the served future stays
+    // `Send` and concurrent requests keep flowing during fault delays.
+    let scenario_rendered = {
         let mut guard = state
             .lock()
             .map_err(|_| ServiceError::internal("replay state poisoned"))?;
-        if let Some(scenario) = guard.scenario.as_mut() {
-            let step = scenario
+        match guard.scenario.as_mut() {
+            Some(scenario) => scenario
                 .advance(&actual, &body)
-                .map_err(ServiceError::internal)?;
-            if let Some(step) = step {
-                return response_bytes(
-                    step.response.status,
-                    &step.response.headers,
-                    step.response.body,
-                );
-            }
+                .map_err(ServiceError::internal)?
+                .map(|step| step.response),
+            None => None,
         }
+    };
+    if let Some(rendered) = scenario_rendered {
+        return scenario_fault_response(rendered).await;
     }
     let selection = {
         let mut guard = state
@@ -1249,6 +1253,136 @@ fn response_bytes(
     builder
         .body(ResponseBody::Bytes(body.into()))
         .map_err(|error| ServiceError::internal(error.to_string()))
+}
+
+/// Serve one rendered scenario response, applying its authored transport
+/// fault (M014D) through existing EggServe lifecycle controls.
+///
+/// - `ResponseHeadDelay` sleeps before the head; the response is otherwise
+///   identical to the fault-free projection.
+/// - `BodyChunkDelay` streams the rendered body in bounded chunks with a
+///   sleep between chunks and completes normally.
+/// - `CloseBeforeResponse` offers zero body bytes, then terminates the
+///   stream with an error. Headers flush with the full declared length
+///   and the connection then aborts, so the client observes failure with
+///   no scenario bytes delivered — never a synthetic status.
+/// - `CloseAfterBytes` offers the rendered prefix, then terminates the
+///   stream with an error. The declared length stays the full rendered
+///   length so truncation is explicit; prefix bytes may or may not reach
+///   the client before the abort, but clean full delivery never happens.
+/// - `TransportError` projects a recorded-style semantic error (502 with
+///   the stable `recorded upstream error` shape replay uses for recorded
+///   `FlowOutcome::Error`), which is the reproducible form of a
+///   transport failure at replay time.
+#[cfg(feature = "eggserve")]
+async fn scenario_fault_response(
+    rendered: eggreplay_core::RenderedScenarioResponse,
+) -> Result<Response, ServiceError> {
+    use eggreplay_core::ScenarioFault;
+    match rendered.fault.clone() {
+        None => response_bytes(rendered.status, &rendered.headers, rendered.body),
+        Some(ScenarioFault::ResponseHeadDelay { delay_ms }) => {
+            tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+            response_bytes(rendered.status, &rendered.headers, rendered.body)
+        }
+        Some(ScenarioFault::BodyChunkDelay {
+            delay_ms,
+            chunk_bytes,
+        }) => {
+            let length = rendered.body.len() as u64;
+            let stream = fault_body_stream(rendered.body, length, chunk_bytes, delay_ms, None);
+            fault_stream_response(rendered.status, &rendered.headers, stream)
+        }
+        Some(ScenarioFault::CloseBeforeResponse) => {
+            let length = rendered.body.len() as u64;
+            let stream = fault_body_stream(
+                Vec::new(),
+                length,
+                1,
+                0,
+                Some("fault: close before response".to_string()),
+            );
+            fault_stream_response(rendered.status, &rendered.headers, stream)
+        }
+        Some(ScenarioFault::CloseAfterBytes { bytes }) => {
+            let length = rendered.body.len() as u64;
+            let take = rendered
+                .body
+                .len()
+                .min(usize::try_from(bytes).unwrap_or(usize::MAX));
+            let prefix = rendered.body[..take].to_vec();
+            let stream = fault_body_stream(
+                prefix,
+                length,
+                u64::MAX,
+                0,
+                Some("fault: close after bytes".to_string()),
+            );
+            fault_stream_response(rendered.status, &rendered.headers, stream)
+        }
+        Some(ScenarioFault::TransportError { category, .. }) => {
+            response_bytes(502, &[], format!("recorded upstream error: {category:?}\n"))
+        }
+    }
+}
+
+/// Build a streamed scenario response over a caller-constructed body
+/// stream with no trailers. The stream carries its own declared length:
+/// for truncating faults the declared length exceeds the sent prefix so
+/// the client observes an explicit truncation error.
+#[cfg(feature = "eggserve")]
+fn fault_stream_response(
+    status: u16,
+    headers: &[HeaderEntry],
+    stream: ResponseStream,
+) -> Result<Response, ServiceError> {
+    let status =
+        StatusCode::new(status).map_err(|error| ServiceError::internal(error.to_string()))?;
+    let mut builder = Response::builder().status(status);
+    for header in headers {
+        builder = builder
+            .header(header.name.clone(), header.value.clone())
+            .map_err(|error| ServiceError::internal(error.to_string()))?;
+    }
+    builder
+        .body(ResponseBody::Stream(stream))
+        .map_err(|error| ServiceError::internal(error.to_string()))
+}
+
+/// In-memory chunked scenario body stream with per-chunk delays and an
+/// optional terminal stream error (connection abort after the prefix).
+/// `declared_length` is the response length framing: it equals the body
+/// for complete streams and exceeds the sent prefix for truncating
+/// faults, so truncation is client-visible.
+#[cfg(feature = "eggserve")]
+fn fault_body_stream(
+    body: Vec<u8>,
+    declared_length: u64,
+    chunk_bytes: u64,
+    delay_ms: u64,
+    terminal_error: Option<String>,
+) -> ResponseStream {
+    let chunk = usize::try_from(chunk_bytes.max(1)).unwrap_or(usize::MAX);
+    let bytes = Box::pin(futures_util::stream::unfold(
+        (body, 0usize, terminal_error),
+        move |(body, offset, pending)| async move {
+            if offset < body.len() {
+                tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                let end = offset.saturating_add(chunk).min(body.len());
+                let chunk_bytes = bytes::Bytes::copy_from_slice(&body[offset..end]);
+                Some((Ok(chunk_bytes), (body, end, pending)))
+            } else {
+                // Terminal error fires exactly once: the pending message is
+                // consumed, so the next poll ends the stream.
+                pending
+                    .map(|message| (Err(ResponseStreamError::new(message)), (body, offset, None)))
+            }
+        },
+    ))
+        as std::pin::Pin<
+            Box<dyn futures_util::Stream<Item = Result<bytes::Bytes, ResponseStreamError>> + Send>,
+        >;
+    ResponseStream::with_known_length_and_trailers(bytes, declared_length, async move { Ok(None) })
 }
 
 #[cfg(feature = "eggserve")]
@@ -2439,6 +2573,7 @@ mod tests {
                         }],
                         body_template: "created {{user}}".into(),
                         json_pointer_replacements: vec![],
+                        fault: None,
                     },
                     next_state: "done".into(),
                 }],

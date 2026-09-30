@@ -1,6 +1,6 @@
 //! Bounded, deterministic authored replay scenarios.
 
-use crate::{HeaderEntry, HttpRequest, RedactionConfig};
+use crate::{ErrorCategory, ErrorPhase, HeaderEntry, HttpRequest, RedactionConfig};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -153,6 +153,90 @@ pub struct ScenarioResponse {
     /// Bounded JSON Pointer replacements applied after rendering the body.
     #[serde(default)]
     pub json_pointer_replacements: Vec<JsonPointerReplacement>,
+    /// Optional deterministic transport fault applied at replay serving.
+    /// Absent in fixtures authored before M014D (`#[serde(default)]`).
+    #[serde(default)]
+    pub fault: Option<ScenarioFault>,
+}
+
+/// Deterministic transport faults for authored scenario responses (M014D).
+///
+/// Faults apply at replay serving through existing EggServe/EggFetch
+/// lifecycle controls only: sleeps before the head or between body
+/// chunks, prefix streaming with a terminal stream error, or a projected
+/// recorded-style semantic transport error. Arbitrary packet corruption,
+/// TCP flag manipulation, and kernel-level emulation are out of scope.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScenarioFault {
+    /// Sleep before producing the response head.
+    ResponseHeadDelay {
+        /// Bounded delay in milliseconds (see [`MAX_FAULT_DELAY_MS`]).
+        delay_ms: u64,
+    },
+    /// Stream the rendered body in chunks with a sleep between chunks.
+    BodyChunkDelay {
+        /// Bounded delay in milliseconds between chunks.
+        delay_ms: u64,
+        /// Chunk size in bytes (`1..=MAX_FAULT_CHUNK_BYTES`).
+        chunk_bytes: u64,
+    },
+    /// Offer zero body bytes, then terminate with a stream error
+    /// (connection abort). Headers flush with the full declared length
+    /// first, so the client observes failure with nothing delivered —
+    /// never a synthetic status.
+    CloseBeforeResponse,
+    /// Offer the first `bytes` of the rendered body, then terminate
+    /// with a stream error (truncated body + connection abort). The
+    /// declared length stays the full rendered length; prefix bytes may
+    /// or may not reach the client before the abort, but clean full
+    /// delivery never happens.
+    CloseAfterBytes {
+        /// Prefix length in bytes (clamped to the rendered body).
+        bytes: u64,
+    },
+    /// Project a recorded-style semantic transport error (served as 502
+    /// with the stable `recorded upstream error: {category:?}` shape, the
+    /// same projection replay uses for recorded `FlowOutcome::Error`).
+    TransportError {
+        /// Stable error vocabulary (see [`ErrorCategory`]).
+        category: ErrorCategory,
+        /// Phase vocabulary (see [`ErrorPhase`]).
+        phase: ErrorPhase,
+    },
+}
+
+/// Maximum authored fault delay (30 s; tests use milliseconds).
+pub const MAX_FAULT_DELAY_MS: u64 = 30_000;
+/// Maximum authored fault chunk size (16 MiB).
+pub const MAX_FAULT_CHUNK_BYTES: u64 = 16 * 1024 * 1024;
+
+impl ScenarioFault {
+    /// Validate fault bounds. Typed categories/phases need no validation.
+    pub fn validate(&self) -> Result<(), String> {
+        match self {
+            Self::ResponseHeadDelay { delay_ms } => {
+                if *delay_ms > MAX_FAULT_DELAY_MS {
+                    return Err("scenario fault delay exceeds configured limit".into());
+                }
+            }
+            Self::BodyChunkDelay {
+                delay_ms,
+                chunk_bytes,
+            } => {
+                if *delay_ms > MAX_FAULT_DELAY_MS {
+                    return Err("scenario fault delay exceeds configured limit".into());
+                }
+                if *chunk_bytes == 0 || *chunk_bytes > MAX_FAULT_CHUNK_BYTES {
+                    return Err("scenario fault chunk size exceeds configured bounds".into());
+                }
+            }
+            Self::CloseBeforeResponse
+            | Self::CloseAfterBytes { .. }
+            | Self::TransportError { .. } => {}
+        }
+        Ok(())
+    }
 }
 
 /// One parsed JSON value replacement using a rendered UTF-8 string value.
@@ -173,6 +257,8 @@ pub struct RenderedScenarioResponse {
     pub headers: Vec<HeaderEntry>,
     /// Rendered body bytes.
     pub body: Vec<u8>,
+    /// Transport fault selected with the transition, if any.
+    pub fault: Option<ScenarioFault>,
 }
 
 /// A selected transition outcome, retaining its next state for diagnostics.
@@ -376,6 +462,7 @@ impl ScenarioRuntime {
                 status: transition.response.status,
                 headers,
                 body: body.into_bytes(),
+                fault: transition.response.fault.clone(),
             },
         }))
     }
@@ -418,6 +505,9 @@ fn validate_transition(transition: &ScenarioTransition) -> Result<(), String> {
     }
     if !(100..=599).contains(&transition.response.status) {
         return Err("scenario response status is invalid".into());
+    }
+    if let Some(fault) = &transition.response.fault {
+        fault.validate()?;
     }
     for header in &transition.response.headers {
         if header.name.len() > 256 || header.value.len() > MAX_VALUE_BYTES {
@@ -631,6 +721,7 @@ mod tests {
                         }],
                         body_template: "added {{product}}".into(),
                         json_pointer_replacements: vec![],
+                        fault: None,
                     },
                     next_state: "added".into(),
                 }],
@@ -665,6 +756,53 @@ mod tests {
         assert_eq!(first.state(), "added");
         assert_eq!(second.state(), "empty");
         assert!(second.advance(&request(), b"").unwrap().is_some());
+    }
+
+    #[test]
+    fn fault_bounds_fail_closed_and_carry_through() {
+        use crate::{ErrorCategory, ErrorPhase};
+        let mut rule = rules();
+        rule.scenarios[0].transitions[0].response.fault = Some(ScenarioFault::ResponseHeadDelay {
+            delay_ms: MAX_FAULT_DELAY_MS + 1,
+        });
+        assert!(rule.validate().is_err());
+        rule.scenarios[0].transitions[0].response.fault = Some(ScenarioFault::BodyChunkDelay {
+            delay_ms: 10,
+            chunk_bytes: 0,
+        });
+        assert!(rule.validate().is_err());
+        rule.scenarios[0].transitions[0].response.fault = Some(ScenarioFault::BodyChunkDelay {
+            delay_ms: 10,
+            chunk_bytes: MAX_FAULT_CHUNK_BYTES + 1,
+        });
+        assert!(rule.validate().is_err());
+        rule.scenarios[0].transitions[0].response.fault = Some(ScenarioFault::TransportError {
+            category: ErrorCategory::Timeout,
+            phase: ErrorPhase::Body,
+        });
+        assert!(rule.validate().is_ok());
+        let mut runtime = rule.runtime("cart").expect("runtime");
+        let step = runtime
+            .advance(&request(), b"")
+            .expect("advance")
+            .expect("step");
+        assert_eq!(
+            step.response.fault,
+            Some(ScenarioFault::TransportError {
+                category: ErrorCategory::Timeout,
+                phase: ErrorPhase::Body,
+            })
+        );
+        // Fault-free fixtures keep their shape: no fault renders as None.
+        let mut plain = rules();
+        plain.scenarios[0].transitions[0].response.fault = None;
+        assert!(plain.validate().is_ok());
+        let mut runtime = plain.runtime("cart").expect("runtime");
+        let step = runtime
+            .advance(&request(), b"")
+            .expect("advance")
+            .expect("step");
+        assert_eq!(step.response.fault, None);
     }
 
     #[test]

@@ -9,6 +9,7 @@ description = "Transport-neutral semantic models and policies for EggReplay"
 
 [dependencies]
 chrono.workspace = true
+prost-reflect.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
