@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "crates/eggreplay-core",
     "crates/eggreplay-store",
+    "crates/eggreplay-har",
     "crates/eggreplay-http",
     "crates/eggreplay-cli",
     "crates/eggreplay-python",

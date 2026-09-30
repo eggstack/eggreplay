@@ -79,6 +79,21 @@ offsets; equal offsets follow fixture order, and `--max-concurrency` (default
 8, maximum 1,024) bounds active requests. Timeline mode requires one validated
 start offset for every flow and reports findings in fixture order.
 
+HAR interchange and migration (M014A) add three offline commands with the same
+envelope/exit contract: `eggreplay har import --har input.har --fixture
+out.eggr` (lossy HAR 1.2 → fixture with the selected redaction policy applied
+before publication, plus an optional `interop-provenance` extension and
+`--loss-report`), `eggreplay har export --fixture in.eggr --har out.har`
+(lossy fixture → HAR with an embedded `_eggreplay` loss/provenance section and
+optional side report, never claiming round-trip losslessness), and
+`eggreplay migrate --fixture old.eggr --to new.eggr` /
+`eggreplay migrate --fixture old.eggr --in-place` (transactional schema-1 →
+current upgrade with registered-extension checks; `--to` names the destination
+because `--output` already selects `human|json|junit`). Unknown required
+extensions and future schemas block migration as `fixture` errors. See
+`docs/har-interchange.md` for the loss matrices, redaction rules, and golden
+corpus.
+
 Interception builds add two namespaces kept separate from ordinary gateway
 recording: `eggreplay proxy record ...` (explicit-proxy listener with target
 policy file/flags, `deny`/`tunnel`/`intercept` CONNECT default, CA directory

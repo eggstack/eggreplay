@@ -470,6 +470,7 @@ dependencies = [
  "clap",
  "eggfetch-core",
  "eggreplay-core",
+ "eggreplay-har",
  "eggreplay-http",
  "eggreplay-intercept",
  "eggreplay-store",
@@ -496,6 +497,21 @@ dependencies = [
  "thiserror 2.0.20",
  "url",
  "uuid",
+]
+
+[[package]]
+name = "eggreplay-har"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "chrono",
+ "eggreplay-core",
+ "eggreplay-store",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.20",
+ "url",
 ]
 
 [[package]]

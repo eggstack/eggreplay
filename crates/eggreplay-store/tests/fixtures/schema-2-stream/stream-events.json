@@ -1,0 +1,1 @@
+{"schema_version":1,"flows":[{"flow_id":"stream-flow-1","start_offset_ns":0,"request":[],"response":[{"delta_ns":0,"event":{"kind":"data","offset":0,"length":2}},{"delta_ns":10,"event":{"kind":"end"}}]}]}

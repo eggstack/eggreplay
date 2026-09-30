@@ -1,0 +1,24 @@
+[package]
+name = "eggreplay-har"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Lossy HAR interchange and fixture migration helpers for EggReplay"
+
+[dependencies]
+base64.workspace = true
+chrono.workspace = true
+eggreplay-core = { path = "../eggreplay-core" }
+eggreplay-store = { path = "../eggreplay-store" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+url.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

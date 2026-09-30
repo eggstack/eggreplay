@@ -1,0 +1,21 @@
+{
+  "schema_version": 2,
+  "tool_version": "0.1.0",
+  "session_id": "schema-2-interop",
+  "capture_mode": "har-import",
+  "source": null,
+  "target": null,
+  "matcher_profile": "strict",
+  "redaction_profile": "default-v1",
+  "complete": true,
+  "flow_count": 2,
+  "blob_count": 2,
+  "extensions": [
+    {
+      "name": "interop-provenance",
+      "schema_version": 1,
+      "path": "interop-provenance.json",
+      "required_for_replay": false
+    }
+  ]
+}

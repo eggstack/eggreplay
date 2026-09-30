@@ -51,6 +51,8 @@ enum Command {
     Diff(DiffArgs),
     Inspect(InspectArgs),
     Validate(ValidateArgs),
+    Har(HarArgs),
+    Migrate(MigrateArgs),
     Proxy(intercept::ProxyArgs),
     Ca(intercept::CaArgs),
 }
@@ -344,6 +346,81 @@ struct ValidateArgs {
     output: OutputArgs,
 }
 
+#[derive(Debug, Args)]
+struct HarArgs {
+    #[command(subcommand)]
+    action: HarAction,
+}
+
+#[derive(Debug, Subcommand)]
+enum HarAction {
+    /// Import a HAR 1.2 document into a new `.eggr` fixture (lossy, redacted).
+    Import(HarImportArgs),
+    /// Export a fixture into a HAR 1.2 document (lossy, with `_eggreplay` loss section).
+    Export(HarExportArgs),
+}
+
+#[derive(Debug, Args)]
+#[allow(clippy::struct_excessive_bools)]
+struct HarImportArgs {
+    #[arg(long)]
+    har: PathBuf,
+    #[arg(long)]
+    fixture: PathBuf,
+    #[arg(long, default_value_t = false)]
+    overwrite: bool,
+    #[arg(long = "loss-report")]
+    loss_report: Option<PathBuf>,
+    #[arg(long = "redact-header")]
+    redact_headers: Vec<String>,
+    #[arg(long = "redact-query")]
+    redact_queries: Vec<String>,
+    #[arg(long = "redact-json-path")]
+    redact_json_paths: Vec<String>,
+    #[arg(long = "redaction-profile", default_value = "default-v1")]
+    redaction_profile: String,
+    #[arg(long = "unsafe-replace-default-redaction", default_value_t = false)]
+    unsafe_replace: bool,
+    #[command(flatten)]
+    output: OutputArgs,
+}
+
+#[derive(Debug, Args)]
+struct HarExportArgs {
+    #[arg(long)]
+    fixture: PathBuf,
+    #[arg(long)]
+    har: PathBuf,
+    #[arg(long = "loss-report")]
+    loss_report: Option<PathBuf>,
+    #[arg(long, default_value_t = false)]
+    overwrite: bool,
+    #[command(flatten)]
+    output: OutputArgs,
+}
+
+#[derive(Debug, Args)]
+#[allow(clippy::struct_excessive_bools)]
+struct MigrateArgs {
+    #[arg(long)]
+    fixture: PathBuf,
+    /// Destination fixture directory. Mutually exclusive with `--in-place`.
+    /// Named `--to` (not `--output`) because `--output` selects the result
+    /// envelope format (`human|json|junit`) on every command.
+    #[arg(long)]
+    to: Option<PathBuf>,
+    #[arg(long, default_value_t = false)]
+    in_place: bool,
+    #[arg(long, default_value_t = false)]
+    overwrite: bool,
+    /// Target session schema (defaults to current). Schema 1 fixtures upgrade
+    /// to current; current-to-current migration must be idempotent.
+    #[arg(long)]
+    target_schema: Option<u16>,
+    #[command(flatten)]
+    output: OutputArgs,
+}
+
 #[derive(Debug, Serialize)]
 struct Envelope<T: Serialize> {
     command: String,
@@ -417,6 +494,11 @@ async fn run(cli: Cli) -> Result<(), (String, String)> {
         Command::Diff(args) => diff(&args),
         Command::Inspect(args) => inspect(&args),
         Command::Validate(args) => validate(&args),
+        Command::Har(args) => match args.action {
+            HarAction::Import(import) => har_import(&import),
+            HarAction::Export(export) => har_export(&export),
+        },
+        Command::Migrate(args) => migrate(&args),
         Command::Proxy(args) => intercept::run_proxy(args).await,
         Command::Ca(args) => intercept::run_ca(&args),
     }
@@ -1942,6 +2024,264 @@ fn validate(args: &ValidateArgs) -> Result<(), (String, String)> {
         json!({"fixture": args.fixture, "flow_count": session.manifest().flow_count, "schema_version": session.manifest().metadata.schema_version}),
     );
     Ok(())
+}
+
+fn har_redaction_policy(args: &HarImportArgs) -> (eggreplay_core::RedactionConfig, String) {
+    redaction_policy(
+        &args.redact_headers,
+        &args.redact_queries,
+        &args.redact_json_paths,
+        &args.redaction_profile,
+        args.unsafe_replace,
+    )
+}
+
+fn har_import(args: &HarImportArgs) -> Result<(), (String, String)> {
+    if args.fixture.exists() && !args.overwrite {
+        emit(
+            "har-import",
+            args.output.output,
+            false,
+            Some("configuration"),
+            json!({"fixture": args.fixture, "har": args.har}),
+        );
+        return Err((
+            "configuration".into(),
+            "fixture exists; pass --overwrite to replace it".into(),
+        ));
+    }
+    let har_bytes = std::fs::read(&args.har).map_err(|error| {
+        (
+            "configuration".into(),
+            format!("cannot read HAR file: {error}"),
+        )
+    })?;
+    let (redaction, profile_id) = har_redaction_policy(args);
+    if args.fixture.exists() {
+        std::fs::remove_dir_all(&args.fixture)
+            .map_err(|error| ("runtime".into(), error.to_string()))?;
+    }
+    let mut writer = eggreplay_store::SessionWriter::create(
+        &args.fixture,
+        SessionMetadata {
+            capture_mode: "har-import".into(),
+            redaction_profile: profile_id.clone(),
+            ..SessionMetadata::default()
+        },
+        StoreLimits::default(),
+    )
+    .map_err(|error| ("fixture".into(), error.to_string()))?;
+    let report = eggreplay_har::import_har_to_writer(
+        &mut writer,
+        &har_bytes,
+        &redaction,
+        &profile_id,
+        eggreplay_core::DEFAULT_MAX_STRUCTURED_REDACTION_BYTES,
+        StoreLimits::default().max_blob_bytes,
+    )
+    .map_err(|error| match error {
+        eggreplay_har::HarError::Store(inner) => ("fixture".into(), inner.to_string()),
+        eggreplay_har::HarError::Invalid(message) | eggreplay_har::HarError::Redaction(message) => {
+            ("configuration".into(), message)
+        }
+        eggreplay_har::HarError::UnsupportedEntry { index, reason } => {
+            ("configuration".into(), format!("entry {index}: {reason}"))
+        }
+    })?;
+    let session = writer
+        .finish()
+        .map_err(|error| ("fixture".into(), error.to_string()))?;
+    if let Some(loss_path) = &args.loss_report {
+        let loss_document = json!({
+            "command": "har-import",
+            "har": args.har,
+            "fixture": args.fixture,
+            "entries": report.entries,
+            "flows": report.flows,
+            "losses": report.losses,
+        });
+        std::fs::write(
+            loss_path,
+            serde_json::to_vec_pretty(&loss_document)
+                .map_err(|error| ("runtime".into(), error.to_string()))?,
+        )
+        .map_err(|error| ("runtime".into(), error.to_string()))?;
+    }
+    emit(
+        "har-import",
+        args.output.output,
+        true,
+        None,
+        json!({
+            "fixture": args.fixture,
+            "har": args.har,
+            "flow_count": session.manifest().flow_count,
+            "entries": report.entries,
+            "loss_count": report.losses.len(),
+            "loss_report": args.loss_report,
+        }),
+    );
+    Ok(())
+}
+
+fn har_export(args: &HarExportArgs) -> Result<(), (String, String)> {
+    let session = Session::open(&args.fixture, StoreLimits::default())
+        .map_err(|error| ("fixture".into(), error.to_string()))?;
+    let (har, report) = eggreplay_har::export_session_to_har(&session)
+        .map_err(|error| ("runtime".into(), error.to_string()))?;
+    if args.har.exists() && !args.overwrite {
+        return Err((
+            "configuration".into(),
+            "HAR output exists; pass --overwrite to replace it".into(),
+        ));
+    }
+    if let Some(parent) = args
+        .har
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        std::fs::create_dir_all(parent).map_err(|error| ("runtime".into(), error.to_string()))?;
+    }
+    std::fs::write(
+        &args.har,
+        serde_json::to_vec_pretty(&har).map_err(|error| ("runtime".into(), error.to_string()))?,
+    )
+    .map_err(|error| ("runtime".into(), error.to_string()))?;
+    if let Some(loss_path) = &args.loss_report {
+        let loss_document = json!({
+            "command": "har-export",
+            "fixture": args.fixture,
+            "har": args.har,
+            "entries": report.entries,
+            "losses": report.losses,
+        });
+        std::fs::write(
+            loss_path,
+            serde_json::to_vec_pretty(&loss_document)
+                .map_err(|error| ("runtime".into(), error.to_string()))?,
+        )
+        .map_err(|error| ("runtime".into(), error.to_string()))?;
+    }
+    emit(
+        "har-export",
+        args.output.output,
+        true,
+        None,
+        json!({
+            "fixture": args.fixture,
+            "har": args.har,
+            "entries": report.entries,
+            "loss_count": report.losses.len(),
+            "loss_report": args.loss_report,
+        }),
+    );
+    Ok(())
+}
+
+#[allow(clippy::too_many_lines)]
+fn migrate(args: &MigrateArgs) -> Result<(), (String, String)> {
+    if args.in_place && args.to.is_some() {
+        return Err((
+            "configuration".into(),
+            "--to and --in-place are mutually exclusive".into(),
+        ));
+    }
+    if !args.in_place && args.to.is_none() {
+        return Err((
+            "configuration".into(),
+            "migrate requires --to <fixture> or --in-place".into(),
+        ));
+    }
+    let target_schema = args
+        .target_schema
+        .unwrap_or(eggreplay_core::SESSION_SCHEMA_VERSION);
+    if !(eggreplay_core::SESSION_SCHEMA_V1..=eggreplay_core::SESSION_SCHEMA_VERSION)
+        .contains(&target_schema)
+    {
+        return Err((
+            "configuration".into(),
+            format!("unsupported target session schema {target_schema}"),
+        ));
+    }
+    let source = Session::open(&args.fixture, StoreLimits::default())
+        .map_err(|error| ("fixture".into(), error.to_string()))?;
+    if args.in_place {
+        // Transactional in-place: stage to a sibling, validate (migration
+        // opens the staged copy), then atomically replace the source. The
+        // source is never mutated before the new fixture validates.
+        let staged = sibling_transaction_path(&args.fixture, "migrate");
+        let migrated =
+            eggreplay_har::migrate_session(&source, &staged, target_schema).map_err(|error| {
+                match error {
+                    eggreplay_har::MigrationError::Blocked(message) => ("fixture".into(), message),
+                    eggreplay_har::MigrationError::Store(inner) => {
+                        ("fixture".into(), inner.to_string())
+                    }
+                    eggreplay_har::MigrationError::Runtime(message) => ("runtime".into(), message),
+                }
+            })?;
+        let flow_count = migrated.manifest().flow_count;
+        let schema_version = migrated.manifest().metadata.schema_version;
+        drop(migrated);
+        drop(source);
+        replace_fixture_transactionally(&staged, &args.fixture)
+            .map_err(|error| ("runtime".into(), error))?;
+        emit(
+            "migrate",
+            args.output.output,
+            true,
+            None,
+            json!({"fixture": args.fixture, "in_place": true, "target_schema": schema_version, "flow_count": flow_count}),
+        );
+        Ok(())
+    } else {
+        let destination = args.to.as_ref().expect("destination checked above");
+        if destination.exists() && !args.overwrite {
+            return Err((
+                "configuration".into(),
+                "destination exists; pass --overwrite to replace it".into(),
+            ));
+        }
+        // Transactional --to: migrate into a sibling staging directory, then
+        // publish to the destination (replacing transactionally when it
+        // exists). The source is never mutated.
+        let staged = sibling_transaction_path(destination, "migrate");
+        let migrated =
+            eggreplay_har::migrate_session(&source, &staged, target_schema).map_err(|error| {
+                match error {
+                    eggreplay_har::MigrationError::Blocked(message) => ("fixture".into(), message),
+                    eggreplay_har::MigrationError::Store(inner) => {
+                        ("fixture".into(), inner.to_string())
+                    }
+                    eggreplay_har::MigrationError::Runtime(message) => ("runtime".into(), message),
+                }
+            })?;
+        let flow_count = migrated.manifest().flow_count;
+        let schema_version = migrated.manifest().metadata.schema_version;
+        drop(migrated);
+        if destination.exists() {
+            replace_fixture_transactionally(&staged, destination)
+                .map_err(|error| ("runtime".into(), error))?;
+        } else {
+            if let Some(parent) = destination
+                .parent()
+                .filter(|parent| !parent.as_os_str().is_empty())
+            {
+                std::fs::create_dir_all(parent)
+                    .map_err(|error| ("runtime".into(), error.to_string()))?;
+            }
+            std::fs::rename(&staged, destination)
+                .map_err(|error| ("runtime".into(), error.to_string()))?;
+        }
+        emit(
+            "migrate",
+            args.output.output,
+            true,
+            None,
+            json!({"fixture": args.fixture, "to": destination, "target_schema": schema_version, "flow_count": flow_count}),
+        );
+        Ok(())
+    }
 }
 
 fn body(

@@ -15,6 +15,7 @@ path = "src/main.rs"
 clap.workspace = true
 eggfetch-core.workspace = true
 eggreplay-core = { path = "../eggreplay-core" }
+eggreplay-har = { path = "../eggreplay-har" }
 eggreplay-http = { path = "../eggreplay-http", features = ["eggserve", "eggress", "websocket"] }
 eggreplay-intercept = { path = "../eggreplay-intercept", optional = true }
 eggreplay-store = { path = "../eggreplay-store" }

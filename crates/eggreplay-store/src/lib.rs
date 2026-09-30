@@ -2783,6 +2783,8 @@ mod tests {
 
     #[test]
     fn checked_in_schema_fixtures_open_and_current_extension_is_readable() {
+        // M014A golden corpus: every supported historical schema/extension
+        // version has a checked-in fixture, plus migration results.
         let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
         let schema_one = Session::open(fixtures.join("schema-1-empty"), StoreLimits::default())
             .expect("schema-1 golden fixture must remain readable");
@@ -2794,6 +2796,62 @@ mod tests {
             rules.strip_suffix(b"\n").unwrap_or(&rules),
             br#"{"schema_version":1,"scenarios":[]}"#
         );
+        // Schema-1 with flows preserves ordered query pairs and duplicate
+        // headers.
+        let with_flows =
+            Session::open(fixtures.join("schema-1-with-flows"), StoreLimits::default())
+                .expect("schema-1-with-flows must open");
+        assert_eq!(with_flows.manifest().metadata.schema_version, 1);
+        assert_eq!(with_flows.manifest().flow_count, 2);
+        let flows = with_flows
+            .iter_flows()
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(flows[0].request.query.len(), 2);
+        assert_eq!(flows[0].request.query[0].key, "b");
+        assert_eq!(
+            flows[0]
+                .request
+                .headers
+                .iter()
+                .filter(|header| header.name == "X-Dup")
+                .count(),
+            2
+        );
+        // Stream-events extension golden.
+        let streamed = Session::open(fixtures.join("schema-2-stream"), StoreLimits::default())
+            .expect("schema-2-stream must open");
+        assert!(streamed.read_extension("stream-events").unwrap().is_some());
+        // WebSocket extension golden.
+        let websocket = Session::open(fixtures.join("schema-2-websocket"), StoreLimits::default())
+            .expect("schema-2-websocket must open");
+        assert!(
+            websocket
+                .read_extension("websocket-messages")
+                .unwrap()
+                .is_some()
+        );
+        // HAR import provenance golden (optional interop-provenance).
+        let interop = Session::open(fixtures.join("schema-2-interop"), StoreLimits::default())
+            .expect("schema-2-interop must open");
+        assert!(
+            interop
+                .read_extension("interop-provenance")
+                .unwrap()
+                .is_some()
+        );
+        // Checked-in migration result: schema-1-with-flows upgraded to v2.
+        let migrated = Session::open(
+            fixtures.join("schema-1-with-flows-migrated-v2"),
+            StoreLimits::default(),
+        )
+        .expect("migrated golden must open");
+        assert_eq!(
+            migrated.manifest().metadata.schema_version,
+            eggreplay_core::SESSION_SCHEMA_VERSION
+        );
+        assert_eq!(migrated.manifest().flow_count, 2);
     }
 
     #[test]

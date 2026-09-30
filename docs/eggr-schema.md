@@ -18,6 +18,29 @@ single-filename paths, reject symlinks, and are bounded to 16 MiB each and
 publication marker. `Session::copy_to` streams and revalidates all blobs while
 upgrading/copying a session; it never mutates its source.
 
+## Migration and HAR provenance (M014A)
+
+`eggreplay migrate` materializes explicit on-disk upgrades: schema-1 →
+current session schema (2) with flow records unchanged, and current →
+current copies that must be idempotent. Migration stages into a sibling
+directory, validates the staged copy, then publishes transactionally
+(`--to` replaces the destination only with `--overwrite`; `--in-place`
+atomically replaces the source with rollback). The registered migrators are
+`rules v1`, `stream-events v1`, `websocket-messages v1`, and
+`interop-provenance v1` (identity only); any other required extension, or any
+known extension at a non-current schema, blocks migration. The checked-in
+corpus covers `schema-1-empty`, `schema-1-with-flows`,
+`schema-1-with-flows-migrated-v2`, `schema-2-rules`, `schema-2-stream`,
+`schema-2-websocket`, and `schema-2-interop`.
+
+The optional `interop-provenance` extension (`interop-provenance.json`,
+schema 1, `required_for_replay=false`) records lossy HAR import provenance
+(tool version, HAR creator, entry/flow counts, bounded loss list). It never
+changes replay semantics and is ignored by older readers. HAR export never
+writes an extension; it embeds `log._eggreplay` loss/provenance in the HAR
+document plus an optional side report. See `docs/har-interchange.md` for the
+full loss matrices.
+
 ## WebSocket conversations (M011)
 
 The required `websocket-messages` extension is stored as one bounded
