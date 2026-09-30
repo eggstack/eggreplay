@@ -38,7 +38,10 @@ Docs-only milestone. No dependency moves, no product code, no new
 tests: `plans/adrs/0009-http3-integration-boundary.md` (decision),
 this closure record, registry/roadmap/baseline/README status updates.
 
-Hosted CI run: <TBD on push> (docs-only; standard matrix must stay green).
+Hosted CI run:
+[36773818886](https://github.com/eggstack/eggreplay/actions/runs/36773818886)
+(docs-only push shared with the M014B closure; standard matrix must stay
+green — number filled after green, substance unchanged).
 
 ## Handoff
 
