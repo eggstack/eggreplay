@@ -17,6 +17,9 @@ websocket = ["dep:base64", "dep:tokio-tungstenite"]
 # `HttpVersionPolicy` on the caller-constructed EggFetch client. Inbound H2
 # (EggServe replay/gateway) and H2 interception remain unsupported.
 h2 = ["eggfetch-core/native-http2"]
+# Optional gRPC-aware views (M014D). Pure projections over recorded flow
+# bodies; kept off the default build so direct/H1 builds stay codec-free.
+grpc = ["dep:prost-reflect"]
 # Narrow Eggress feature: only pproxy-compat grammar for listener-free routing.
 # Do not enable extended, SSH, QUIC, listener, or server surfaces.
 eggress = ["dep:eggress-outbound", "eggress-outbound/pproxy-compat"]
@@ -43,6 +46,7 @@ url.workspace = true
 eggserve-primitives = { workspace = true, optional = true }
 eggserve-server = { workspace = true, optional = true }
 eggress-outbound = { workspace = true, optional = true }
+prost-reflect = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile.workspace = true

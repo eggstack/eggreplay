@@ -788,9 +788,10 @@ async fn relay_socks(
     Ok(())
 }
 
+#[cfg(feature = "grpc")]
 #[tokio::test]
 async fn grpc_view_over_h2_recorded_flow() {
-    use eggreplay_core::{grpc_status_from_trailers, grpc_view, is_grpc_content_type};
+    use eggreplay_http::grpc::{grpc_status_from_trailers, grpc_view, is_grpc_content_type};
 
     let harness = start_harness().await;
     let client = h2_client(&harness.cert);
@@ -995,13 +996,25 @@ async fn regression_over_h2_and_scenario_replay_over_h1() {
     let baseline_body = response_body(&session, &flow);
 
     // Regression re-executes over H2; deterministic trailers must match.
+    // The harness `date` header is volatile across the second boundary
+    // (observed on Windows), so it is normalized out on both sides; the
+    // trailers under test still compare exactly.
     let target: Uri = harness.base().parse().expect("uri");
     let observation = execute_candidate(&client, &flow.request, &[], &target, 16 << 20, None)
         .await
         .expect("candidate");
+    let mut baseline = flow.clone();
+    let mut candidate = observation.flow.clone();
+    for compared in [&mut baseline, &mut candidate] {
+        if let FlowOutcome::Response(response) = &mut compared.outcome {
+            response
+                .headers
+                .retain(|entry| !entry.name.eq_ignore_ascii_case("date"));
+        }
+    }
     let report = compare_flows(
-        &flow,
-        &observation.flow,
+        &baseline,
+        &candidate,
         &baseline_body,
         &observation.response_body,
         ReportScheduler::Sequential,

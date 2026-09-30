@@ -1,17 +1,22 @@
-//! Optional gRPC-aware views above qualified HTTP/2 flows (M014D).
+//! Optional gRPC-aware views above qualified HTTP flows (M014D).
 //!
-//! These are pure, transport-neutral projections: the 5-byte gRPC message
-//! envelope is parsed, ordered message lengths and compression flags are
-//! exposed, `grpc-status`/`grpc-message` trailers surface in diagnostics,
-//! and protobuf payloads decode only against an explicit caller-supplied
+//! These are pure projections with no transport of their own: the 5-byte
+//! gRPC message envelope is parsed, ordered message lengths and
+//! compression flags are exposed, `grpc-status`/`grpc-message` trailers
+//! surface in diagnostics, and protobuf payloads decode only against an
+//! explicit caller-supplied
 //! [`FileDescriptorSet`](prost_reflect::prost_types::FileDescriptorSet).
 //! Raw body blobs stay authoritative; there is no network descriptor
 //! lookup, no decompression of compressed frames, and no canonical-store
 //! change. Views operate on caller-provided bytes (in practice,
 //! already-redacted flow bodies), so decoded JSON inherits flow
 //! redactions; there is no separate view selector language.
+//!
+//! The module lives in the HTTP adapter crate (behind the `grpc` cargo
+//! feature) so `eggreplay-core` keeps its dependency boundary: core
+//! never pulls transport or codec runtimes.
 
-use crate::flow::HeaderEntry;
+use eggreplay_core::HeaderEntry;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 

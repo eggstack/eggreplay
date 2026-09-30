@@ -6,7 +6,6 @@
 pub mod config;
 pub mod error;
 pub mod flow;
-pub mod grpc;
 pub mod matching;
 pub mod report;
 pub mod scenario;
@@ -21,11 +20,6 @@ pub use error::{ErrorCategory, ErrorPhase, FlowError};
 pub use flow::{
     BlobRef, BodyRef, Flow, FlowId, FlowOutcome, HeaderEntry, HttpRequest, HttpResponse,
     PhysicalRoute, Provenance, QueryPair, RedactionMarker, SessionMetadata, Trailers,
-};
-pub use grpc::{
-    GRPC_MAX_BODY_BYTES, GRPC_MAX_DESCRIPTOR_BYTES, GRPC_MAX_FRAMES, GrpcError, GrpcFrame,
-    GrpcMessageView, GrpcStatus, GrpcView, decode_grpc_payload, grpc_status_from_trailers,
-    grpc_view, is_grpc_content_type, parse_grpc_frames,
 };
 pub use matching::{
     BodyMatchMode, CandidateBody, ConsumptionMode, MatchCandidate, MatchDimension, MatchResult,

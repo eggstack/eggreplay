@@ -3,7 +3,7 @@
 M014D adds optional semantic helpers above already-qualified transports.
 Neither changes the canonical flow store.
 
-## gRPC views (`eggreplay_core::grpc`)
+## gRPC views (`eggreplay_http::grpc`, behind the `grpc` cargo feature)
 
 For qualified HTTP/1.1 or HTTP/2 flows with `application/grpc*` content
 types, the view layer parses the 5-byte length-prefixed envelope and
