@@ -83,9 +83,14 @@ qualified line, no H3 serving seam in the adopted EggServe closure, and
 EggFetch `http3` safety unreviewed (see `adrs/0009` and
 `closure/m014c-http3-feasibility-and-qualification.md`).
 
-Remaining evidence-gated questions are Python 3.15/free-threaded promotion,
-gRPC-derived views/fault polish (M014D), and later protocol-specific
-extensions. These belong to their owning later milestones rather than
+M014D closed with gRPC envelope/status views, bounded caller-descriptor
+decode, and five replay-serving fault models (see
+`closure/m014d-grpc-and-fault-polish.md` and `docs/grpc-and-faults.md`);
+raw blobs stay authoritative and arbitrary fault emulation stays out of
+scope.
+
+Remaining evidence-gated questions are Python 3.15/free-threaded promotion
+and later protocol-specific extensions. These belong to their owning later milestones rather than
 speculative changes to closed work. No sibling EggFetch/EggServe/Eggress
 capability is an EggReplay support claim without EggReplay-local end-to-end
 evidence.

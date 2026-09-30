@@ -63,12 +63,12 @@ boundary, and ADR 0008 owns interception security/transport ownership.
 | M013D | `implementation/interception/013d-https-mitm-http1-recording.md` | **closed** | M013C | HTTPS MITM H1 recording |
 | M013E | `implementation/interception/013e-cli-policy-and-operator-experience.md` | **closed** | M013D | CLI/policy/operator surface |
 | M013F | `implementation/interception/013f-hardening-qualification-and-closure.md` | **closed** | M013E | hardening + M013 closure |
-| M014 | `implementation/compatibility/014-compatibility-program.md` | ready (decomposed; M014A/B/C closed, M014D ready) | M013 closure | umbrella compatibility stage |
+| M014 | `implementation/compatibility/014-compatibility-program.md` | closed | M013 closure | umbrella compatibility stage |
 | M014-R1 | `implementation/compatibility/014r1-planning-and-documentation-reconciliation.md` | closed | M013 closure | planning/status truth-source reconciliation |
 | M014A | `implementation/compatibility/014a-har-and-migration.md` | closed | M013 closure, M014-R1 (closed) | HAR + migration |
 | M014B | `implementation/compatibility/014b-http2-qualification.md` | closed | M013 closure, M010, M014-R1 (closed) | H2 qualification |
 | M014C | `implementation/compatibility/014c-http3-feasibility-and-qualification.md` | closed | M014B (closed) | H3 architecture/support decision |
-| M014D | `implementation/compatibility/014d-grpc-and-fault-polish.md` | ready | M014B (closed), M010 (closed) | gRPC view + bounded faults |
+| M014D | `implementation/compatibility/014d-grpc-and-fault-polish.md` | closed | M014B (closed), M010 (closed) | gRPC view + bounded faults |
 
 ### Current execution gate
 
@@ -134,8 +134,11 @@ interchange) is closed on `ec082b0` (Actions run `36736273433`); see
 see `closure/m014b-http2-qualification.md`. M014C (H3 feasibility) is closed
 as deferred with documented missing seams; see
 `closure/m014c-http3-feasibility-and-qualification.md` and
-`adrs/0009-http3-integration-boundary.md`. M014D (gRPC + faults) is ready:
-M014B and M010 are both closed.
+`adrs/0009-http3-integration-boundary.md`. M014D (gRPC views + bounded
+faults) is closed on the D-impl run (see
+`closure/m014d-grpc-and-fault-polish.md`); the M014 umbrella is closed with
+the consolidated support matrix in
+`closure/m014-compatibility-program.md`.
 See also
 `closure/m013b0-eggserve-0-3-adoption-and-absolute-form-qualification.md`.
 

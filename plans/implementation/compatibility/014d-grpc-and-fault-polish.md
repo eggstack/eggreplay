@@ -1,6 +1,6 @@
 # M014D — gRPC-Aware Views and Bounded Fault-Model Polish
 
-Status: ready
+Status: closed (see `plans/closure/m014d-grpc-and-fault-polish.md`)
 Depends on: M014B (closed), M010 (closed)
 Parent: M014
 

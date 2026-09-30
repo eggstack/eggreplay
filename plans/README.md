@@ -43,9 +43,9 @@ M013 is closed under ADR 0008 on qualifying revision `5efc6f9` (Actions
 runs [36211265347](https://github.com/eggstack/eggreplay/actions/runs/36211265347)
 and [36456906216](https://github.com/eggstack/eggreplay/actions/runs/36456906216)
 on the closure commit); M013A, M013B0, M013B, M013C, M013D, M013E, and
-M013F are all closed. M014-R1 planning/documentation reconciliation, M014A
-(HAR interchange/migration), M014B (experimental outbound H2), and M014C
-(H3 deferred) are closed. M014D is ready (M014B and M010 both closed).
+M013F are all closed. M014-R1, M014A, M014B, M014C, and M014D are closed,
+and the M014 compatibility-program umbrella is closed with the support
+matrix in `closure/m014-compatibility-program.md`.
 
 See `registry.md` for the exact handoff state.
 

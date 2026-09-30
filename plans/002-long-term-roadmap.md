@@ -92,7 +92,7 @@ qualification evidence.
 
 ## Stage 10 — broader compatibility (M014)
 
-Status: active decomposed compatibility stage.
+Status: closed decomposed compatibility stage.
 
 Umbrella program split into bounded tracks plus a planning reconciliation
 gate:
@@ -101,11 +101,11 @@ gate:
 - M014A HAR import/export + fixture migration (closed);
 - M014B HTTP/2 qualification (closed; experimental outbound H2);
 - M014C HTTP/3 feasibility/qualification (closed; H3 deferred per ADR 0009);
-- M014D gRPC-aware views + bounded fault-model polish (ready).
+- M014D gRPC-aware views + bounded fault-model polish (closed).
 
-See `implementation/compatibility/`. M014A, M014B, and M014C are closed;
-M014D is ready under the dependency-driven execution rule (M014B and M010
-both closed).
+Status: closed. See `implementation/compatibility/` and
+`closure/m014-compatibility-program.md` for the consolidated support
+matrix.
 
 ## Roadmap rule
 
