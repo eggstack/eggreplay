@@ -75,30 +75,37 @@ Execution is decomposed:
 
 - M013A — substrate/dependency/threat preflight (closed);
 - M013B0 — EggServe 0.3 adoption + absolute-form qualification (closed);
-- M013B — explicit HTTP proxy + CONNECT deny/tunnel (closed, local);
-- M013C — CA lifecycle + bounded exact-host leaf issuance (closed, local);
-- M013D — HTTPS MITM HTTP/1.1 recording (closed, local);
-- M013E — CLI/policy/operator UX (closed, local);
-- M013F — hardening, hosted qualification, closure (ready; local portion in progress).
+- M013B — explicit HTTP proxy + CONNECT deny/tunnel (closed);
+- M013C — CA lifecycle + bounded exact-host leaf issuance (closed);
+- M013D — HTTPS MITM HTTP/1.1 recording (closed);
+- M013E — CLI/policy/operator UX (closed);
+- M013F — hardening, hosted qualification, closure (closed).
 
-EggServe's upstream absolute-form blocker is published under Plan 286. M013B0
-is closed on the qualified 0.3 line; M013B, M013C, M013D, and M013E are
-closed (local verification; hosted qualification deferred to M013F).
-M013F hardening/qualification is the sole ready task, and later work remains
-blocked by its declared dependencies. M013 itself stays open until hosted
-green evidence closes it through the coordinator's formal closure record.
+Status: closed. M013 and M013A–M013F are closed on qualifying implementation
+`5efc6f9` with hosted Actions runs
+[36211265347](https://github.com/eggstack/eggreplay/actions/runs/36211265347)
+and
+[36456906216](https://github.com/eggstack/eggreplay/actions/runs/36456906216).
+See `closure/m013-explicit-proxy-and-optional-mitm.md` for the full matrix,
+commands, and support/limitation table; the roadmap records no separate
+qualification evidence.
 
 ## Stage 10 — broader compatibility (M014)
 
-Umbrella program split into bounded tracks:
+Status: active decomposed compatibility stage.
 
-- M014A HAR import/export + fixture migration;
-- M014B HTTP/2 qualification;
-- M014C HTTP/3 feasibility/qualification;
-- M014D gRPC-aware views + bounded fault-model polish.
+Umbrella program split into bounded tracks plus a planning reconciliation
+gate:
 
-See `implementation/compatibility/`. M014/M014A/M014B remain blocked until
-M013 closes; later tracks keep their declared dependencies.
+- M014-R1 planning/documentation reconciliation (ready; sole handoff);
+- M014A HAR import/export + fixture migration (blocked on M014-R1);
+- M014B HTTP/2 qualification (blocked on M014-R1);
+- M014C HTTP/3 feasibility/qualification (blocked on M014B);
+- M014D gRPC-aware views + bounded fault-model polish (blocked on M014B).
+
+See `implementation/compatibility/`. After M014-R1 closes, M014A and M014B
+become independently eligible under the dependency-driven execution rule;
+M014C remains blocked on M014B and M014D remains blocked on M014B and M010.
 
 ## Roadmap rule
 

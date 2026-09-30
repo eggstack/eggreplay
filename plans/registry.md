@@ -152,10 +152,13 @@ closed or the plan explicitly permits an implemented-but-not-closed
 dependency. A plan moves to **closed** only after implementation, required
 tests/evidence, documentation updates, and a closure record are present.
 
-For decomposed milestones, the umbrella's readiness is not permission to skip
-subplan dependencies. M014-R1 is the current corrective gate and must resolve
-whether independent satisfied sibling plans may execute concurrently; until it
-closes, M014A and M014B remain blocked.
+For decomposed milestones, dependency-driven execution applies: an umbrella
+milestone never authorizes skipping subplan dependencies; each decomposed
+subplan is executable when its own declared dependencies and decision gates
+are satisfied; independent sibling subplans may be ready/active concurrently;
+a parent milestone closes only when all required child tracks have explicit
+closure/support decisions. Until M014-R1 closes, M014A and M014B remain
+blocked on that corrective gate per their declared dependencies.
 
 Hosted-CI-gated plans remain open until their required remote evidence is
 green. Historical closure records remain immutable audit artifacts.

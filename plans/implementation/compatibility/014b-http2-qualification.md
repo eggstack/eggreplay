@@ -1,7 +1,7 @@
 # M014B — HTTP/2 End-to-End Qualification
 
-Status: ready
-Depends on: M013 closure, M010
+Status: blocked (on M014-R1 reconciliation gate)
+Depends on: M013 closure, M010, M014-R1
 Parent: M014
 
 ## Objective

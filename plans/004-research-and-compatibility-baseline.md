@@ -64,10 +64,18 @@ free-threaded support remain evidence-gated.
 M012 qualified `abi3-py311` for CPython 3.11–3.14 and qualified the declared
 Linux x86_64/aarch64, macOS arm64/x86_64, and Windows x86_64 wheel matrix.
 
+M013 interception qualification is closed under ADR 0008 on the qualified
+dependency line `eggfetch-core 0.2.0`, `eggserve-primitives 0.2.1`,
+`eggserve-server 0.3.0`, `eggress-outbound 1.0.8`, `eggnet-tls 0.2.0`
+(see `closure/m013-explicit-proxy-and-optional-mitm.md`).
+
 Remaining evidence-gated questions are Python 3.15/free-threaded promotion,
-M013 interception qualification, H2/H3 promotion, HAR/migration
-interoperability, and later protocol-specific extensions. These belong to
-their owning later milestones rather than speculative changes to closed work.
+HAR/migration interoperability (M014A), direct/routed H2 qualification
+(M014B), H3 architecture feasibility (M014C), gRPC-derived views/fault polish
+(M014D), and later protocol-specific extensions. These belong to their owning
+later milestones rather than speculative changes to closed work. No sibling
+EggFetch/EggServe/Eggress capability is an EggReplay support claim without
+EggReplay-local end-to-end evidence.
 
 
 ## Interception baseline — 2026-09-24
@@ -126,5 +134,6 @@ M013B0 closure records the exact dependency graph, local verification, and
 hosted cross-platform evidence.
 
 M013B0 intentionally keeps ordinary EggReplay services on EggServe-owned
-policy/admission defaults. M013B will use `OriginOrAbsolute` explicitly for
-the proxy listener.
+policy/admission defaults. Historical pre-implementation note (resolved by
+M013B closure): M013B used `OriginOrAbsolute` explicitly for the proxy
+listener; see `closure/m013b-explicit-http-proxy-and-connect-policy.md`.
