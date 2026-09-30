@@ -1,7 +1,7 @@
 # M014A — HAR Interchange and Fixture Migration Tooling
 
-Status: blocked (on M014-R1 reconciliation gate)
-Depends on: M013 closure, M014-R1
+Status: ready
+Depends on: M013 closure, M014-R1 (closed)
 Parent: M014
 
 ## Objective

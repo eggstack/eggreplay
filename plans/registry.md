@@ -63,10 +63,10 @@ boundary, and ADR 0008 owns interception security/transport ownership.
 | M013D | `implementation/interception/013d-https-mitm-http1-recording.md` | **closed** | M013C | HTTPS MITM H1 recording |
 | M013E | `implementation/interception/013e-cli-policy-and-operator-experience.md` | **closed** | M013D | CLI/policy/operator surface |
 | M013F | `implementation/interception/013f-hardening-qualification-and-closure.md` | **closed** | M013E | hardening + M013 closure |
-| M014 | `implementation/compatibility/014-compatibility-program.md` | ready (decomposed; reconciliation gate) | M013 closure | umbrella compatibility stage |
-| M014-R1 | `implementation/compatibility/014r1-planning-and-documentation-reconciliation.md` | **ready** | M013 closure | planning/status truth-source reconciliation |
-| M014A | `implementation/compatibility/014a-har-and-migration.md` | blocked | M013 closure, M014-R1 | HAR + migration |
-| M014B | `implementation/compatibility/014b-http2-qualification.md` | blocked | M013 closure, M010, M014-R1 | H2 qualification |
+| M014 | `implementation/compatibility/014-compatibility-program.md` | ready (decomposed) | M013 closure | umbrella compatibility stage |
+| M014-R1 | `implementation/compatibility/014r1-planning-and-documentation-reconciliation.md` | closed | M013 closure | planning/status truth-source reconciliation |
+| M014A | `implementation/compatibility/014a-har-and-migration.md` | ready | M013 closure, M014-R1 (closed) | HAR + migration |
+| M014B | `implementation/compatibility/014b-http2-qualification.md` | ready | M013 closure, M010, M014-R1 (closed) | H2 qualification |
 | M014C | `implementation/compatibility/014c-http3-feasibility-and-qualification.md` | blocked | M014B | H3 architecture/support decision |
 | M014D | `implementation/compatibility/014d-grpc-and-fault-polish.md` | blocked | M014B, M010 | gRPC view + bounded faults |
 
@@ -125,13 +125,13 @@ Ubuntu, macOS, and Windows, the `dependency-boundary` lane, and the four
 `python-bindings` lanes. Workspace suite: 316 tests passed across 22 suites.
 See `closure/m013-explicit-proxy-and-optional-mitm.md` for the umbrella
 evidence and the `hardening.rs`, `resource_bounds.rs`, `curl_interop.rs`,
-`tls_shutdown_isolation.rs`, and `substrate.rs` pinning. M014 reached the compatibility boundary, but a post-closure audit found
-planning/status drift across the canonical roadmap, research baseline, and
-registry execution rule. M014-R1 is therefore the sole ready handoff. M014A
-and M014B are temporarily blocked on that reconciliation gate; M014C and M014D
-remain blocked on M014B per their declared dependencies. After M014-R1 closes,
-M014A and M014B may become independently ready under the reconciled
-dependency-driven execution rule.
+`tls_shutdown_isolation.rs`, and `substrate.rs` pinning. M014-R1
+planning/documentation reconciliation is closed on `5e7b136` (Actions run
+`36731867169`); see
+`closure/m014r1-planning-and-documentation-reconciliation.md`. M014A (HAR
+interchange) and M014B (HTTP/2 qualification) are ready and may execute
+independently under the dependency-driven rule; M014C and M014D remain
+blocked on M014B per their declared dependencies.
 See also
 `closure/m013b0-eggserve-0-3-adoption-and-absolute-form-qualification.md`.
 
