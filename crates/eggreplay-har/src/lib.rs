@@ -1645,8 +1645,8 @@ pub fn export_session_to_har(
         }
 
         let started_millis = i64::try_from(flow.started_at_ms).unwrap_or(0);
-        let started =
-            chrono::DateTime::<chrono::Utc>::from_timestamp_millis(started_millis).map_or_else(
+        let started = chrono::DateTime::<chrono::Utc>::from_timestamp_millis(started_millis)
+            .map_or_else(
                 || "1970-01-01T00:00:00.000Z".into(),
                 |time| time.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
             );
