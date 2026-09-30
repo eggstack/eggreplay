@@ -498,7 +498,6 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "proptest",
- "prost-reflect",
  "serde",
  "serde_json",
  "sha2",
@@ -542,6 +541,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "prost-reflect",
  "rcgen",
  "rustls",
  "serde",
