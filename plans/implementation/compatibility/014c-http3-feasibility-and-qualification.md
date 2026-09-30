@@ -1,7 +1,8 @@
 # M014C — HTTP/3 Feasibility and Qualification
 
-Status: blocked
-Depends on: M014B
+Status: closed (H3 deferred; see `plans/closure/m014c-http3-feasibility-and-qualification.md`
+and `plans/adrs/0009-http3-integration-boundary.md`)
+Depends on: M014B (closed)
 Parent: M014
 
 ## Objective

@@ -25,9 +25,9 @@ and policy-gated CONNECT deny / tunnel / MITM recording are part of the
 supported product baseline when the CLI is compiled with
 `--features intercept`; default library and Python builds remain
 interception-free. M014 is now the compatibility-stage umbrella. M014-R1 planning/documentation
-reconciliation and M014A (HAR interchange/migration) are closed, and M014B
-(HTTP/2 qualification) is ready; M014C (HTTP/3 feasibility) and M014D (gRPC +
-bounded faults) remain blocked on M014B.
+reconciliation, M014A (HAR interchange/migration), M014B (experimental
+outbound HTTP/2), and M014C (HTTP/3 deferred) are closed; M014D (gRPC +
+bounded faults) is ready.
 
 The support baseline includes direct HTTP/1.1 acquisition and EggServe inbound
 HTTP/1.1 replay with optional listener-free Eggress routing. WebSocket support

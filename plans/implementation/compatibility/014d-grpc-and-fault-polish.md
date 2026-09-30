@@ -1,7 +1,7 @@
 # M014D — gRPC-Aware Views and Bounded Fault-Model Polish
 
-Status: blocked
-Depends on: M014B, M010
+Status: ready
+Depends on: M014B (closed), M010 (closed)
 Parent: M014
 
 ## Objective

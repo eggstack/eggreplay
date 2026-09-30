@@ -99,13 +99,13 @@ gate:
 
 - M014-R1 planning/documentation reconciliation (closed);
 - M014A HAR import/export + fixture migration (closed);
-- M014B HTTP/2 qualification (ready);
-- M014C HTTP/3 feasibility/qualification (blocked on M014B);
-- M014D gRPC-aware views + bounded fault-model polish (blocked on M014B).
+- M014B HTTP/2 qualification (closed; experimental outbound H2);
+- M014C HTTP/3 feasibility/qualification (closed; H3 deferred per ADR 0009);
+- M014D gRPC-aware views + bounded fault-model polish (ready).
 
-See `implementation/compatibility/`. M014A is closed; M014B is ready and
-independent under the dependency-driven execution rule; M014C remains blocked
-on M014B and M014D remains blocked on M014B and M010.
+See `implementation/compatibility/`. M014A, M014B, and M014C are closed;
+M014D is ready under the dependency-driven execution rule (M014B and M010
+both closed).
 
 ## Roadmap rule
 
