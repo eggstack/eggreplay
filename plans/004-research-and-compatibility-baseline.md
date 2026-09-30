@@ -69,13 +69,17 @@ dependency line `eggfetch-core 0.2.0`, `eggserve-primitives 0.2.1`,
 `eggserve-server 0.3.0`, `eggress-outbound 1.0.8`, `eggnet-tls 0.2.0`
 (see `closure/m013-explicit-proxy-and-optional-mitm.md`).
 
+M014A HAR interchange/migration is closed with lossy, redacted, transactional
+tooling and a golden corpus (see `closure/m014a-har-and-migration.md`); HAR
+remains explicit interchange, never canonical.
+
 Remaining evidence-gated questions are Python 3.15/free-threaded promotion,
-HAR/migration interoperability (M014A), direct/routed H2 qualification
-(M014B), H3 architecture feasibility (M014C), gRPC-derived views/fault polish
-(M014D), and later protocol-specific extensions. These belong to their owning
-later milestones rather than speculative changes to closed work. No sibling
-EggFetch/EggServe/Eggress capability is an EggReplay support claim without
-EggReplay-local end-to-end evidence.
+direct/routed H2 qualification (M014B), H3 architecture feasibility (M014C),
+gRPC-derived views/fault polish (M014D), and later protocol-specific
+extensions. These belong to their owning later milestones rather than
+speculative changes to closed work. No sibling EggFetch/EggServe/Eggress
+capability is an EggReplay support claim without EggReplay-local end-to-end
+evidence.
 
 
 ## Interception baseline — 2026-09-24

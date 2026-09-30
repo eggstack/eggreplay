@@ -1,6 +1,7 @@
 # M014A — HAR Interchange and Fixture Migration Tooling
 
-Status: ready
+Status: closed (qualifying revision `ec082b0`, Actions run `36736273433`;
+see `plans/closure/m014a-har-and-migration.md`)
 Depends on: M013 closure, M014-R1 (closed)
 Parent: M014
 

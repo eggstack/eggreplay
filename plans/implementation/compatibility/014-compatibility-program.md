@@ -2,7 +2,7 @@
 
 Status: ready (decomposed; M013 closed on `5efc6f9` per
 `plans/closure/m013-explicit-proxy-and-optional-mitm.md`; M014-R1 closed,
-M014A/M014B ready, M014C/M014D blocked on M014B)
+M014A closed, M014B ready, M014C/M014D blocked on M014B)
 Depends on: M013 closure
 Roadmap stage: 10
 

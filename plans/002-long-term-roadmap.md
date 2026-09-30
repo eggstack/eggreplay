@@ -97,15 +97,15 @@ Status: active decomposed compatibility stage.
 Umbrella program split into bounded tracks plus a planning reconciliation
 gate:
 
-- M014-R1 planning/documentation reconciliation (ready; sole handoff);
-- M014A HAR import/export + fixture migration (blocked on M014-R1);
-- M014B HTTP/2 qualification (blocked on M014-R1);
+- M014-R1 planning/documentation reconciliation (closed);
+- M014A HAR import/export + fixture migration (closed);
+- M014B HTTP/2 qualification (ready);
 - M014C HTTP/3 feasibility/qualification (blocked on M014B);
 - M014D gRPC-aware views + bounded fault-model polish (blocked on M014B).
 
-See `implementation/compatibility/`. After M014-R1 closes, M014A and M014B
-become independently eligible under the dependency-driven execution rule;
-M014C remains blocked on M014B and M014D remains blocked on M014B and M010.
+See `implementation/compatibility/`. M014A is closed; M014B is ready and
+independent under the dependency-driven execution rule; M014C remains blocked
+on M014B and M014D remains blocked on M014B and M010.
 
 ## Roadmap rule
 
