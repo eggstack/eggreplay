@@ -16,9 +16,10 @@ This R2 pass is documentation-only. It does not reopen M014, C1, or C2 and
 modifies no product code, dependencies, schema, protocol claims, or support
 tiers.
 
-Reconciliation commit SHA and hosted CI run are recorded after push (docs-only;
-normal repository CI is the qualifying matrix). Local verification on the
-reconciliation tree is green:
+Reconciliation commit is `07c8cb8` (docs-only; normal repository CI is the
+qualifying matrix), with hosted CI run
+[36914553512](https://github.com/eggstack/eggreplay/actions/runs/36914553512)
+triggered on push. Local verification on the reconciliation tree is green:
 
 ```text
 git diff --check
