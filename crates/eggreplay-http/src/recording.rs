@@ -1165,6 +1165,18 @@ async fn gateway_websocket_request(
     let handler_options = options;
     let flow_id = uuid::Uuid::new_v4().to_string();
     let conversation_flow_id = flow_id.clone();
+    // Register a session-owned completion barrier for the conversation task
+    // BEFORE accepting the tunnel, so the request never becomes detached
+    // without a registered finalizer. `RecordingSession::finish` drives this
+    // finalizer to completion before publishing the manifest; the conversation
+    // task signals it after appending the transcript, so the recorded flow
+    // and its conversation become durable together.
+    let (completion, completer) = ConversationCompletion::new();
+    if let Err(error) = session.register_websocket_conversation_finalizer(Box::new(completion)) {
+        return Err(ServiceError::internal(format!(
+            "could not register WebSocket conversation finalizer: {error}"
+        )));
+    }
     let accepted = tunnel
         .accept(
             inbound_response_headers,
@@ -1193,6 +1205,12 @@ async fn gateway_websocket_request(
                     terminal,
                 };
                 let _ = handler_session.append_websocket_conversation(conversation);
+                // Signal completion only after the conversation is appended
+                // (or its append has returned). Drop is a no-op once `signalled`
+                // is true; cancellation/panic before this point signals via
+                // Drop with no recorded transcript, which then fails closed in
+                // `RecordingSession::finish`.
+                completer.complete();
             },
         )
         .map_err(|_| ServiceError::internal("WebSocket tunnel could not be accepted"))?;
@@ -1238,6 +1256,158 @@ async fn gateway_websocket_request(
         .append_flow(&flow)
         .map_err(|_| ServiceError::internal("failed to stage WebSocket handshake"))?;
     Ok(accepted)
+}
+
+/// Session-owned completion primitive for one accepted WebSocket conversation.
+///
+/// The recording gateway registers one of these per successful 101 upgrade
+/// before returning the handshake response. The conversation task signals
+/// completion (success, error, cancellation) via [`ConversationCompleter`] so
+/// [`RecordingSession::finish`] can publish the manifest only after the
+/// `websocket-messages` extension becomes durable with respect to its
+/// initiating flow.
+///
+/// Drop semantics: if the conversation task is aborted, cancelled, or panics
+/// before reaching [`ConversationCompleter::complete`], the completer's Drop
+/// still signals the waiter, so [`finish`] cannot deadlock waiting for a
+/// conversation that no longer exists. The recorded state then reflects the
+/// terminal observed by the relay (e.g., `Abnormal { cause: "shutdown" }`)
+/// because the conversation was appended before the completer signalled.
+#[cfg(all(feature = "eggserve", feature = "websocket"))]
+pub struct ConversationCompletion {
+    state: Arc<ConversationCompletionState>,
+}
+
+#[cfg(all(feature = "eggserve", feature = "websocket"))]
+struct ConversationCompletionState {
+    done: std::sync::Mutex<bool>,
+    cvar: std::sync::Condvar,
+}
+
+#[cfg(all(feature = "eggserve", feature = "websocket"))]
+impl ConversationCompletion {
+    /// Build a fresh completion pair. The caller hands the [state]
+    /// [`ConversationCompleter`] to the conversation task and registers
+    /// `self` with the session via
+    /// [`RecordingSession::register_websocket_conversation_finalizer`].
+    pub fn new() -> (Self, ConversationCompleter) {
+        let state = Arc::new(ConversationCompletionState {
+            done: std::sync::Mutex::new(false),
+            cvar: std::sync::Condvar::new(),
+        });
+        (
+            ConversationCompletion {
+                state: state.clone(),
+            },
+            ConversationCompleter {
+                state,
+                signalled: false,
+            },
+        )
+    }
+}
+
+#[cfg(all(feature = "eggserve", feature = "websocket"))]
+impl eggreplay_store::WebSocketConversationFinalizer for ConversationCompletion {
+    fn drive(self: Box<Self>) {
+        let state = self.state.clone();
+        let mut guard = state.done.lock().unwrap_or_else(|e| e.into_inner());
+        while !*guard {
+            // `wait` returns Ok; even if the std mutex is poisoned the bool
+            // observable state is preserved across recovery.
+            guard = match state.cvar.wait(guard) {
+                Ok(guard) => guard,
+                Err(error) => error.into_inner(),
+            };
+        }
+    }
+
+    fn drive_with_deadline(
+        self: Box<Self>,
+        deadline: std::time::Duration,
+    ) -> Result<(), std::time::Duration> {
+        let state = self.state.clone();
+        let start = std::time::Instant::now();
+        let mut guard = state.done.lock().unwrap_or_else(|e| e.into_inner());
+        loop {
+            if *guard {
+                return Ok(());
+            }
+            let elapsed = start.elapsed();
+            if elapsed >= deadline {
+                return Err(elapsed);
+            }
+            let remaining = deadline - elapsed;
+            // `wait_timeout` returns `(MutexGuard, WaitTimeoutResult)`. The
+            // MutexGuard represents the same poisoned-recoverable handle used
+            // elsewhere; `timed_out()` reports the deadline observation.
+            let timed_out = match state.cvar.wait_timeout(guard, remaining) {
+                Ok((next, result)) => {
+                    let next = next;
+                    if *next {
+                        return Ok(());
+                    }
+                    guard = next;
+                    result
+                }
+                Err(poisoned) => {
+                    let (next, result) = poisoned.into_inner();
+                    let next = next;
+                    if *next {
+                        return Ok(());
+                    }
+                    guard = next;
+                    result
+                }
+            };
+            if timed_out.timed_out() {
+                return Err(start.elapsed());
+            }
+        }
+    }
+}
+
+/// One-shot completer held by a conversation task.
+///
+/// Must outlive the conversation's terminal state in the storage path: call
+/// [`complete`](Self::complete) only AFTER the conversation has been
+/// appended to the session (or its error recorded), so the wait side
+/// observes the conversation as durable before it returns. If the task is
+/// aborted or panics, Drop signals completion, which is always safe.
+#[cfg(all(feature = "eggserve", feature = "websocket"))]
+pub struct ConversationCompleter {
+    state: Arc<ConversationCompletionState>,
+    signalled: bool,
+}
+
+#[cfg(all(feature = "eggserve", feature = "websocket"))]
+impl ConversationCompleter {
+    /// Mark the conversation as terminal. Idempotent. The Drop impl still
+    /// runs afterwards but is a no-op once `signalled` is true.
+    pub fn complete(mut self) {
+        let ConversationCompletionState { done, cvar } = &*self.state;
+        {
+            let mut done = done.lock().unwrap_or_else(|e| e.into_inner());
+            *done = true;
+        }
+        cvar.notify_all();
+        self.signalled = true;
+    }
+}
+
+#[cfg(all(feature = "eggserve", feature = "websocket"))]
+impl Drop for ConversationCompleter {
+    fn drop(&mut self) {
+        if self.signalled {
+            return;
+        }
+        let ConversationCompletionState { done, cvar } = &*self.state;
+        {
+            let mut done = done.lock().unwrap_or_else(|e| e.into_inner());
+            *done = true;
+        }
+        cvar.notify_all();
+    }
 }
 
 #[cfg(all(feature = "eggserve", feature = "websocket"))]
@@ -2574,6 +2744,486 @@ mod tests {
             Some("chat")
         );
         drop(fixture);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Build a recording session plus a single-finisher conversation task that
+    /// delays completion until the returned handle signals it. The caller owns
+    /// the [`ConversationCompleter`] and may invoke [`ConversationCompleter::complete`]
+    /// (or drop it) to release the in-flight task. Use this to build tests
+    /// that need to deterministically interleave finish() with the
+    /// conversation finalizer.
+    #[cfg(all(feature = "eggserve", feature = "websocket"))]
+    fn m014c1_temp(name: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "eggreplay-m014c1-{name}-{}-{}",
+            std::process::id(),
+            now_ms()
+        ))
+    }
+
+    #[cfg(all(feature = "eggserve", feature = "websocket"))]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn session_finish_waits_for_pending_websocket_conversation_finalizer() {
+        // The conversation task is held by the test; finish() must block
+        // until the completer signals. Then we verify the recorded fixture
+        // contains the held conversation rather than racing past it.
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        };
+
+        let dir = m014c1_temp("pending");
+        let session =
+            RecordingSession::create(&dir, SessionMetadata::default(), StoreLimits::default())
+                .unwrap();
+        let (completion, completer) = ConversationCompletion::new();
+        session
+            .register_websocket_conversation_finalizer(Box::new(completion))
+            .unwrap();
+        assert_eq!(session.websocket_conversation_finalizer_count(), 1);
+
+        // Stage a 101 flow whose transcript is not yet appended; the finalizer
+        // holds the conversation task open.
+        let flow_id = uuid::Uuid::new_v4().to_string();
+        let flow = eggreplay_core::Flow {
+            schema_version: eggreplay_core::SCHEMA_VERSION,
+            id: flow_id.clone(),
+            started_at_ms: now_ms(),
+            completed_at_ms: Some(now_ms()),
+            request: eggreplay_core::HttpRequest {
+                method: "GET".into(),
+                scheme: "ws".into(),
+                authority: "127.0.0.1".into(),
+                path: "/socket".into(),
+                query: Vec::new(),
+                headers: vec![eggreplay_core::HeaderEntry {
+                    name: "upgrade".into(),
+                    value: "websocket".into(),
+                }],
+                body: eggreplay_core::BodyRef::Absent,
+                trailers: Vec::new(),
+            },
+            outcome: eggreplay_core::FlowOutcome::Response(eggreplay_core::HttpResponse {
+                status: 101,
+                headers: vec![],
+                body: eggreplay_core::BodyRef::Absent,
+                trailers: Vec::new(),
+            }),
+            physical_route: None,
+            provenance: eggreplay_core::Provenance {
+                mode: "test".into(),
+                observer: "m014c1".into(),
+            },
+            annotations: Vec::new(),
+            redactions: Vec::new(),
+        };
+        flow.validate().unwrap();
+        session.append_flow(&flow).unwrap();
+
+        let started = Arc::new(AtomicBool::new(false));
+        let started_clone = started.clone();
+        // Spawn a conversation recorder that signals completion only when
+        // signalled by the test. This models a real conversation task that
+        // finishes slightly after the relay returns the 101.
+        let conversation_session = session.clone();
+        let conversation_flow_id = flow_id.clone();
+        let conversation_task = tokio::spawn(async move {
+            started_clone.store(true, Ordering::SeqCst);
+            // Tiny yield to ensure finish() really races against us.
+            tokio::task::yield_now().await;
+            let conversation = eggreplay_core::WebSocketConversation {
+                id: uuid::Uuid::new_v4().to_string(),
+                flow_id: conversation_flow_id,
+                offered_subprotocols: Vec::new(),
+                selected_subprotocol: None,
+                messages: Vec::new(),
+                terminal: eggreplay_core::WebSocketTerminal::Abnormal {
+                    cause: "shutdown".into(),
+                },
+            };
+            let _ = conversation_session.append_websocket_conversation(conversation);
+        });
+
+        // Drain the conversation task to append the transcript. The completer
+        // remains held by the test until we deliberately signal completion.
+        // We need to wait until append has happened but still keep the conversation
+        // task alive enough that the completer hasn't signalled.
+        // Use a tiny yield then check the conversation was appended.
+        let _ = conversation_task.await;
+        // Verify the conversation is now in the session.
+        assert_eq!(
+            session.websocket_conversation_finalizer_count(),
+            1,
+            "finalizer must still be registered"
+        );
+        assert!(started.load(Ordering::SeqCst));
+        assert_eq!(
+            session.websocket_conversation_count().unwrap(),
+            1,
+            "conversation must be appended before finish"
+        );
+
+        // finish() in a worker thread: the conversation finalizer is
+        // registered but the completer has not signalled, so the drain must
+        // block. After we signal the completer, the worker thread returns
+        // successfully and the recorded fixture includes the conversation.
+        let finish_session = session.clone();
+        let finish_started = Arc::new(AtomicBool::new(false));
+        let finish_started_clone = finish_started.clone();
+        let finish_thread = std::thread::spawn(move || {
+            finish_started_clone.store(true, Ordering::SeqCst);
+            finish_session.finish()
+        });
+
+        // The finish thread must NOT yet have returned because the finalizer
+        // is pending. Give it a brief window to start, then assert it is
+        // still blocked.
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(
+            !finish_thread.is_finished(),
+            "finish must block while a finalizer is pending"
+        );
+
+        // Signal the completer. finish() must then unblock and publish a
+        // manifest that references the held conversation.
+        completer.complete();
+
+        let result = finish_thread.join().expect("finish thread must not panic");
+        let fixture = result.expect("finish must succeed after finalizer signals");
+        assert!(finish_started.load(Ordering::SeqCst));
+        assert_eq!(fixture.manifest().flow_count, 1);
+        let bytes = fixture
+            .read_extension("websocket-messages")
+            .unwrap()
+            .unwrap();
+        let transcript: eggreplay_core::WebSocketTranscript =
+            serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(transcript.conversations.len(), 1);
+        assert!(matches!(
+            transcript.conversations[0].terminal,
+            eggreplay_core::WebSocketTerminal::Abnormal { .. }
+        ));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[cfg(all(feature = "eggserve", feature = "websocket"))]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn session_finish_unblocks_when_conversation_finalizer_is_dropped() {
+        // Cancellation path: a conversation task is aborted and the
+        // completer is dropped (without explicit completion). finish() must
+        // still unblock via the completer's Drop safety net, and the
+        // resulting fixture must reflect that the conversation was never
+        // recorded (101 flow without transcript).
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        };
+
+        let dir = m014c1_temp("dropped");
+        let session =
+            RecordingSession::create(&dir, SessionMetadata::default(), StoreLimits::default())
+                .unwrap();
+        let (completion, completer) = ConversationCompletion::new();
+        session
+            .register_websocket_conversation_finalizer(Box::new(completion))
+            .unwrap();
+
+        // Stage a 101 flow with NO conversation recorded. The finalizer is
+        // held but the completer is dropped without completion.
+        let flow_id = uuid::Uuid::new_v4().to_string();
+        let flow = eggreplay_core::Flow {
+            schema_version: eggreplay_core::SCHEMA_VERSION,
+            id: flow_id.clone(),
+            started_at_ms: now_ms(),
+            completed_at_ms: Some(now_ms()),
+            request: eggreplay_core::HttpRequest {
+                method: "GET".into(),
+                scheme: "ws".into(),
+                authority: "127.0.0.1".into(),
+                path: "/socket".into(),
+                query: Vec::new(),
+                headers: vec![eggreplay_core::HeaderEntry {
+                    name: "upgrade".into(),
+                    value: "websocket".into(),
+                }],
+                body: eggreplay_core::BodyRef::Absent,
+                trailers: Vec::new(),
+            },
+            outcome: eggreplay_core::FlowOutcome::Response(eggreplay_core::HttpResponse {
+                status: 101,
+                headers: vec![],
+                body: eggreplay_core::BodyRef::Absent,
+                trailers: Vec::new(),
+            }),
+            physical_route: None,
+            provenance: eggreplay_core::Provenance {
+                mode: "test".into(),
+                observer: "m014c1".into(),
+            },
+            annotations: Vec::new(),
+            redactions: Vec::new(),
+        };
+        flow.validate().unwrap();
+        session.append_flow(&flow).unwrap();
+
+        // Hold the completer alive while a worker thread calls finish(); the
+        // worker must block. Then we drop the completer (simulating an
+        // aborted task) and the worker must return Err because the 101 flow
+        // has no conversation metadata.
+        let started = Arc::new(AtomicBool::new(false));
+        let started_clone = started.clone();
+        let finish_session = session.clone();
+        let finish_thread = std::thread::spawn(move || {
+            started_clone.store(true, Ordering::SeqCst);
+            finish_session.finish()
+        });
+
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(
+            !finish_thread.is_finished(),
+            "finish must block while a finalizer is pending"
+        );
+        assert!(started.load(Ordering::SeqCst));
+
+        // Drop the completer (simulates cancellation/abort of the task that
+        // owned it). Drop signals the waiter so finish() can return; it
+        // cannot deadlock.
+        drop(completer);
+
+        let result = finish_thread.join().expect("finish thread must not panic");
+        assert!(
+            result.is_err(),
+            "finish must fail closed when a 101 flow has no conversation metadata"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[cfg(all(feature = "eggserve", feature = "websocket"))]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn session_finish_is_unaffected_when_no_websocket_finalizers_are_registered() {
+        // Regression: ordinary HTTP-only sessions (no WebSocket finalizers)
+        // must continue to finalize without waiting. `finish` must observe
+        // an empty finalizer registry and proceed straight to manifest
+        // publication.
+        let dir = m014c1_temp("http-only");
+        let session =
+            RecordingSession::create(&dir, SessionMetadata::default(), StoreLimits::default())
+                .unwrap();
+        // Append an ordinary HTTP flow.
+        let flow = eggreplay_core::Flow {
+            schema_version: eggreplay_core::SCHEMA_VERSION,
+            id: "ordinary-http".into(),
+            started_at_ms: now_ms(),
+            completed_at_ms: Some(now_ms()),
+            request: eggreplay_core::HttpRequest {
+                method: "GET".into(),
+                scheme: "http".into(),
+                authority: "127.0.0.1".into(),
+                path: "/".into(),
+                query: Vec::new(),
+                headers: vec![],
+                body: eggreplay_core::BodyRef::Absent,
+                trailers: Vec::new(),
+            },
+            outcome: eggreplay_core::FlowOutcome::Response(eggreplay_core::HttpResponse {
+                status: 200,
+                headers: vec![],
+                body: eggreplay_core::BodyRef::Absent,
+                trailers: Vec::new(),
+            }),
+            physical_route: None,
+            provenance: eggreplay_core::Provenance {
+                mode: "test".into(),
+                observer: "m014c1".into(),
+            },
+            annotations: Vec::new(),
+            redactions: Vec::new(),
+        };
+        flow.validate().unwrap();
+        session.append_flow(&flow).unwrap();
+        assert_eq!(session.websocket_conversation_finalizer_count(), 0);
+
+        let fixture = session.finish().expect("ordinary HTTP finish must succeed");
+        assert_eq!(fixture.manifest().flow_count, 1);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[cfg(all(feature = "eggserve", feature = "websocket"))]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn conversation_completer_drop_is_safe_under_drop_without_complete() {
+        // Drop-safety: if a completer is dropped without an explicit
+        // `complete` (e.g., the conversation task was cancelled and the
+        // completer dropped on unwind), the waiter must still unblock.
+        // `finish()` cannot deadlock on a completer whose owner vanished.
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        };
+
+        let dir = m014c1_temp("dropped-completer");
+        let session =
+            RecordingSession::create(&dir, SessionMetadata::default(), StoreLimits::default())
+                .unwrap();
+        let (completion, completer) = ConversationCompletion::new();
+        session
+            .register_websocket_conversation_finalizer(Box::new(completion))
+            .unwrap();
+
+        let started_thread = Arc::new(AtomicBool::new(false));
+        let started_inner = started_thread.clone();
+        let finish_session = session.clone();
+        let finish_thread = std::thread::spawn(move || {
+            started_inner.store(true, Ordering::SeqCst);
+            finish_session.finish()
+        });
+
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(!finish_thread.is_finished());
+
+        // Drop the completer without calling complete; the Drop impl signals
+        // the waiter. finish() must then unblock.
+        drop(completer);
+
+        let result = finish_thread.join().expect("finish thread must not panic");
+        // No 101 flows were appended, so finish() succeeds and publishes an
+        // empty fixture without WebSocket metadata.
+        let fixture = result.expect("empty-session finish must succeed after completer drop");
+        assert_eq!(fixture.manifest().flow_count, 0);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[cfg(all(feature = "eggserve", feature = "websocket"))]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn conversation_completer_drive_with_deadline_observations() {
+        // Bounded wait: drive_with_deadline must observe the deadline and
+        // return Err with the elapsed time when the completer has not yet
+        // signalled; the wait must not block indefinitely.
+        let (completion, completer) = ConversationCompletion::new();
+        let deadline = std::time::Duration::from_millis(50);
+        let start = std::time::Instant::now();
+        let result: Result<(), std::time::Duration> =
+            eggreplay_store::WebSocketConversationFinalizer::drive_with_deadline(
+                Box::new(completion),
+                deadline,
+            );
+        let elapsed = start.elapsed();
+        assert!(
+            result.is_err(),
+            "drive_with_deadline must return Err when the completer has not signalled"
+        );
+        assert!(
+            elapsed >= deadline,
+            "wait must observe the deadline (elapsed={elapsed:?}, deadline={deadline:?})"
+        );
+        // Drop the completer so the test cleans up; the waiter is no longer
+        // holding the lock.
+        drop(completer);
+    }
+
+    #[cfg(all(feature = "eggserve", feature = "websocket"))]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn concurrent_conversations_do_not_serialize_each_others_finalizers() {
+        // Multiple registered finalizers must be drained independently; the
+        // first finalizer signalling must not delay the second's observation.
+        // All three conversations finish cleanly and the resulting fixture
+        // contains every conversation.
+        let dir = m014c1_temp("concurrent");
+        let session =
+            RecordingSession::create(&dir, SessionMetadata::default(), StoreLimits::default())
+                .unwrap();
+        let (c1, k1) = ConversationCompletion::new();
+        let (c2, k2) = ConversationCompletion::new();
+        let (c3, k3) = ConversationCompletion::new();
+        session
+            .register_websocket_conversation_finalizer(Box::new(c1))
+            .unwrap();
+        session
+            .register_websocket_conversation_finalizer(Box::new(c2))
+            .unwrap();
+        session
+            .register_websocket_conversation_finalizer(Box::new(c3))
+            .unwrap();
+        for index in 0..3 {
+            let flow = eggreplay_core::Flow {
+                schema_version: eggreplay_core::SCHEMA_VERSION,
+                id: format!("clean-{index}"),
+                started_at_ms: now_ms(),
+                completed_at_ms: Some(now_ms()),
+                request: eggreplay_core::HttpRequest {
+                    method: "GET".into(),
+                    scheme: "ws".into(),
+                    authority: "127.0.0.1".into(),
+                    path: format!("/{index}"),
+                    query: Vec::new(),
+                    headers: vec![eggreplay_core::HeaderEntry {
+                        name: "upgrade".into(),
+                        value: "websocket".into(),
+                    }],
+                    body: eggreplay_core::BodyRef::Absent,
+                    trailers: Vec::new(),
+                },
+                outcome: eggreplay_core::FlowOutcome::Response(eggreplay_core::HttpResponse {
+                    status: 101,
+                    headers: vec![],
+                    body: eggreplay_core::BodyRef::Absent,
+                    trailers: Vec::new(),
+                }),
+                physical_route: None,
+                provenance: eggreplay_core::Provenance {
+                    mode: "test".into(),
+                    observer: "m014c1".into(),
+                },
+                annotations: Vec::new(),
+                redactions: Vec::new(),
+            };
+            flow.validate().unwrap();
+            session.append_flow(&flow).unwrap();
+            let conversation = WebSocketConversation {
+                id: format!("clean-conv-{index}"),
+                flow_id: format!("clean-{index}"),
+                offered_subprotocols: Vec::new(),
+                selected_subprotocol: None,
+                messages: Vec::new(),
+                terminal: eggreplay_core::WebSocketTerminal::Abnormal {
+                    cause: "shutdown".into(),
+                },
+            };
+            session.append_websocket_conversation(conversation).unwrap();
+        }
+
+        let session_for_finish = session.clone();
+        let finish_thread = std::thread::spawn(move || session_for_finish.finish());
+        // Ensure finish is blocked while all three finalizers are pending.
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(!finish_thread.is_finished());
+
+        // Signal each completer in turn; the wait must complete when the
+        // last one signals. The order is intentionally interleaved.
+        k1.complete();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        assert!(
+            !finish_thread.is_finished(),
+            "second pending keeps finish blocked"
+        );
+        k2.complete();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        assert!(
+            !finish_thread.is_finished(),
+            "third pending keeps finish blocked"
+        );
+        k3.complete();
+
+        let result = finish_thread.join().expect("finish thread must not panic");
+        let fixture = result.expect("finish must succeed when all finalizers signal");
+        assert_eq!(fixture.manifest().flow_count, 3);
+        let bytes = fixture
+            .read_extension("websocket-messages")
+            .unwrap()
+            .unwrap();
+        let transcript: eggreplay_core::WebSocketTranscript =
+            serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(transcript.conversations.len(), 3);
         let _ = std::fs::remove_dir_all(dir);
     }
 

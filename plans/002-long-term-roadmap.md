@@ -109,11 +109,17 @@ matrix.
 
 ### Post-Stage-10 corrective gate
 
-M014-C1 is ready as a post-closure maintenance corrective. It does not reopen
-M014 or create Stage 11; it owns residual M014 closure/support-documentation
-reconciliation plus deterministic repair of the pre-existing M011 WebSocket
-conversation/session-finalization race observed during M014 qualification.
-No Stage 11 implementation program is authorized until M014-C1 closes.
+M014-C1 is closed on the M014 umbrella qualifying revision `c71ffd7`
+with hosted run
+[36778923619](https://github.com/eggstack/eggreplay/actions/runs/36778923619).
+The corrective does not reopen M014 or create Stage 11; it owns the
+deterministic repair of the pre-existing M011 WebSocket
+conversation/session-finalization race observed during M014 qualification
+plus residual M014 closure/support-documentation reconciliation. See
+`closure/m014c1-post-m014-closure-and-websocket-finalization.md` for the
+ownership invariant and qualifying evidence. No Stage 11 implementation
+program is currently authorized; Stage 11 remains undefined until it is
+separately researched and planned.
 
 ## Roadmap rule
 

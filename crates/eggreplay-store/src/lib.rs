@@ -13,6 +13,7 @@ use std::sync::{
     Arc,
     atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
 };
+use std::time::Duration;
 
 const MAX_EXTENSIONS: usize = 64;
 const MAX_EXTENSION_BYTES: u64 = 16 * 1024 * 1024;
@@ -643,7 +644,6 @@ impl SessionWriter {
 /// flow-count update. Body bytes never hold this lock; they stream to
 /// independent staging files. Aggregate limits are enforced via atomics +
 /// short critical sections, never via an unbounded channel.
-#[derive(Debug)]
 struct RecordingInner {
     destination: PathBuf,
     staging: PathBuf,
@@ -663,6 +663,73 @@ struct RecordingInner {
     stream_event_records: AtomicUsize,
     stream_event_object_bytes: AtomicUsize,
     websocket: std::sync::Mutex<WebSocketAccumulation>,
+    /// Session-owned registry of in-flight WebSocket conversation finalizers.
+    ///
+    /// Every successful HTTP/1 101 upgrade accepted for recording registers a
+    /// finalizer here before the request path is allowed to detach. `finish`
+    /// drives each registered finalizer to completion (success, error, or
+    /// cancellation) before publishing the manifest, so the recorded
+    /// `websocket-messages` extension is durable with respect to its initiating
+    /// flow. The registry is std-only by design: callers (typically the
+    /// eggreplay-http gateway) provide the runtime-specific completion
+    /// primitive via [`WebSocketConversationFinalizer`].
+    websocket_finalizers: std::sync::Mutex<Vec<Box<dyn WebSocketConversationFinalizer>>>,
+}
+
+impl std::fmt::Debug for RecordingInner {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RecordingInner")
+            .field("destination", &self.destination)
+            .field("staging", &self.staging)
+            .field("metadata", &self.metadata)
+            .field("flow_count", &self.flow_count)
+            .field("total_bytes", &self.total_bytes)
+            .field("active_blobs", &self.active_blobs)
+            .field("shutdown", &self.shutdown)
+            .field("websocket_finalizers", &self.websocket_finalizers_count())
+            .finish()
+    }
+}
+
+impl RecordingInner {
+    fn websocket_finalizers_count(&self) -> usize {
+        self.websocket_finalizers
+            .lock()
+            .map(|registry| registry.len())
+            .unwrap_or(0)
+    }
+}
+
+/// Session-owned completion barrier for one accepted WebSocket conversation.
+///
+/// Every successful HTTP/1 101 upgrade accepted for recording must register a
+/// finalizer with the [`RecordingSession`] before the request path is allowed
+/// to detach. [`RecordingSession::finish`] drives each registered finalizer to
+/// completion before publishing the manifest; the implementation MUST therefore
+/// observe completion within the lifetime of the boxed value, even if the
+/// conversation task is cancelled or panics. Drop safety is required: if the
+/// finalizer is dropped without `drive` having completed (e.g., a panic in
+/// the conversation task), the implementation must still release any waiter
+/// in `drive`.
+pub trait WebSocketConversationFinalizer: Send + 'static {
+    /// Block the calling thread until the registered conversation finalizer
+    /// reaches a terminal state (success, error, cancellation). Implementations
+    /// must not return while the conversation task may still be running, and
+    /// must not hold any store lock across an unbounded wait.
+    fn drive(self: Box<Self>);
+
+    /// Like [`drive`](Self::drive) but bounded by `deadline`. Returns
+    /// `Ok(())` when the finalizer completes before the deadline, or `Err`
+    /// with the elapsed duration on timeout. Implementations MUST NOT hold any
+    /// store lock across this wait. The default delegates to
+    /// [`drive`](Self::drive) and is unbounded; runtime-specific overrides
+    /// should observe `deadline` precisely.
+    fn drive_with_deadline(self: Box<Self>, deadline: Duration) -> Result<(), Duration> {
+        let _ = deadline;
+        self.drive();
+        Ok(())
+    }
 }
 
 /// Cloneable concurrent recording session.
@@ -673,6 +740,15 @@ struct RecordingInner {
 /// metadata append. `shutdown` stops admission; `finish` must be called only
 /// after all clones/tasks have drained (active count zero), otherwise it
 /// fails instead of racing.
+///
+/// WebSocket lifecycle: every successful HTTP/1 101 upgrade accepted for
+/// recording MUST register a
+/// [`WebSocketConversationFinalizer`](WebSocketConversationFinalizer) via
+/// [`register_websocket_conversation_finalizer`](Self::register_websocket_conversation_finalizer)
+/// before the request path is allowed to detach. `finish` drains the registered
+/// finalizers to completion before publishing the manifest, so the recorded
+/// `websocket-messages` extension becomes durable together with its initiating
+/// flow.
 ///
 /// Crash safety is unchanged: manifest-last publication; incomplete staging
 /// directories are never valid sessions.
@@ -871,6 +947,7 @@ impl RecordingSession {
                 stream_event_records: AtomicUsize::new(0),
                 stream_event_object_bytes: AtomicUsize::new(0),
                 websocket: std::sync::Mutex::new(WebSocketAccumulation::default()),
+                websocket_finalizers: std::sync::Mutex::new(Vec::new()),
             }),
         })
     }
@@ -939,6 +1016,54 @@ impl RecordingSession {
     /// Return the number of appended flows.
     pub fn flow_count(&self) -> usize {
         self.inner.flow_count.load(Ordering::SeqCst)
+    }
+
+    /// Register a session-owned WebSocket conversation finalizer.
+    ///
+    /// The caller MUST register exactly one finalizer for every successful
+    /// HTTP/1 101 upgrade accepted for recording, BEFORE returning the 101
+    /// response to the request path. The finalizer MUST observe the
+    /// conversation task's terminal state (success, error, cancellation).
+    /// [`finish`](Self::finish) drives every registered finalizer to
+    /// completion before publishing the manifest, so the recorded
+    /// `websocket-messages` extension becomes durable together with the
+    /// initiating flow.
+    ///
+    /// The finalizer count is bounded only by what fits in memory; callers
+    /// should not register duplicates for the same flow_id. If the session
+    /// is already shutting down, registration fails closed and the caller
+    /// must surface the abandoned 101 (the flow's `finish` will then fail
+    /// because no transcript was registered for the 101).
+    pub fn register_websocket_conversation_finalizer(
+        &self,
+        finalizer: Box<dyn WebSocketConversationFinalizer>,
+    ) -> Result<(), StoreError> {
+        if self.inner.shutdown.load(Ordering::SeqCst) {
+            return Err(StoreError::Invalid(
+                "cannot register conversation finalizer after shutdown".into(),
+            ));
+        }
+        let mut registry = self
+            .inner
+            .websocket_finalizers
+            .lock()
+            .map_err(|_| StoreError::Invalid("WebSocket finalizer registry poisoned".into()))?;
+        if self.inner.shutdown.load(Ordering::SeqCst) {
+            return Err(StoreError::Invalid(
+                "cannot register conversation finalizer after shutdown".into(),
+            ));
+        }
+        registry.push(finalizer);
+        Ok(())
+    }
+
+    /// Return the number of in-flight WebSocket conversation finalizers.
+    pub fn websocket_conversation_finalizer_count(&self) -> usize {
+        self.inner
+            .websocket_finalizers
+            .lock()
+            .map(|registry| registry.len())
+            .unwrap_or(0)
     }
 
     /// Append bounded, payload-free event metadata for one recorded flow.
@@ -1130,12 +1255,34 @@ impl RecordingSession {
     /// A failed/cancelled transaction leaves no manifest reference because
     /// flows are appended only after both bodies publish; aborted staging
     /// files are removed by writer Drop.
+    ///
+    /// Before publishing, `finish` drives every registered
+    /// [`WebSocketConversationFinalizer`] to completion. This enforces the
+    /// lifecycle invariant that the recorded `websocket-messages` extension is
+    /// durable together with its initiating 101 flow: the session cannot
+    /// publish a manifest that references a 101 flow whose conversation
+    /// metadata is still in flight. Cancellation/panic safety of the registered
+    /// finalizer is the caller's responsibility.
     pub fn finish(self) -> Result<Session, StoreError> {
         self.inner.shutdown.store(true, Ordering::SeqCst);
         if self.inner.active_blobs.load(Ordering::SeqCst) != 0 {
             return Err(StoreError::Invalid(
                 "cannot finalize with active transactions".into(),
             ));
+        }
+        // Drain registered WebSocket conversation finalizers before publishing.
+        // `std::mem::take` detaches the registry so a finalizer that re-enters
+        // the session (e.g., via a panic guard) cannot observe a recursive
+        // drain. Each finalizer MUST be drop-safe: it must signal completion
+        // even when the conversation task was cancelled or aborted.
+        let finalizers: Vec<Box<dyn WebSocketConversationFinalizer>> =
+            std::mem::take(&mut *self.inner.websocket_finalizers.lock().map_err(|_| {
+                StoreError::Invalid("WebSocket finalizer registry poisoned".into())
+            })?);
+        if !finalizers.is_empty() {
+            for finalizer in finalizers {
+                finalizer.drive();
+            }
         }
         // Early check for empty active via extra Arc clones? Strong count
         // includes self + any task clones; if tasks still hold clones they

@@ -13,7 +13,7 @@ closed with hosted cross-platform evidence.
 
 M012 Python/pytest integration is closed under ADR 0007 with hosted
 Rust/Python and wheel qualification. M013 explicit-proxy/optional HTTPS
-interception is closed under ADR 0008 on qualifying revision `5efc6f9`
+validation is closed under ADR 0008 on qualifying revision `5efc6f9`
 (Actions runs [36211265347](https://github.com/eggstack/eggreplay/actions/runs/36211265347)
 on the implementation SHA and
 [36456906216](https://github.com/eggstack/eggreplay/actions/runs/36456906216)
@@ -29,15 +29,16 @@ reconciliation, M014A (HAR interchange/migration), M014B (experimental
 outbound HTTP/2), M014C (HTTP/3 deferred), and M014D (gRPC views + bounded
 faults) are closed; the M014 compatibility program is closed (see
 `plans/closure/m014-compatibility-program.md` for the support matrix).
-M014-C1 is the current post-closure corrective handoff for final documentation/
-evidence reconciliation and the pre-existing M011 WebSocket finalization race;
-no new feature stage is active until that corrective closes.
+M014-C1 post-M014 closure + WebSocket finalization repair is also closed
+(see `plans/closure/m014c1-post-m014-closure-and-websocket-finalization.md`).
+No new feature stage is currently authorized; the registry has no open
+implementation plan.
 
 The support baseline includes direct HTTP/1.1 acquisition and EggServe inbound
 HTTP/1.1 replay with optional listener-free Eggress routing. WebSocket support
 covers RFC 6455 over cleartext HTTP/1.1 Upgrade (`ws://`) with bounded semantic
-text, binary, ping, pong, and close messages. WSS, H2/H3, negotiated
-extensions, and wire-frame fidelity remain outside the claim.
+text, binary, ping, pong, and close messages. WSS interception, H2/H3,
+negotiated extensions, and wire-frame fidelity remain outside the claim.
 
 ## Interception support matrix (M013)
 
@@ -55,12 +56,31 @@ corresponding tests.
 | Direct + narrow Eggress-routed upstream | supported |
 | Manual CA initialize/import/export/rotate | supported |
 | Automatic OS/browser trust installation | unsupported |
-| HTTP/2 MITM | unsupported/deferred M014B |
-| HTTP/3/QUIC interception | unsupported/deferred |
+| HTTP/2 MITM | unsupported/not qualified |
+| HTTP/3/QUIC interception | unsupported/deferred (ADR 0009) |
 | WSS WebSocket interception | unsupported |
 | client mTLS interception | unsupported |
 | certificate-pinned clients | expected to fail unless configured passthrough |
 | transparent/TUN interception | unsupported |
+
+## HTTP/2 / HTTP/3 support matrix (M014B / M014C)
+
+HTTP/2 record and regression-candidate execution against EggFetch ALPN `h2`
+over local TLS (and routed through an Eggress TCP path) is a qualified,
+**experimental** opt-in tier under the `eggreplay-http/h2` cargo feature with
+an explicit `HttpVersionPolicy`. H1 remains the default policy everywhere.
+The following are not qualified and remain outside the support claim:
+
+- HTTP/2 inbound serving (EggServe replay/gateway) — no adopted seam on
+  `eggserve-server 0.3.0`;
+- HTTP/2 interception (MITM);
+- cleartext prior-knowledge (`h2c`);
+- HTTP/3 / QUIC (direct, routed, replay, and intercept) — deferred per
+  ADR 0009 with documented missing seams.
+
+See `plans/closure/m014b-http2-qualification.md` for the experimental-tier
+evidence and `plans/closure/m014c-http3-feasibility-and-qualification.md`
+plus `plans/adrs/0009-http3-integration-boundary.md` for the H3 deferral.
 
 ## Quickstart routes
 

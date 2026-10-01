@@ -1,6 +1,8 @@
 # M014-R1 — Planning and Documentation Reconciliation Gate
 
-Status: ready
+Status: closed (see `closure/m014r1-planning-and-documentation-reconciliation.md`).
+Current-state header retained for auditability; the body below is the
+historical implementation plan and must not be re-opened.
 Depends on: M013 closure
 Corrective gate: M014A/M014B feature implementation
 Parent: M014

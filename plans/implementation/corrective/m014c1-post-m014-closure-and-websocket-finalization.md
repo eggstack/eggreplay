@@ -1,6 +1,8 @@
 # M014-C1 — Post-M014 Closure and WebSocket Finalization Corrective
 
-Status: ready
+Status: closed (see `closure/m014c1-post-m014-closure-and-websocket-finalization.md`).
+Current-state header retained for auditability; the body below is the
+historical implementation plan and must not be re-opened.
 Depends on: M014 closure
 Corrective gate: post-M014 maintenance / next-roadmap handoff
 

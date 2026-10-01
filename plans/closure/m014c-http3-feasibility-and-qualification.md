@@ -40,8 +40,12 @@ this closure record, registry/roadmap/baseline/README status updates.
 
 Hosted CI run:
 [36773818886](https://github.com/eggstack/eggreplay/actions/runs/36773818886)
-(docs-only push shared with the M014B closure; standard matrix must stay
-green — number filled after green, substance unchanged).
+(docs-only push shared with the M014B closure; standard matrix stayed green
+on every job — Ubuntu stable, Ubuntu Rust 1.89, macOS stable, Windows
+stable, interception, dependency-boundary, Python bindings, Python
+abi3 cross-version). The M014 umbrella closure run
+[36778923619](https://github.com/eggstack/eggreplay/actions/runs/36778923619)
+on `c71ffd7` is the final qualifying matrix evidence for the M014 program.
 
 ## Handoff
 

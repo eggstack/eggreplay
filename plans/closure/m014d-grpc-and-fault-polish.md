@@ -6,7 +6,9 @@ Status: closed
 
 Implementation commits qualify with Actions run
 [36777792500](https://github.com/eggstack/eggreplay/actions/runs/36777792500)
-on the standard matrix (all thirteen jobs — number filled after green).
+on the standard matrix (all thirteen jobs: Ubuntu stable, Ubuntu Rust
+1.89, macOS stable, Windows stable, interception, dependency-boundary,
+Python bindings, and the Python abi3 cross-version lanes).
 An earlier D-impl push (run `36776162645`) failed for two diagnosed,
 fixed causes, recorded for auditability: the Windows H2 regression
 compared the volatile auto-`date` header across a second boundary
@@ -26,9 +28,16 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-features
 ```
 
-Workspace suite at D-impl: 371+ tests passed, 0 failed (355 at M014B
+Workspace suite at D-impl: 372 tests passed, 0 failed (355 at M014B
 plus 7 `grpc` + 1 scenario-fault core tests, 7 `scenario_faults`
-replay tests, and 1 H2/gRPC view integration test).
+replay tests, 1 H2/gRPC view integration test, and 1 `grpc`-feature
+lifecycle integration test). The earlier `371+` lower-bound count was
+conservative because the lifecycle test had not yet landed under the
+`grpc` feature at the time the count was first quoted; the count
+above is exact. The M014 umbrella closure run
+[36778923619](https://github.com/eggstack/eggreplay/actions/runs/36778923619)
+on `c71ffd7` is the final qualifying matrix evidence for the M014
+program.
 
 ## gRPC view
 
