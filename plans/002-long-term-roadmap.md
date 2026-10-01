@@ -107,6 +107,14 @@ Status: closed. See `implementation/compatibility/` and
 `closure/m014-compatibility-program.md` for the consolidated support
 matrix.
 
+### Post-Stage-10 corrective gate
+
+M014-C1 is ready as a post-closure maintenance corrective. It does not reopen
+M014 or create Stage 11; it owns residual M014 closure/support-documentation
+reconciliation plus deterministic repair of the pre-existing M011 WebSocket
+conversation/session-finalization race observed during M014 qualification.
+No Stage 11 implementation program is authorized until M014-C1 closes.
+
 ## Roadmap rule
 
 Later stages may not inflate earlier dependency closure. Every support claim

@@ -29,6 +29,9 @@ reconciliation, M014A (HAR interchange/migration), M014B (experimental
 outbound HTTP/2), M014C (HTTP/3 deferred), and M014D (gRPC views + bounded
 faults) are closed; the M014 compatibility program is closed (see
 `plans/closure/m014-compatibility-program.md` for the support matrix).
+M014-C1 is the current post-closure corrective handoff for final documentation/
+evidence reconciliation and the pre-existing M011 WebSocket finalization race;
+no new feature stage is active until that corrective closes.
 
 The support baseline includes direct HTTP/1.1 acquisition and EggServe inbound
 HTTP/1.1 replay with optional listener-free Eggress routing. WebSocket support

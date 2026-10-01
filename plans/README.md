@@ -45,7 +45,11 @@ and [36456906216](https://github.com/eggstack/eggreplay/actions/runs/36456906216
 on the closure commit); M013A, M013B0, M013B, M013C, M013D, M013E, and
 M013F are all closed. M014-R1, M014A, M014B, M014C, and M014D are closed,
 and the M014 compatibility-program umbrella is closed with the support
-matrix in `closure/m014-compatibility-program.md`.
+matrix in `closure/m014-compatibility-program.md`. M014-C1 is the sole ready
+post-M014 corrective handoff; it owns residual closure/support-documentation
+reconciliation and deterministic repair of the M011 WebSocket
+conversation/session-finalization race. No Stage 11 feature work is currently
+authorized.
 
 See `registry.md` for the exact handoff state.
 

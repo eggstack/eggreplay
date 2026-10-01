@@ -69,6 +69,7 @@ boundary, and ADR 0008 owns interception security/transport ownership.
 | M014B | `implementation/compatibility/014b-http2-qualification.md` | closed | M013 closure, M010, M014-R1 (closed) | H2 qualification |
 | M014C | `implementation/compatibility/014c-http3-feasibility-and-qualification.md` | closed | M014B (closed) | H3 architecture/support decision |
 | M014D | `implementation/compatibility/014d-grpc-and-fault-polish.md` | closed | M014B (closed), M010 (closed) | gRPC view + bounded faults |
+| M014-C1 | `implementation/corrective/m014c1-post-m014-closure-and-websocket-finalization.md` | **ready** | M014 closure | closure truth + deterministic WebSocket finalization |
 
 ### Current execution gate
 
@@ -139,6 +140,11 @@ faults) is closed on the D-impl run (see
 `closure/m014d-grpc-and-fault-polish.md`); the M014 umbrella is closed with
 the consolidated support matrix in
 `closure/m014-compatibility-program.md`.
+
+M014-C1 is the sole ready post-M014 handoff. It reconciles residual closure/
+support documentation and deterministically repairs the pre-existing M011
+WebSocket conversation/session-finalization race recorded during M014
+qualification. No Stage 11 feature work is authorized until M014-C1 closes.
 See also
 `closure/m013b0-eggserve-0-3-adoption-and-absolute-form-qualification.md`.
 
@@ -164,8 +170,7 @@ milestone never authorizes skipping subplan dependencies; each decomposed
 subplan is executable when its own declared dependencies and decision gates
 are satisfied; independent sibling subplans may be ready/active concurrently;
 a parent milestone closes only when all required child tracks have explicit
-closure/support decisions. Until M014-R1 closes, M014A and M014B remain
-blocked on that corrective gate per their declared dependencies.
+closure/support decisions.
 
 Hosted-CI-gated plans remain open until their required remote evidence is
 green. Historical closure records remain immutable audit artifacts.
