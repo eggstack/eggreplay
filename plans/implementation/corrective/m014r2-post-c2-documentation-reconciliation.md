@@ -1,6 +1,6 @@
 # M014-R2 — Post-C2 Documentation Reconciliation and Stage-11 Research Gate
 
-Status: ready
+Status: closed
 Depends on: M014-C2 closure on `cbc9257`
 Corrective gate: post-M014 documentation truth / Stage 11 implementation planning
 

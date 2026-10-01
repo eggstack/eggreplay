@@ -46,14 +46,19 @@ on the closure commit); M013A, M013B0, M013B, M013C, M013D, M013E, and
 M013F are all closed. M014-R1, M014A, M014B, M014C, M014D, and the
 M014 compatibility-program umbrella are closed; the consolidated
 support matrix is in `closure/m014-compatibility-program.md`.
-M014-C1 WebSocket conversation-finalization repair is implemented on
-`b188c552`, but Actions run `36881596131` failed stable Clippy in an existing
-HAR test before full hosted qualification. M014-C2 is the sole ready handoff
-for qualification and closure reconciliation; see
-`implementation/corrective/m014c2-websocket-finalization-qualification-and-closure-reconciliation.md`.
-M014-R2 is the sole ready documentation handoff for post-C2 reconciliation.
-Stage 11 research may proceed in parallel, but Stage 11 implementation remains
-undefined and may not be registered ready until R2 closes.
+M014-C1 WebSocket conversation-finalization repair and M014-C2
+qualification/closure reconciliation are closed, qualified through `cbc9257`
+(hosted CI `36891564494` and wheel run `36891564581`; closure/documentation
+commit `88daa3ed` green on `36894700433`); see
+`closure/m014c1-post-m014-closure-and-websocket-finalization.md` and
+`closure/m014c2-websocket-finalization-qualification-and-closure-reconciliation.md`.
+M014, M014-R1, M014A–M014D, M014-C1, and M014-C2 are closed. M014-R2
+post-C2 documentation reconciliation is closed; see
+`closure/m014r2-post-c2-documentation-reconciliation.md`. No implementation
+plan is currently open. Stage 11 remains undefined as an implementation
+program until separate research is converted into reviewed plans; research may
+proceed in parallel, but no Stage 11 implementation plan may be marked ready
+on research alone.
 
 See `registry.md` for the exact handoff state.
 

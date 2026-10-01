@@ -107,18 +107,19 @@ Status: closed. See `implementation/compatibility/` and
 `closure/m014-compatibility-program.md` for the consolidated support
 matrix.
 
-### Post-Stage-10 corrective gate
+### Post-Stage-10 corrective gate (closed)
 
-M014-C1 implementation landed on `b188c552`, establishing the deterministic
-WebSocket conversation/session-finalization barrier, but it is not yet closed:
-Actions run `36881596131` failed an existing M014A HAR stable-Clippy lint before
-the complete hosted matrix qualified the implementation. M014-C2 is the sole
-ready post-Stage-10 corrective for CI repair, async finalization safety audit,
-support-text cleanup, and fresh qualification. This does not reopen M014 or
-create Stage 11. M014-R2 is the sole ready documentation reconciliation handoff. Stage 11
-research may proceed in parallel, but no Stage 11 implementation program is
-authorized until R2 closes and a later roadmap line is separately researched
-and planned.
+M014-C1 fixed the WebSocket conversation/session-finalization race with a
+deterministic session-owned completion barrier. M014-C2 isolated synchronous
+finalization from async executors, cleared the stable Clippy blocker, corrected
+support wording, and supplied fresh hosted qualification on `cbc9257` (CI run
+`36891564494` plus wheel run `36891564581`; closure commit `88daa3ed` green on
+`36894700433`). The failed `36881596131` attempt on `b188c552` and the invalid
+pre-C1 `c71ffd7` / `36778923619` claim are retained as audit history in the
+C1/C2 closures and are not qualification evidence. M014-C1 and M014-C2 are both
+closed; M014 remains closed. Stage 11 is not yet defined as an implementation
+program; research may proceed in parallel but no Stage 11 scope is pre-selected
+here.
 
 ## Roadmap rule
 

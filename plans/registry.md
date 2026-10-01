@@ -71,7 +71,7 @@ boundary, and ADR 0008 owns interception security/transport ownership.
 | M014D | `implementation/compatibility/014d-grpc-and-fault-polish.md` | closed | M014B (closed), M010 (closed) | gRPC view + bounded faults |
 | M014-C1 | `implementation/corrective/m014c1-post-m014-closure-and-websocket-finalization.md` | closed | M014 closure | closure truth + deterministic WebSocket finalization |
 | M014-C2 | `implementation/corrective/m014c2-websocket-finalization-qualification-and-closure-reconciliation.md` | closed | M014-C1 implementation (`b188c552`) | hosted qualification + closure reconciliation |
-| M014-R2 | `implementation/corrective/m014r2-post-c2-documentation-reconciliation.md` | **ready** | M014-C2 closure (`cbc9257`) | final documentation/status reconciliation |
+| M014-R2 | `implementation/corrective/m014r2-post-c2-documentation-reconciliation.md` | closed | M014-C2 closure (`cbc9257`) | final documentation/status reconciliation |
 
 ### Current execution gate
 
@@ -155,9 +155,11 @@ and wheel run
 M014-C1 is closed (qualified via M014-C2) and M014-C2 is closed; see
 `closure/m014c1-post-m014-closure-and-websocket-finalization.md` and
 `closure/m014c2-websocket-finalization-qualification-and-closure-reconciliation.md`.
-Workspace suite: 379 tests. M014-R2 is the sole ready documentation handoff
-for final post-C2 status reconciliation. Stage 11 research may proceed in
-parallel, but no Stage 11 implementation plan is authorized until R2 closes. See also
+Workspace suite: 379 tests. M014-R2 documentation reconciliation is closed; see
+`closure/m014r2-post-c2-documentation-reconciliation.md`. No implementation plan
+is currently open. Stage 11 remains undefined as an implementation program
+pending separate research/planning; research may proceed in parallel but no
+Stage 11 implementation plan is authorized on research alone. See also
 `closure/m013b0-eggserve-0-3-adoption-and-absolute-form-qualification.md`.
 
 ## Canonical planning documents

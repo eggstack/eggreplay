@@ -16,7 +16,9 @@ Status: closed (qualified via M014-C2)
 > qualification is Actions run
 > [36891564494](https://github.com/eggstack/eggreplay/actions/runs/36891564494)
 > (CI: verify Ubuntu stable/1.89/macOS/Windows, interception x3,
-> dependency-boundary, Python bindings x3, abi3) plus wheel run
+> dependency-boundary, Python bindings Ubuntu 3.14 stable, Ubuntu 3.11 on Rust
+> 1.89.0, macOS 3.11 stable, Windows 3.11 stable, plus separate Python abi3
+> cross-version lane) plus wheel run
 > [36891564581](https://github.com/eggstack/eggreplay/actions/runs/36891564581),
 > both green on `cbc9257`. The old `c71ffd7` / `36778923619` claim remains
 > invalid for C1. Failed run `36881596131` is retained as audit history.
