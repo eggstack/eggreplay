@@ -358,7 +358,11 @@ async fn curl_https_connect_mitm_records() {
     );
     assert_eq!(proxy.session.flow_count(), 1, "curl MITM flow must record");
     // The minted leaf chains to the interception CA (curl verified it).
-    assert!(!proxy.ca_der.is_empty());
+    assert_ne!(
+        proxy.ca_der,
+        [] as [u8; 0],
+        "minted leaf must chain to a non-empty interception CA"
+    );
 
     finish_proxy(proxy).await;
     origin_task.abort();

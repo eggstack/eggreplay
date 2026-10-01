@@ -1263,6 +1263,23 @@ impl RecordingSession {
     /// publish a manifest that references a 101 flow whose conversation
     /// metadata is still in flight. Cancellation/panic safety of the registered
     /// finalizer is the caller's responsibility.
+    ///
+    /// Async contract (M014-C2): `finish` blocks the calling thread on a
+    /// std `Condvar` while a finalizer is pending. It MUST NOT be called
+    /// directly on an async executor thread when a finalizer may still be
+    /// pending; use a blocking boundary (for example
+    /// `tokio::task::spawn_blocking`, see
+    /// `eggreplay_http::recording::finish_recording_session`) so the executor
+    /// remains free to drive the conversation task to its terminal signal.
+    /// Supported runtime lifecycles call `ServerHandle::shutdown` +
+    /// `wait` + `RecordingSession::shutdown` before `finish` (already
+    /// drained): EggServe drains tracked tunnel tasks within its bounded
+    /// post-shutdown budget and aborts remainders, and the gateway completer
+    /// signals on both `complete()` and `Drop`, so `drive()` returns
+    /// promptly and no indefinite wait remains. `drive_with_deadline` exists
+    /// for bounded observation; `finish` itself stays unbounded by design
+    /// and fails closed (101 without transcript) rather than publishing an
+    /// incomplete fixture.
     pub fn finish(self) -> Result<Session, StoreError> {
         self.inner.shutdown.store(true, Ordering::SeqCst);
         if self.inner.active_blobs.load(Ordering::SeqCst) != 0 {

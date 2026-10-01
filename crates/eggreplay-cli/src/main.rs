@@ -589,18 +589,17 @@ async fn record(args: RecordArgs) -> Result<(), (String, String)> {
     tokio::signal::ctrl_c()
         .await
         .map_err(|error| ("runtime".into(), error.to_string()))?;
+    // Already drained: EggServe shutdown+wait drains tracked tunnel tasks
+    // (conversation completers signalled via complete/Drop) before session
+    // finalization. Blocking isolation via spawn_blocking keeps the executor
+    // free even on current-thread runtimes.
     server.shutdown();
     server.wait().await;
     session.shutdown();
-    for _ in 0..100 {
-        if session.active_blobs() == 0 {
-            break;
-        }
-        tokio::task::yield_now().await;
-    }
+    eggreplay_http::recording::drain_active_blobs(&session).await;
     let websocket_count = session.websocket_conversation_count().unwrap_or(0);
-    session
-        .finish()
+    eggreplay_http::recording::finish_recording_session(session)
+        .await
         .map_err(|error| ("fixture".into(), error.to_string()))?;
     emit(
         "record",
@@ -748,12 +747,16 @@ async fn record_once_from_serve(args: ServeArgs) -> Result<(), (String, String)>
     tokio::signal::ctrl_c()
         .await
         .map_err(|error| ("runtime".into(), error.to_string()))?;
+    // Already drained + blocking isolation (see `record`): shutdown+wait
+    // drains WebSocket tunnels before session finalization runs on the
+    // blocking pool.
     server.shutdown();
     server.wait().await;
     session.shutdown();
+    eggreplay_http::recording::drain_active_blobs(&session).await;
     let websocket_count = session.websocket_conversation_count().unwrap_or(0);
-    session
-        .finish()
+    eggreplay_http::recording::finish_recording_session(session)
+        .await
         .map_err(|error| ("fixture".into(), error.to_string()))?;
     emit(
         "serve",
@@ -823,11 +826,15 @@ async fn serve_append_new(args: ServeArgs) -> Result<(), (String, String)> {
     tokio::signal::ctrl_c()
         .await
         .map_err(|error| ("runtime".into(), error.to_string()))?;
+    // Already drained + blocking isolation: append-new carries no WebSocket
+    // finalizers, so finalization is on the HTTP fast path; still run on the
+    // blocking pool for executor safety.
     server.shutdown();
     server.wait().await;
     recording.shutdown();
-    let additional = recording
-        .finish()
+    eggreplay_http::recording::drain_active_blobs(&recording).await;
+    let additional = eggreplay_http::recording::finish_recording_session(recording)
+        .await
         .map_err(|error| ("fixture".into(), error.to_string()))?;
     let added_flows = additional.manifest().flow_count;
     let merged = source
@@ -900,12 +907,14 @@ async fn serve_re_record(args: ServeArgs) -> Result<(), (String, String)> {
     tokio::signal::ctrl_c()
         .await
         .map_err(|error| ("runtime".into(), error.to_string()))?;
+    // Already drained + blocking isolation (see `record`).
     server.shutdown();
     server.wait().await;
     session.shutdown();
+    eggreplay_http::recording::drain_active_blobs(&session).await;
     let websocket_count = session.websocket_conversation_count().unwrap_or(0);
-    let recorded = session
-        .finish()
+    let recorded = eggreplay_http::recording::finish_recording_session(session)
+        .await
         .map_err(|error| ("fixture".into(), error.to_string()))?;
     let recorded_flows = recorded.manifest().flow_count;
     drop(recorded);

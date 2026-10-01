@@ -660,17 +660,14 @@ async fn proxy_record(args: ProxyRecordArgs) -> Result<(), (String, String)> {
     tokio::signal::ctrl_c()
         .await
         .map_err(|error| ("runtime".into(), error.to_string()))?;
+    // Already drained + blocking isolation: proxy shutdown+wait drains
+    // active relays before session finalization runs on the blocking pool.
     handle.shutdown();
     handle.wait().await;
     session.shutdown();
-    for _ in 0..100 {
-        if session.active_blobs() == 0 {
-            break;
-        }
-        tokio::task::yield_now().await;
-    }
-    let recorded = session
-        .finish()
+    eggreplay_http::recording::drain_active_blobs(&session).await;
+    let recorded = eggreplay_http::recording::finish_recording_session(session)
+        .await
         .map_err(|error| ("fixture".into(), error.to_string()))?;
     let snapshot = stats.snapshot();
     let payload = serde_json::json!({

@@ -96,7 +96,11 @@ fn source_contains_no_automatic_trust_mutation() {
     ] {
         files.push(Path::new("../eggreplay-intercept/src").join(name));
     }
-    assert!(!files.is_empty());
+    assert_ne!(
+        files,
+        [] as [PathBuf; 0],
+        "audit file list must not be empty"
+    );
     for file in &files {
         let text = std::fs::read_to_string(file)
             .unwrap_or_else(|_| panic!("must read {}", file.display()));

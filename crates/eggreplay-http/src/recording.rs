@@ -724,9 +724,11 @@ where
 /// bounded JSONL append holds the flow-log lock.
 ///
 /// Shutdown policy: `ServerHandle::shutdown` stops admission, `wait` drains
-/// in-flight gateway tasks, then the owner calls `RecordingSession::shutdown`
-/// (idempotent) and `finish`, which fails if any body sink is still active
-/// rather than racing finalization.
+/// in-flight gateway tasks (including tracked WebSocket tunnel tasks, whose
+/// completers signal via `complete()` or `Drop`), then the owner calls
+/// `RecordingSession::shutdown` (idempotent), drains active blobs, and
+/// finalizes via [`finish_recording_session`] on the blocking pool. `finish`
+/// fails if any body sink is still active rather than racing finalization.
 #[cfg(feature = "eggserve")]
 #[allow(clippy::too_many_arguments)]
 pub async fn start_recording_gateway(
@@ -866,6 +868,42 @@ pub async fn start_recording_gateway_with_websockets(
         .start_with_service(service)
         .await
         .map_err(|error| HttpError::Conversion(error.to_string()))
+}
+
+/// Finalize a [`RecordingSession`] from an async context (M014-C2).
+///
+/// Blocking isolation: `RecordingSession::finish` may block on a std
+/// `Condvar` while a WebSocket finalizer is pending. Running it on the
+/// blocking pool keeps the async executor free to drive the conversation
+/// task to its terminal signal, so this is safe on multi-thread and
+/// current-thread runtimes alike.
+///
+/// Already-drained ordering still applies: callers must have performed
+/// `ServerHandle::shutdown` + `wait` + `RecordingSession::shutdown` (and
+/// drained active blobs) before calling this. In that ordering EggServe has
+/// already drained or aborted tracked tunnel tasks and the gateway completer
+/// has signalled via `complete()` or `Drop`, so the blocking wait returns
+/// promptly. A 101 flow without an appended transcript still fails closed
+/// instead of publishing an incomplete fixture.
+pub async fn finish_recording_session(
+    session: RecordingSession,
+) -> Result<eggreplay_store::Session, StoreError> {
+    tokio::task::spawn_blocking(move || session.finish())
+        .await
+        .map_err(|error| StoreError::Invalid(format!("recording finalization join: {error}")))?
+}
+
+/// Shutdown policy helper shared by CLI/Python lifecycles: stop admission,
+/// then cooperatively wait for active body sinks to drain. WebSocket
+/// conversation tasks are drained by `ServerHandle::wait` before this runs;
+/// this spin only covers blob accounting.
+pub async fn drain_active_blobs(session: &RecordingSession) {
+    for _ in 0..1000 {
+        if session.active_blobs() == 0 {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
 }
 
 #[cfg(feature = "eggserve")]
@@ -2722,10 +2760,14 @@ mod tests {
         ));
         socket.flush().await.unwrap();
         upstream_task.await.unwrap();
+        // CLI shutdown -> wait -> finalization ordering (M014-C2): EggServe
+        // drains tracked tunnel tasks before the session finalizes on the
+        // blocking pool.
         server.shutdown();
         server.wait().await;
         session.shutdown();
-        let fixture = session.finish().unwrap();
+        drain_active_blobs(&session).await;
+        let fixture = finish_recording_session(session).await.unwrap();
         let transcript: eggreplay_core::WebSocketTranscript = serde_json::from_slice(
             &fixture
                 .read_extension("websocket-messages")
@@ -3224,6 +3266,164 @@ mod tests {
         let transcript: eggreplay_core::WebSocketTranscript =
             serde_json::from_slice(&bytes).unwrap();
         assert_eq!(transcript.conversations.len(), 3);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[cfg(all(feature = "eggserve", feature = "websocket"))]
+    #[tokio::test(flavor = "current_thread")]
+    async fn session_finish_via_blocking_pool_progresses_on_current_thread() {
+        // M014-C2: finalization from a single-thread runtime must not starve
+        // a pending conversation finalizer. `finish_recording_session` runs
+        // `finish()` on the blocking pool, so the executor stays free to
+        // drive the conversation task to its terminal signal.
+        let dir = m014c1_temp("current-thread-blocking");
+        let session =
+            RecordingSession::create(&dir, SessionMetadata::default(), StoreLimits::default())
+                .unwrap();
+        let (completion, completer) = ConversationCompletion::new();
+        session
+            .register_websocket_conversation_finalizer(Box::new(completion))
+            .unwrap();
+        let flow_id = uuid::Uuid::new_v4().to_string();
+        let flow = eggreplay_core::Flow {
+            schema_version: eggreplay_core::SCHEMA_VERSION,
+            id: flow_id.clone(),
+            started_at_ms: now_ms(),
+            completed_at_ms: Some(now_ms()),
+            request: eggreplay_core::HttpRequest {
+                method: "GET".into(),
+                scheme: "ws".into(),
+                authority: "127.0.0.1".into(),
+                path: "/socket".into(),
+                query: Vec::new(),
+                headers: vec![eggreplay_core::HeaderEntry {
+                    name: "upgrade".into(),
+                    value: "websocket".into(),
+                }],
+                body: eggreplay_core::BodyRef::Absent,
+                trailers: Vec::new(),
+            },
+            outcome: eggreplay_core::FlowOutcome::Response(eggreplay_core::HttpResponse {
+                status: 101,
+                headers: vec![],
+                body: eggreplay_core::BodyRef::Absent,
+                trailers: Vec::new(),
+            }),
+            physical_route: None,
+            provenance: eggreplay_core::Provenance {
+                mode: "test".into(),
+                observer: "m014c2".into(),
+            },
+            annotations: Vec::new(),
+            redactions: Vec::new(),
+        };
+        flow.validate().unwrap();
+        session.append_flow(&flow).unwrap();
+        // Append the transcript before finalization (as the gateway does
+        // before `shutdown`), but delay the completer signal until after
+        // `finish` has started waiting. On a current-thread runtime the
+        // delayed signal can only run because `finish` waits on the blocking
+        // pool instead of the executor thread.
+        let conversation = eggreplay_core::WebSocketConversation {
+            id: uuid::Uuid::new_v4().to_string(),
+            flow_id: flow_id.clone(),
+            offered_subprotocols: Vec::new(),
+            selected_subprotocol: None,
+            messages: Vec::new(),
+            terminal: eggreplay_core::WebSocketTerminal::Abnormal {
+                cause: "shutdown".into(),
+            },
+        };
+        session.append_websocket_conversation(conversation).unwrap();
+        let finisher = tokio::spawn(finish_recording_session(session));
+        // Let the finisher reach its blocking wait, then signal completion
+        // from the executor. If `finish` blocked the executor thread this
+        // sleep would never yield back.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        completer.complete();
+        let fixture = tokio::time::timeout(std::time::Duration::from_secs(5), finisher)
+            .await
+            .expect("blocking finalization must not starve the executor")
+            .expect("blocking task must join")
+            .expect("finish must succeed once the conversation signals");
+        assert_eq!(fixture.manifest().flow_count, 1);
+        let bytes = fixture
+            .read_extension("websocket-messages")
+            .unwrap()
+            .unwrap();
+        let transcript: eggreplay_core::WebSocketTranscript =
+            serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(transcript.conversations.len(), 1);
+        assert!(matches!(
+            transcript.conversations[0].terminal,
+            eggreplay_core::WebSocketTerminal::Abnormal { .. }
+        ));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[cfg(all(feature = "eggserve", feature = "websocket"))]
+    #[tokio::test(flavor = "current_thread")]
+    async fn session_finish_via_blocking_pool_fails_closed_on_cancelled_conversation() {
+        // M014-C2 Python/CLI cancellation pattern on a single-thread runtime:
+        // the conversation task is cancelled (completer dropped without an
+        // appended transcript), and blocking finalization must release and
+        // fail closed rather than hang or publish an incomplete fixture.
+        let dir = m014c1_temp("current-thread-cancel");
+        let session =
+            RecordingSession::create(&dir, SessionMetadata::default(), StoreLimits::default())
+                .unwrap();
+        let (completion, completer) = ConversationCompletion::new();
+        session
+            .register_websocket_conversation_finalizer(Box::new(completion))
+            .unwrap();
+        let flow = eggreplay_core::Flow {
+            schema_version: eggreplay_core::SCHEMA_VERSION,
+            id: uuid::Uuid::new_v4().to_string(),
+            started_at_ms: now_ms(),
+            completed_at_ms: Some(now_ms()),
+            request: eggreplay_core::HttpRequest {
+                method: "GET".into(),
+                scheme: "ws".into(),
+                authority: "127.0.0.1".into(),
+                path: "/socket".into(),
+                query: Vec::new(),
+                headers: vec![eggreplay_core::HeaderEntry {
+                    name: "upgrade".into(),
+                    value: "websocket".into(),
+                }],
+                body: eggreplay_core::BodyRef::Absent,
+                trailers: Vec::new(),
+            },
+            outcome: eggreplay_core::FlowOutcome::Response(eggreplay_core::HttpResponse {
+                status: 101,
+                headers: vec![],
+                body: eggreplay_core::BodyRef::Absent,
+                trailers: Vec::new(),
+            }),
+            physical_route: None,
+            provenance: eggreplay_core::Provenance {
+                mode: "test".into(),
+                observer: "m014c2".into(),
+            },
+            annotations: Vec::new(),
+            redactions: Vec::new(),
+        };
+        flow.validate().unwrap();
+        session.append_flow(&flow).unwrap();
+        session.shutdown();
+        // Simulate task cancellation: drop the completer without completion
+        // and without appending a transcript.
+        drop(completer);
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            finish_recording_session(session),
+        )
+        .await
+        .expect("blocking finalization must not hang on cancellation");
+        assert!(
+            result.is_err(),
+            "101 without transcript must fail closed, got {result:?}"
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 

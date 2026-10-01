@@ -37,9 +37,13 @@ reconciliation. No new feature stage is currently authorized.
 
 The support baseline includes direct HTTP/1.1 acquisition and EggServe inbound
 HTTP/1.1 replay with optional listener-free Eggress routing. WebSocket support
-covers RFC 6455 over cleartext HTTP/1.1 Upgrade (`ws://`) with bounded semantic
-text, binary, ping, pong, and close messages. WSS interception, H2/H3,
-negotiated extensions, and wire-frame fidelity remain outside the claim.
+covers cleartext RFC 6455 over HTTP/1.1 Upgrade (`ws://`) with bounded semantic
+text, binary, ping, pong, and close messages (the qualified M011 baseline).
+WSS interception remains unsupported. Outbound HTTP/2 record/regression is an
+experimental opt-in tier under M014B; inbound H2 serving, H2 MITM, and `h2c`
+are unsupported/not qualified. H3 remains unsupported/deferred per ADR 0009.
+Negotiated WebSocket extensions and wire-frame fidelity remain outside the
+claim. See the HTTP/2 / HTTP/3 matrix below.
 
 ## Interception support matrix (M013)
 

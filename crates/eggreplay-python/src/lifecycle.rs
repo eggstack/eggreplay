@@ -551,14 +551,18 @@ fn parse_bind(value: &str) -> PyResult<SocketAddr> {
 }
 
 async fn finish_session(session: RecordingSession) -> Result<Session, String> {
+    // Already drained + blocking isolation (M014-C2): `aclose` performs
+    // `handle.shutdown() + wait()` before this runs, so EggServe has drained
+    // tracked tunnel tasks and the gateway completer has signalled via
+    // `complete()` or `Drop`. Drain blobs cooperatively, then finalize on the
+    // blocking pool so a pending finalizer cannot starve a current-thread
+    // runtime. Cancellation of the Python waiter does not cancel this task:
+    // `aclose` spawned it via the Tokio runtime and observes it through a
+    // watch channel. A 101 without transcript still fails closed.
     session.shutdown();
-    let mut spins = 0;
-    while session.active_blobs() != 0 && spins < 1000 {
-        tokio::task::yield_now().await;
-        spins += 1;
-    }
-    session
-        .finish()
+    eggreplay_http::recording::drain_active_blobs(&session).await;
+    eggreplay_http::recording::finish_recording_session(session)
+        .await
         .map_err(|_| "recording finalization failed".to_owned())
 }
 

@@ -2095,7 +2095,11 @@ mod tests {
                 .iter()
                 .any(|pair| pair.value.contains("SECRET"))
         );
-        assert!(!flows[0].redactions.is_empty());
+        assert_ne!(
+            flows[0].redactions,
+            [] as [RedactionMarker; 0],
+            "imported flow must retain at least one redaction marker"
+        );
         // Stored blobs + JSONL must not contain the secret either.
         let tree = std::fs::read_dir(&fixture).unwrap();
         for entry in tree.flatten() {
