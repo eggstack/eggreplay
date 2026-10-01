@@ -115,8 +115,10 @@ Actions run `36881596131` failed an existing M014A HAR stable-Clippy lint before
 the complete hosted matrix qualified the implementation. M014-C2 is the sole
 ready post-Stage-10 corrective for CI repair, async finalization safety audit,
 support-text cleanup, and fresh qualification. This does not reopen M014 or
-create Stage 11. No Stage 11 implementation program is authorized until C2
-closes and a later roadmap line is separately researched and planned.
+create Stage 11. M014-R2 is the sole ready documentation reconciliation handoff. Stage 11
+research may proceed in parallel, but no Stage 11 implementation program is
+authorized until R2 closes and a later roadmap line is separately researched
+and planned.
 
 ## Roadmap rule
 

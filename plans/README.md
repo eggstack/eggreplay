@@ -51,7 +51,9 @@ M014-C1 WebSocket conversation-finalization repair is implemented on
 HAR test before full hosted qualification. M014-C2 is the sole ready handoff
 for qualification and closure reconciliation; see
 `implementation/corrective/m014c2-websocket-finalization-qualification-and-closure-reconciliation.md`.
-Stage 11 remains undefined until C2 closes and is separately researched.
+M014-R2 is the sole ready documentation handoff for post-C2 reconciliation.
+Stage 11 research may proceed in parallel, but Stage 11 implementation remains
+undefined and may not be registered ready until R2 closes.
 
 See `registry.md` for the exact handoff state.
 
