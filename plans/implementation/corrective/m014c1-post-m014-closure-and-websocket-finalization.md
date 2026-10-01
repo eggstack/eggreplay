@@ -1,9 +1,11 @@
 # M014-C1 — Post-M014 Closure and WebSocket Finalization Corrective
 
-Status: implemented (qualification pending M014-C2)
-Implementation: `b188c552`
-Hosted qualification: run `36881596131` failed before full-matrix closure;
-see `implementation/corrective/m014c2-websocket-finalization-qualification-and-closure-reconciliation.md`.
+Status: closed (qualified via M014-C2 on `cbc9257`)
+Implementation: `b188c552`, qualified as amended by M014-C2 `cbc9257`
+Hosted qualification: runs `36891564494` (CI) + `36891564581` (wheels) green;
+failed run `36881596131` retained as history;
+see `closure/m014c1-post-m014-closure-and-websocket-finalization.md` and
+`closure/m014c2-websocket-finalization-qualification-and-closure-reconciliation.md`.
 The body below remains the historical implementation plan.
 Depends on: M014 closure
 Corrective gate: post-M014 maintenance / next-roadmap handoff

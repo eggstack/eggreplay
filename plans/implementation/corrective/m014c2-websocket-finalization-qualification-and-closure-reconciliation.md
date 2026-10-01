@@ -1,6 +1,9 @@
 # M014-C2 — WebSocket Finalization Qualification and Closure Reconciliation
 
-Status: ready
+Status: closed
+Implementation: `cbc9257`
+Hosted qualification: runs `36891564494` (CI) + `36891564581` (wheels) green;
+see `closure/m014c2-websocket-finalization-qualification-and-closure-reconciliation.md`.
 Depends on: M014-C1 implementation on `b188c552`
 Corrective gate: M014-C1 closure / post-M014 clean baseline
 

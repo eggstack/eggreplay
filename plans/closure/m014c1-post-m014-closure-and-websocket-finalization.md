@@ -1,6 +1,6 @@
 # M014-C1 — Post-M014 Closure and WebSocket Finalization Closure
 
-Status: implemented; closure qualification pending M014-C2
+Status: closed (qualified via M014-C2)
 
 > Erratum (2026-10-01): this record was closed prematurely. The previously
 > cited M014 umbrella revision `c71ffd7` / run `36778923619` predates the
@@ -9,15 +9,28 @@ Status: implemented; closure qualification pending M014-C2
 > test before the full verify matrix completed. M014-C2 owns requalification
 > and final closure reconciliation. Historical detail below is retained for
 > auditability.
+>
+> Reconciliation (M014-C2, 2026-10-01): C1 is qualified by the C2
+> implementation lineage `cbc9257`, which contains the complete C1 repair
+> plus the C2 Clippy/async-boundary/support-text corrections. Hosted
+> qualification is Actions run
+> [36891564494](https://github.com/eggstack/eggreplay/actions/runs/36891564494)
+> (CI: verify Ubuntu stable/1.89/macOS/Windows, interception x3,
+> dependency-boundary, Python bindings x3, abi3) plus wheel run
+> [36891564581](https://github.com/eggstack/eggreplay/actions/runs/36891564581),
+> both green on `cbc9257`. The old `c71ffd7` / `36778923619` claim remains
+> invalid for C1. Failed run `36881596131` is retained as audit history.
 
-## Implementation revision and pending hosted evidence
+## Implementation revision and hosted evidence
 
-Implementation is `b188c552`. Actions run
+Implementation is `b188c552`, qualified as amended by M014-C2 on `cbc9257`.
+Actions run
 [36881596131](https://github.com/eggstack/eggreplay/actions/runs/36881596131)
 is a failed qualification attempt, not closure evidence. It passed several
 interception/Python/dependency lanes but failed the stable verify path on
 `clippy::assert_is_empty` in the pre-existing M014A HAR test, cancelling other
-verify lanes. A fresh full green matrix is required by M014-C2.
+verify lanes. Qualification was completed by M014-C2 (see
+`closure/m014c2-websocket-finalization-qualification-and-closure-reconciliation.md`).
 
 Local verification on the qualifying workspace is green with the
 repository-standard command:
@@ -187,6 +200,6 @@ internal to the store/http boundary:
 
 ## Handoff
 
-M014-C1 is implemented on `b188c552` but not yet qualified. M014-C2 is the
-sole ready corrective handoff and must produce a green full matrix before C1
-or C2 may close. Stage 11 remains undefined.
+M014-C1 is closed, qualified via M014-C2 on `cbc9257` (runs `36891564494` /
+`36891564581`). M014-C2 is closed; see its closure record. Stage 11 remains
+undefined pending separate research/planning.

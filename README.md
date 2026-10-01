@@ -29,11 +29,10 @@ reconciliation, M014A (HAR interchange/migration), M014B (experimental
 outbound HTTP/2), M014C (HTTP/3 deferred), and M014D (gRPC views + bounded
 faults) are closed; the M014 compatibility program is closed (see
 `plans/closure/m014-compatibility-program.md` for the support matrix).
-M014-C1 post-M014 WebSocket finalization repair is implemented on `b188c552`
-but remains qualification-pending after Actions run `36881596131` failed an
-existing HAR stable-Clippy lint before the full verify matrix completed.
-M014-C2 is the sole ready corrective handoff for requalification and closure
-reconciliation. No new feature stage is currently authorized.
+M014-C1 post-M014 WebSocket finalization repair and M014-C2 qualification/
+closure reconciliation are closed on `cbc9257` (hosted CI run `36891564494`
+plus wheel run `36891564581`). No implementation plan is currently open.
+No new feature stage is currently authorized.
 
 The support baseline includes direct HTTP/1.1 acquisition and EggServe inbound
 HTTP/1.1 replay with optional listener-free Eggress routing. WebSocket support
