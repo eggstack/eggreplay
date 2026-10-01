@@ -69,7 +69,8 @@ boundary, and ADR 0008 owns interception security/transport ownership.
 | M014B | `implementation/compatibility/014b-http2-qualification.md` | closed | M013 closure, M010, M014-R1 (closed) | H2 qualification |
 | M014C | `implementation/compatibility/014c-http3-feasibility-and-qualification.md` | closed | M014B (closed) | H3 architecture/support decision |
 | M014D | `implementation/compatibility/014d-grpc-and-fault-polish.md` | closed | M014B (closed), M010 (closed) | gRPC view + bounded faults |
-| M014-C1 | `implementation/corrective/m014c1-post-m014-closure-and-websocket-finalization.md` | **closed** | M014 closure | closure truth + deterministic WebSocket finalization |
+| M014-C1 | `implementation/corrective/m014c1-post-m014-closure-and-websocket-finalization.md` | **implemented (qualification pending M014-C2)** | M014 closure | closure truth + deterministic WebSocket finalization |
+| M014-C2 | `implementation/corrective/m014c2-websocket-finalization-qualification-and-closure-reconciliation.md` | **ready** | M014-C1 implementation (`b188c552`) | hosted qualification + closure reconciliation |
 
 ### Current execution gate
 
@@ -141,18 +142,15 @@ faults) is closed on the D-impl run (see
 the consolidated support matrix in
 `closure/m014-compatibility-program.md`.
 
-M014-C1 is closed on the M014 umbrella qualifying revision `c71ffd7`
-with hosted run
-[36778923619](https://github.com/eggstack/eggreplay/actions/runs/36778923619).
-The repair introduces a session-owned WebSocket conversation finalizer
-barrier in `RecordingSession` (`crates/eggreplay-store`) and a std-only
-`ConversationCompletion` (`crates/eggreplay-http`); the original flaky
-`recording_gateway_captures_upgrade_and_leading_post_101_messages`
-test plus six new deterministic race regression tests now pass reliably.
-See
-`closure/m014c1-post-m014-closure-and-websocket-finalization.md`. The
-registry has no open implementation plan; Stage 11 remains undefined
-until it is separately researched and planned. See also
+M014-C1 implementation landed on `b188c552`, but hosted run
+[36881596131](https://github.com/eggstack/eggreplay/actions/runs/36881596131)
+failed stable Clippy in an existing M014A HAR test before the full verify
+matrix could qualify the new WebSocket finalization barrier. The earlier green
+M014 run `36778923619` on `c71ffd7` predates C1 and is not C1 qualification
+evidence. M014-C1 is therefore implemented but qualification-pending.
+M014-C2 is the sole ready handoff for the Clippy correction, async finalization
+call-site/bounded-wait audit, support-text cleanup, and fresh hosted
+qualification. Stage 11 remains undefined until C2 closes. See also
 `closure/m013b0-eggserve-0-3-adoption-and-absolute-form-qualification.md`.
 
 ## Canonical planning documents

@@ -46,14 +46,12 @@ on the closure commit); M013A, M013B0, M013B, M013C, M013D, M013E, and
 M013F are all closed. M014-R1, M014A, M014B, M014C, M014D, and the
 M014 compatibility-program umbrella are closed; the consolidated
 support matrix is in `closure/m014-compatibility-program.md`.
-M014-C1 post-M014 closure and deterministic WebSocket conversation
-finalization repair is closed on the M014 umbrella qualifying
-revision `c71ffd7` with hosted run
-[36778923619](https://github.com/eggstack/eggreplay/actions/runs/36778923619);
-see `closure/m014c1-post-m014-closure-and-websocket-finalization.md`
-for the ownership invariant and qualifying evidence. The registry has
-no open implementation plan; Stage 11 remains undefined until
-separately researched and planned.
+M014-C1 WebSocket conversation-finalization repair is implemented on
+`b188c552`, but Actions run `36881596131` failed stable Clippy in an existing
+HAR test before full hosted qualification. M014-C2 is the sole ready handoff
+for qualification and closure reconciliation; see
+`implementation/corrective/m014c2-websocket-finalization-qualification-and-closure-reconciliation.md`.
+Stage 11 remains undefined until C2 closes and is separately researched.
 
 See `registry.md` for the exact handoff state.
 

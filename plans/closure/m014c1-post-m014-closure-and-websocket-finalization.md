@@ -1,18 +1,23 @@
 # M014-C1 — Post-M014 Closure and WebSocket Finalization Closure
 
-Status: closed
+Status: implemented; closure qualification pending M014-C2
 
-## Qualifying revision and hosted evidence
+> Erratum (2026-10-01): this record was closed prematurely. The previously
+> cited M014 umbrella revision `c71ffd7` / run `36778923619` predates the
+> M014-C1 implementation and cannot qualify it. C1 implementation landed on
+> `b188c552`; hosted run `36881596131` failed stable Clippy in an existing HAR
+> test before the full verify matrix completed. M014-C2 owns requalification
+> and final closure reconciliation. Historical detail below is retained for
+> auditability.
 
-Implementation and qualifying CI ride on the M014 umbrella closure commit
-`c71ffd7` with hosted Actions run
-[36778923619](https://github.com/eggstack/eggreplay/actions/runs/36778923619)
-on the standard matrix (Ubuntu stable, Ubuntu Rust 1.89, macOS stable,
-Windows stable, interception, dependency-boundary, Python bindings, and the
-Python abi3 cross-version lanes — all thirteen jobs green). The same
-commit is the source-of-truth M014 umbrella closure, recorded in
-`closure/m014-compatibility-program.md`; M014-C1 adds the deterministic
-WebSocket-repair code on top without reopening the M014 support matrix.
+## Implementation revision and pending hosted evidence
+
+Implementation is `b188c552`. Actions run
+[36881596131](https://github.com/eggstack/eggreplay/actions/runs/36881596131)
+is a failed qualification attempt, not closure evidence. It passed several
+interception/Python/dependency lanes but failed the stable verify path on
+`clippy::assert_is_empty` in the pre-existing M014A HAR test, cancelling other
+verify lanes. A fresh full green matrix is required by M014-C2.
 
 Local verification on the qualifying workspace is green with the
 repository-standard command:
@@ -182,9 +187,6 @@ internal to the store/http boundary:
 
 ## Handoff
 
-M014-C1 is closed on the M014 umbrella qualifying revision `c71ffd7`
-with hosted run
-[36778923619](https://github.com/eggstack/eggreplay/actions/runs/36778923619).
-The registry has no open implementation plan; Stage 11 remains
-undefined until separately researched and planned. No future plan is
-unblocked by this closure beyond the registry return to no open work.
+M014-C1 is implemented on `b188c552` but not yet qualified. M014-C2 is the
+sole ready corrective handoff and must produce a green full matrix before C1
+or C2 may close. Stage 11 remains undefined.

@@ -1,8 +1,10 @@
 # M014-C1 — Post-M014 Closure and WebSocket Finalization Corrective
 
-Status: closed (see `closure/m014c1-post-m014-closure-and-websocket-finalization.md`).
-Current-state header retained for auditability; the body below is the
-historical implementation plan and must not be re-opened.
+Status: implemented (qualification pending M014-C2)
+Implementation: `b188c552`
+Hosted qualification: run `36881596131` failed before full-matrix closure;
+see `implementation/corrective/m014c2-websocket-finalization-qualification-and-closure-reconciliation.md`.
+The body below remains the historical implementation plan.
 Depends on: M014 closure
 Corrective gate: post-M014 maintenance / next-roadmap handoff
 
