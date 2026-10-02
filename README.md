@@ -31,8 +31,10 @@ faults) are closed; the M014 compatibility program is closed (see
 `plans/closure/m014-compatibility-program.md` for the support matrix).
 M014-C1 post-M014 WebSocket finalization repair and M014-C2 qualification/
 closure reconciliation are closed on `cbc9257` (hosted CI run `36891564494`
-plus wheel run `36891564581`). No implementation plan is currently open.
-No new feature stage is currently authorized.
+plus wheel run `36891564581`). M014-R2 documentation reconciliation is also
+closed. Stage 11 is now planned as M015 (bidirectional HTTP/2 and transport
+baseline); M015A is the first executable child. Current product support claims
+remain unchanged until M015 qualification closes.
 
 The support baseline includes direct HTTP/1.1 acquisition and EggServe inbound
 HTTP/1.1 replay with optional listener-free Eggress routing. WebSocket support

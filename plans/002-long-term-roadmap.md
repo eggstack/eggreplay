@@ -121,6 +121,32 @@ closed; M014 remains closed. Stage 11 is not yet defined as an implementation
 program; research may proceed in parallel but no Stage 11 scope is pre-selected
 here.
 
+## Stage 11 — Bidirectional HTTP/2 and transport baseline (M015)
+
+Status: ready; M015A is the first executable handoff.
+
+Stage 11 refreshes EggReplay onto the current published Eggstack transport
+line and extends M014B's outbound-only HTTP/2 experiment into a coherent,
+opt-in bidirectional H2 path without changing the supported H1 default.
+
+Execution is decomposed:
+
+- M015A — published dependency refresh + optional EggServe-Core H2 boundary;
+- M015B — inbound H2 recording gateway + offline replay;
+- M015C — end-to-end H2 semantic/regression/routing qualification;
+- M015D — real gRPC-over-H2 integration qualification using M014D views;
+- M015E — hardening, hosted qualification, support-matrix reconciliation,
+  and Stage 11 closure.
+
+The expected successful tier is experimental bidirectional H2 because
+EggServe 0.4 still classifies H2 as opt-in/experimental. H1 remains the
+supported default. H2 MITM, H3/QUIC, WSS, and WebSocket extended CONNECT are
+outside M015.
+
+M015 deliberately keeps H3 for a later stage: EggFetch and EggServe now have
+experimental H3 endpoints/adapters, but Eggress 1.0.11 still does not expose a
+generic caller-owned QUIC connection seam analogous to its TCP connector.
+
 ## Roadmap rule
 
 Later stages may not inflate earlier dependency closure. Every support claim

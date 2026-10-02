@@ -1,7 +1,7 @@
 # 004 — Research and Compatibility Baseline
 
 Status: canonical research baseline
-Date: 2026-09-22
+Date: 2026-10-02
 
 ## mitmproxy concepts
 
@@ -43,6 +43,33 @@ References:
 - https://github.com/eggstack/eggfetch
 - https://github.com/eggstack/eggress
 - https://github.com/eggstack/eggserve
+
+## Stage 11 transport research refresh — 2026-10-02
+
+The published sibling baseline has advanced since M014:
+
+- EggFetch 0.2.2 is published. In addition to the existing H1/H2 and
+  experimental H3 transport surfaces, it adds the Rust-core-only
+  `TransportFailureKind` classifier used to distinguish evidence-backed
+  connect/TLS/protocol/cancelled failures without Display parsing.
+- EggServe's 0.4.0 release line publishes `eggserve-primitives 0.2.2`,
+  `eggserve-server 0.4.0`, `eggserve-core 0.4.0`, and
+  `eggserve-h3 0.4.0`. H1 remains the supported transport; H2/H3 are
+  opt-in/experimental. The direct server crate remains H1-only by design;
+  H2 ownership lives in the compatibility/multiprotocol core layer.
+- Eggress 1.0.11 is published. `eggress-outbound` has optional UDP and
+  QUIC/H3 protocol/transport features, but its generic caller-facing
+  `OutboundConnector` connection seam remains TCP; UDP association is a
+  separate bounded API. There is no generic `connect_quic`-style seam that
+  can be substituted for EggFetch's QUIC endpoint ownership.
+
+These changes make bidirectional H2 feasible without an upstream prerequisite
+if EggServe Core is kept behind an explicit optional feature so the ordinary
+H1/default graph remains lean. They also improve the H3 position: direct H3
+record plus H3 replay may now be technically coherent, but routed H3 still
+lacks the required Eggress caller-owned QUIC boundary. Stage 11 therefore
+selects H2 promotion and dependency adoption (M015) while leaving H3 for a
+later, separately researched stage.
 
 ## Python baseline — 2026-09-23
 

@@ -54,11 +54,13 @@ commit `88daa3ed` green on `36894700433`); see
 `closure/m014c2-websocket-finalization-qualification-and-closure-reconciliation.md`.
 M014, M014-R1, M014A–M014D, M014-C1, and M014-C2 are closed. M014-R2
 post-C2 documentation reconciliation is closed; see
-`closure/m014r2-post-c2-documentation-reconciliation.md`. No implementation
-plan is currently open. Stage 11 remains undefined as an implementation
-program until separate research is converted into reviewed plans; research may
-proceed in parallel, but no Stage 11 implementation plan may be marked ready
-on research alone.
+`closure/m014r2-post-c2-documentation-reconciliation.md`.
+
+Stage 11 is registered as M015 — bidirectional HTTP/2 and transport baseline.
+M015A (published dependency refresh + H2 serving-boundary preflight) is the
+sole executable child handoff. M015B–M015E are blocked by their declared
+dependency chain. The M015 umbrella is ready as the program authority, not as
+a separate parallel implementation task.
 
 See `registry.md` for the exact handoff state.
 
