@@ -32,19 +32,23 @@ faults) are closed; the M014 compatibility program is closed (see
 M014-C1 post-M014 WebSocket finalization repair and M014-C2 qualification/
 closure reconciliation are closed on `cbc9257` (hosted CI run `36891564494`
 plus wheel run `36891564581`). M014-R2 documentation reconciliation is also
-closed. Stage 11 is now planned as M015 (bidirectional HTTP/2 and transport
-baseline); M015A is the first executable child. Current product support claims
-remain unchanged until M015 qualification closes.
+closed. Stage 11 executed as M015 (bidirectional HTTP/2 and transport baseline):
+M015A (published dependency set and the inbound-H2 boundary), M015B (inbound
+HTTP/2 gateway and offline replay), M015C (end-to-end H2 semantic and
+regression qualification), and M015D (gRPC over HTTP/2) are closed, and M015E
+closes the stage with hardening and hosted qualification.
 
 The support baseline includes direct HTTP/1.1 acquisition and EggServe inbound
 HTTP/1.1 replay with optional listener-free Eggress routing. WebSocket support
 covers cleartext RFC 6455 over HTTP/1.1 Upgrade (`ws://`) with bounded semantic
 text, binary, ping, pong, and close messages (the qualified M011 baseline).
 WSS interception remains unsupported. Outbound HTTP/2 record/regression is an
-experimental opt-in tier under M014B; inbound H2 serving, H2 MITM, and `h2c`
-are unsupported/not qualified. H3 remains unsupported/deferred per ADR 0009.
-Negotiated WebSocket extensions and wire-frame fidelity remain outside the
-claim. See the HTTP/2 / HTTP/3 matrix below.
+experimental opt-in tier under M014B. Inbound HTTP/2 serving and `h2c` are
+qualified experimental opt-in tiers under M015B, reached only through the
+`h2-inbound`/`h2-inbound-tls` features; H2 MITM remains unsupported. H3
+remains unsupported/deferred per ADR 0009. Negotiated WebSocket extensions and
+wire-frame fidelity remain outside the claim. See the HTTP/2 / HTTP/3 matrix
+below.
 
 ## Interception support matrix (M013)
 
@@ -69,24 +73,83 @@ corresponding tests.
 | certificate-pinned clients | expected to fail unless configured passthrough |
 | transparent/TUN interception | unsupported |
 
-## HTTP/2 / HTTP/3 support matrix (M014B / M014C)
+## HTTP/2 / HTTP/3 support matrix (M014B / M014C / M015)
 
-HTTP/2 record and regression-candidate execution against EggFetch ALPN `h2`
-over local TLS (and routed through an Eggress TCP path) is a qualified,
-**experimental** opt-in tier under the `eggreplay-http/h2` cargo feature with
-an explicit `HttpVersionPolicy`. H1 remains the default policy everywhere.
-The following are not qualified and remain outside the support claim:
+| Capability | Tier | Opt-in feature |
+|---|---|---|
+| Outbound H2 record / regression | experimental | `eggreplay-http/h2` |
+| Inbound H2 recording gateway (cleartext h2c) | experimental | `h2-inbound` |
+| Inbound H2 recording gateway (ALPN TLS) | experimental | `h2-inbound-tls` |
+| Inbound H2 offline replay | experimental | `h2-inbound`, `h2-inbound-tls` |
+| H2 over an Eggress TCP route | experimental | `eggress` |
+| gRPC over H2 (unary, server/client streaming, terminated bidi) | experimental | `grpc` |
+| H1 direct / inbound replay | **default** | — |
+| H2 interception (MITM) | unsupported | — |
+| WSS, extended-CONNECT WebSockets | unsupported | — |
+| HTTP/3 / QUIC | deferred (ADR 0009) | — |
 
-- HTTP/2 inbound serving (EggServe replay/gateway) — no adopted seam on
-  `eggserve-server 0.3.0`;
-- HTTP/2 interception (MITM);
-- cleartext prior-knowledge (`h2c`);
+"Experimental" means qualified against independent peers on local loopback and
+opt-in behind a feature boundary — not "unverified". No HTTP/2 capability is a
+default in any profile.
+
+Outbound HTTP/2 record and regression-candidate execution uses EggFetch ALPN
+`h2` over local TLS (and routed through an Eggress TCP path), under the
+`eggreplay-http/h2` cargo feature with an explicit `HttpVersionPolicy`.
+
+Stage 11 (M015) qualifies **bidirectional** HTTP/2. Inbound HTTP/2 serving —
+the recording gateway and the offline replay server — is a qualified,
+**experimental**, opt-in tier on an HTTP/2 seam EggServe adopted. There is one
+service and two runtimes: the same matcher, store, redaction, scenarios, and
+renderer serve both protocols, so the protocol is a listener property rather
+than a second code path. H1 remains the default and the only
+multiprotocol-free profile.
+
+`serve` and `record` take an explicit `--inbound` policy. `h1` is the default;
+`h2c` is an explicit, supported, opt-in prior-knowledge policy — a client
+selects HTTP/2 by speaking the 24-byte preface, so it is never an accidental
+downgrade. `h2-tls` negotiates by ALPN and requires an operator identity. See
+`plans/adrs/0010-inbound-http2-serving-boundary.md`.
+
+The following remain outside the support claim:
+
+- HTTP/2 interception (MITM) — `eggreplay-intercept` never adopts the
+  multiprotocol serving layer;
 - HTTP/3 / QUIC (direct, routed, replay, and intercept) — deferred per
-  ADR 0009 with documented missing seams.
+  ADR 0009 with documented missing seams;
+- WSS and extended-CONNECT WebSockets;
+- a generic reverse proxy;
+- inbound HTTP/2 in any default, direct, H1, interception, or Python profile —
+  it is opt-in only.
 
-See `plans/closure/m014b-http2-qualification.md` for the experimental-tier
-evidence and `plans/closure/m014c-http3-feasibility-and-qualification.md`
-plus `plans/adrs/0009-http3-integration-boundary.md` for the H3 deferral.
+### gRPC over HTTP/2
+
+gRPC-over-HTTP/2 is a qualified, **experimental** tier: unary, server
+streaming, client streaming, and *terminated* bidirectional calls are recorded,
+replayed, and regressed as ordinary HTTP/2 traffic. There is no gRPC branch in
+the matcher, the store, or the renderer — a gRPC call is an HTTP/2 request with
+a `content-type` and a body. The gRPC view is a caller-side **derived
+projection** over the recorded raw body and trailers, which stay authoritative.
+
+Descriptor sets are **caller supplied**. Nothing in the product fetches or
+resolves one, and there is no reflection or network descriptor lookup. A
+supplied descriptor is bounded, and a malformed one fails as a derived-view
+error without touching the fixture.
+
+A **bidirectional call whose client half never closes** is deferred: the call
+never produces a terminal `grpc-status`, so the recording is valid but its
+*missing* status is the signal that the call did not complete. Replaying such a
+fixture would be misleading, so the shape is recorded and reported rather than
+silently served. A bidirectional call that *does* terminate is qualified
+normally.
+
+See `plans/closure/m015b-inbound-http2-gateway-and-replay.md` for the inbound
+seam, `plans/closure/m015c-http2-end-to-end-semantic-and-regression-qualification.md`
+for the end-to-end matrix and support tiers, and
+`plans/closure/m015d-grpc-over-http2-integration-qualification.md` for the
+gRPC qualification. The outbound experimental-tier evidence is
+`plans/closure/m014b-http2-qualification.md`; the H3 deferral is
+`plans/closure/m014c-http3-feasibility-and-qualification.md` plus
+`plans/adrs/0009-http3-integration-boundary.md`.
 
 ## Quickstart routes
 

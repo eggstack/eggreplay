@@ -262,6 +262,71 @@ jobs:
             exit 1
           fi
           echo "python wheel is multiprotocol-free"
+      - name: The gRPC oracle never enters a product graph
+        shell: bash
+        run: |
+          set -euo pipefail
+          # M015D qualifies gRPC over HTTP/2 against Tonic 0.14.6. Tonic is a
+          # dev-dependency of `eggreplay-http` only, and the plan's rule is that
+          # product runtime dependencies must not gain a gRPC stack. The
+          # `--edges normal` resolution is what the lanes above already rely
+          # on, and it excludes dev edges.
+          #
+          # `prost`/`prost-types` are *not* checked here: the `grpc` feature has
+          # carried `prost-reflect` since M014D, so their presence is by design.
+          # Tonic is the thing that must stay out.
+          check_no_tonic() {
+            label="$1"; shift
+            if cargo tree "$@" --edges normal --prefix none | grep -E '^(tonic|tonic-prost) '; then
+              echo "$label unexpectedly pulled Tonic into a product graph" >&2
+              exit 1
+            fi
+            echo "$label: no Tonic"
+          }
+          check_no_tonic "workspace default" --workspace
+          check_no_tonic "workspace all-features" --workspace --all-features
+          check_no_tonic "eggreplay-http grpc" -p eggreplay-http --all-features
+          check_no_tonic "eggreplay-http inbound H2 + TLS" \
+            -p eggreplay-http --no-default-features --features h2-inbound-tls
+          check_no_tonic "eggreplay-intercept" -p eggreplay-intercept --all-features
+          check_no_tonic "eggreplay-cli default" -p eggreplay-cli
+          check_no_tonic "eggreplay-cli inbound H2" \
+            -p eggreplay-cli --no-default-features --features h2-inbound-tls
+          check_no_tonic "eggreplay-python" -p eggreplay-python --all-features
+          # The oracle must be reachable for the tests that use it.
+          if ! cargo tree -p eggreplay-http --all-features --edges dev --prefix none \
+            | grep -qE '^tonic v'; then
+            echo "tonic must be present as a dev-dependency for M015D qualification" >&2
+            exit 1
+          fi
+          echo "tonic is present as a dev-dependency only"
+      - name: Every inbound-H2 listener and the gRPC view are behind one feature
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The inbound H2 entry points live in `inbound.rs` and are cfg-gated
+          # on the opt-in feature. If that gate were ever dropped, a default
+          # build would gain a second HTTP stack without any manifest change,
+          # which is exactly the failure the `protocol-boundary` lane exists to
+          # catch. Asserting it here as well as in the graph keeps the two
+          # checks from drifting apart.
+          if ! grep -q '#\[cfg(feature = "h2-inbound")\]' crates/eggreplay-http/src/inbound.rs; then
+            echo "inbound.rs must be gated on the h2-inbound feature" >&2
+            exit 1
+          fi
+          # The gRPC derived view is optional: M014D made it opt-in, and the
+          # default build must not pay for protobuf reflection.
+          if cargo tree -p eggreplay-http --no-default-features --edges normal --prefix none \
+            | grep -qE '^prost-reflect '; then
+            echo "prost-reflect must require the opt-in grpc feature" >&2
+            exit 1
+          fi
+          if ! cargo tree -p eggreplay-http --no-default-features --features grpc \
+            --edges normal --prefix none | grep -qE '^prost-reflect '; then
+            echo "the grpc feature must activate prost-reflect" >&2
+            exit 1
+          fi
+          echo "inbound H2 and the gRPC view are both opt-in"
 
   interception:
     # M013F qualification lane: deterministic local CA/CONNECT/MITM coverage

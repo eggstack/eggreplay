@@ -66,6 +66,18 @@ M013 terminates client TLS outside EggServe and passes the decrypted async
 stream plus truthful HTTPS/TLS `ConnectionContext` into that driver. Do not
 import `eggserve-core` or create a private Hyper server merely for interception.
 
+M015 (ADR 0010) extends this boundary deliberately and for one reason:
+inbound **HTTP/2** serving, which `eggserve-server` alone does not provide.
+`eggserve-core` is an optional, `default-features = false` workspace dependency
+reached only through the `h2-inbound` / `h2-inbound-tls` features, so the
+default, direct, H1, interception, and Python profiles stay free of the
+multiprotocol closure. Core's H1 and H2 both project onto the same
+`eggserve_primitives::Request` and the same `eggserve_server::service::Service`,
+so there is one service and two runtimes: the protocol is a listener property,
+not a second matcher, store, redaction, scenario, or renderer. Do not import
+`eggserve-core` for any other purpose, and do not create a private Hyper server
+in either direction.
+
 ## Eggress boundary
 
 Use `eggress-outbound::OutboundConnector` for optional listener-free routes.

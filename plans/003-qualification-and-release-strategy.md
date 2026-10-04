@@ -13,6 +13,24 @@ Status: canonical
 
 Every change: fmt, workspace check, clippy/all-targets/all-features, unit/integration tests, minimum-feature checks, schema/golden tests, and local-only network tests.
 
+## Stage 11 transport lanes
+
+Stage 11 added two CI jobs to the existing `verify`/`dependency-boundary` set
+rather than replacing it, because the Stage 11 claim is a *boundary* claim: a
+default profile must stay free of a feature the qualified tier depends on.
+
+- `dependency-boundary` — the M015A lane. Resolves `--edges normal --no-dev`
+  graphs and asserts that the default, direct, H1, interception, and Python
+  profiles do not admit the multiprotocol or gRPC-reflection closures.
+- `protocol-boundary` — the M015A/M015B/M015D/M015E lane. Nine steps that
+  assert the `h2-inbound` gate is explicit, that QUIC/H3 is absent from every
+  supported graph, that interception and the Python wheel never adopt
+  multiprotocol serving, that **Tonic is a dev-dependency only** and enters no
+  product graph, and that `inbound.rs` and the gRPC view are both feature-gated.
+
+Every `--locked` lane depends on the committed `Cargo.lock`, which M015D changed
+when it added the gRPC oracle as a test dependency.
+
 ## Release integration evidence
 
 - EggFetch local-origin recording and failure mapping.
