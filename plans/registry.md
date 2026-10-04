@@ -171,7 +171,7 @@ behind the `h2-inbound`/`h2-inbound-tls`/`grpc` features; H1 remains the
 default and the only multiprotocol-free profile. Workspace suite at M015E
 closure: 477 passed across 25 suites, with 2 pre-existing local
 `curl_interop` failures that all four hosted `verify` jobs prove
-machine-specific. Hosted run `37229585308` on `874d6de`. The M015 umbrella
+machine-specific. Hosted run `37230175365` on `9581748` (all 14 jobs green). The M015 umbrella
 authorized the program but was not a parallel implementation unit. See also
 `closure/m013b0-eggserve-0-3-adoption-and-absolute-form-qualification.md`.
 

@@ -1,6 +1,6 @@
 # M015 — Bidirectional HTTP/2 and Transport Baseline
 
-Status: ready (umbrella; M015A is the first executable handoff)
+Status: closed (umbrella; M015A–M015E all closed)
 Depends on: M014-R2 closure, M014B closure, M014D closure
 Roadmap stage: 11
 

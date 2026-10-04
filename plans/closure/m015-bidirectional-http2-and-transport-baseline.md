@@ -115,8 +115,12 @@ not HTTP/2.
 
 ## Hosted runs
 
-Run [`37229585308`](https://github.com/eggstack/eggreplay/actions/runs/37229585308)
-on the implementation SHA `874d6de`, branch `stage11-m015-bidirectional-h2`.
+**Qualifying run:** [`37230175365`](https://github.com/eggstack/eggreplay/actions/runs/37230175365)
+on SHA `9581748`, branch `stage11-m015-bidirectional-h2` — **all 14 jobs
+success**. The preceding run
+[`37229585308`](https://github.com/eggstack/eggreplay/actions/runs/37229585308)
+on `874d6de` is retained as evidence because it is what found the regression
+below.
 
 - `verify` — ubuntu-latest stable, ubuntu-latest **1.89.0 (MSRV)**, macos-latest,
   windows-latest: **all success**
@@ -124,9 +128,10 @@ on the implementation SHA `874d6de`, branch `stage11-m015-bidirectional-h2`.
 - `python-bindings` — ubuntu 3.11 and 3.14, ubuntu 3.11 at MSRV, macOS 3.11,
   Windows 3.11: **all success**
 - `python-abi3-cross-version`: **success**
-- `protocol-boundary` (9 steps): **success** — including the two new M015D/M015E
+- `protocol-boundary` (10 steps): **success** — including the three new M015D/M015E
   steps for the gRPC oracle and the feature gates
-- `dependency-boundary`: **one failure**, `cargo check -p eggreplay-http
+- `dependency-boundary`: **success on the qualifying run**. On run
+  `37229585308` it had **one failure**, `cargo check -p eggreplay-http
   --no-default-features --features direct`
 
 That failure is the most important result in the stage. The branch's first CI

@@ -1,6 +1,6 @@
 # M015E — H2 Hardening, Hosted Qualification, and Closure
 
-Status: closed (local gate green; hosted evidence recorded below)
+Status: closed (qualifying hosted run 37230175365 on 9581748, all 14 jobs green)
 
 ## Qualifying revision and scope
 
@@ -199,9 +199,9 @@ closure: `curl_plain_http_proxies_and_records` and
 
 ## Hosted evidence
 
-Run [`37229585308`](https://github.com/eggstack/eggreplay/actions/runs/37229585308)
-on the implementation SHA `874d6de` (branch
-`stage11-m015-bidirectional-h2`).
+**Qualifying run:** [`37230175365`](https://github.com/eggstack/eggreplay/actions/runs/37230175365)
+on SHA `9581748` (branch `stage11-m015-bidirectional-h2`) — **all 14 jobs
+success**.
 
 | Job | Result |
 |---|---|
@@ -209,28 +209,25 @@ on the implementation SHA `874d6de` (branch
 | `verify (ubuntu-latest, 1.89.0)` — MSRV | success |
 | `verify (macos-latest, stable)` | success |
 | `verify (windows-latest, stable)` | success |
-| `dependency-boundary` | **failure** — the `direct` regression described above |
-| `protocol-boundary` (9 steps) | success |
-| `interception (ubuntu/macos/windows)` | success ×3 |
-| `python-bindings (ubuntu 3.11/3.14, macOS 3.11, Windows 3.11)` | success ×5 |
+| `dependency-boundary` | success |
+| `protocol-boundary` (10 steps) | success |
+| `interception (ubuntu / macos / windows)` | success ×3 |
+| `python-bindings` (ubuntu 3.11, ubuntu 3.14, ubuntu 3.11@MSRV, macOS 3.11, Windows 3.11) | success ×5 |
 | `python-abi3-cross-version` | success |
 
-The one failure is the M015B `direct`-profile regression, fixed in the commit
-that follows this record and covered by the new all-profiles step.
+The preceding run, [`37229585308`](https://github.com/eggstack/egreplay/actions/runs/37229585308)
+on `874d6de`, failed exactly one step — `dependency-boundary`'s
+`cargo check -p eggreplay-http --no-default-features --features direct` — and
+is retained here because it is the evidence for the regression described
+above. Every other job was already green on that run, which is how the two
+local `curl_interop` failures came to be confirmed machine-specific: all three
+of that run's `verify` jobs execute
+`cargo test --workspace --all-features --locked --no-fail-fast`, and all three
+passed.
 
-**The hosted `verify` jobs are the authority on the two local `curl_interop`
-failures.** All three `verify` jobs run
-`cargo test --workspace --all-features --locked --no-fail-fast` and all three
-pass, on Linux stable, Linux MSRV 1.89, macOS, and Windows. The two local
-failures are therefore confirmed to be specific to this machine's curl and CA
-trust, exactly as the M015A–M015D closures recorded. They are not a Stage 11
-regression and are not waived as flakiness — they simply do not reproduce
-where CI runs.
-
-Wheel qualification was not re-run as a separate lane because nothing affecting
-the wheel changed: M015D added dev-dependencies to `eggreplay-http` only, the
-Python crate's features and dependencies are untouched, and
-`python-bindings` plus `python-abi3-cross-version` both pass.
+Wheel qualification needed no separate lane: M015D added dev-dependencies to
+`eggreplay-http` only, the Python crate's features and dependencies are
+untouched, and `python-bindings` plus `python-abi3-cross-version` are green.
 
 ## Documentation and support reconciliation
 
@@ -266,12 +263,12 @@ gRPC streaming class.
 | Python wheel behavior unchanged | met | `python-bindings` ×5 and `python-abi3-cross-version` green |
 | hardening matrix | met | 15 tests, all plan items covered |
 | no deterministic failure waived as flakiness | met | suite is deterministic by construction; the one flake is recorded and attributed to a pre-existing WebSocket test |
-| hosted evidence on Linux/MSRV/macOS/Windows | met | `verify` ×4 green |
-| dependency-boundary/topology lane | **fixed and re-run** | the M015B regression; see the re-run below |
+| hosted evidence on Linux/MSRV/macOS/Windows | met | `verify` ×4 green on `37230175365` |
+| dependency-boundary/topology lane | met | green on `37230175365` after the M015B regression fix |
 | interception lane | met | green on all three runners |
 | Python lanes | met | green |
 | wheel qualification if metadata changed | n/a | nothing affecting the wheel changed |
-| exact SHA and workflow IDs pinned | met | run `37229585308` on `874d6de` |
+| exact SHA and workflow IDs pinned | met | run `37230175365` on `9581748`; failing run `37229585308` on `874d6de` retained as evidence |
 | documentation reconciliation | met | 10 files, all claims verified |
 | unsupported/deferred labels retained | met | see the reconciliation table |
 | no new canonical semantics smuggled in | met | product changes are three cfg gates and one CI job; no store, matcher, or schema change |
