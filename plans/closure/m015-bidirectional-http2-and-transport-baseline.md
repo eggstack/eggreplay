@@ -113,6 +113,14 @@ one run in six under load and passes 8/8 in isolation. It reproduces at the
 M015C commit with all Stage 11 changes stashed, so it predates the stage and is
 not HTTP/2.
 
+> **Root-caused and fixed by M016.** It was never a flaky test: the test called
+> `server.shutdown()` immediately after a clean Close handshake, but
+> `eggserve-server`'s tunnel aborts the handler task on shutdown. Under load the
+> abort beat the relay's final append, and the store correctly failed closed.
+> The product behaviour is unchanged and is now pinned by a dedicated test
+> (`shutdown_during_a_live_websocket_fails_closed`); the 101 test now waits for
+> the conversation to be staged before shutting down.
+
 ## Hosted runs
 
 **Qualifying run:** [`37230175365`](https://github.com/eggstack/eggreplay/actions/runs/37230175365)

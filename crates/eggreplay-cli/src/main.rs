@@ -162,6 +162,8 @@ struct RecordArgs {
     inbound: InboundServingArgs,
     #[command(flatten)]
     outbound_version: OutboundVersionArgs,
+    #[command(flatten)]
+    timeout: TimeoutArgs,
     #[arg(long)]
     listen: std::net::SocketAddr,
     #[arg(long)]
@@ -208,6 +210,8 @@ struct ServeArgs {
     inbound: InboundServingArgs,
     #[command(flatten)]
     outbound_version: OutboundVersionArgs,
+    #[command(flatten)]
+    timeout: TimeoutArgs,
     #[arg(long)]
     fixture: PathBuf,
     #[arg(long, default_value = "127.0.0.1:0")]
@@ -406,8 +410,57 @@ impl OutboundVersionArgs {
     fn client(
         &self,
         route: &str,
+        timeout: Option<eggfetch_core::Timeout>,
     ) -> Result<(eggfetch_core::Client, PhysicalRoute), (String, String)> {
-        build_client_with_version(route, self.outbound_version)
+        build_client_with_version(route, self.outbound_version, timeout)
+    }
+}
+
+/// A wall-clock ceiling for one outbound request.
+///
+/// Deliberately unset by default. Introducing a default deadline would change
+/// the behaviour of every existing invocation, which is the same rule
+/// `--outbound-version auto` follows: a new flag must not silently alter what
+/// an operator who never asked for it gets.
+///
+/// When set, every phase is bounded **and** `total` is populated. `total` is
+/// the part that matters most and the easiest to forget: the per-phase `read`
+/// budget is "time between response body chunks", so it only starts once the
+/// response has begun. An origin that accepts a connection and then says
+/// nothing is bounded only by `total`.
+#[derive(Debug, Clone, Default, Args)]
+struct TimeoutArgs {
+    /// Wall-clock ceiling, in seconds, for one outbound request. Unset leaves
+    /// requests unbounded, which is the historical behaviour.
+    #[arg(long, value_name = "SECONDS", value_parser = clap::value_parser!(u64).range(1..))]
+    timeout_secs: Option<u64>,
+}
+
+impl TimeoutArgs {
+    /// Resolve the operator's flag into a complete timeout policy.
+    ///
+    /// Infallible by construction: clap's `range(1..)` has already rejected a
+    /// zero or negative budget at the parse boundary, so there is no error
+    /// case left here to model.
+    fn resolve(&self) -> Option<eggfetch_core::Timeout> {
+        self.timeout_secs.map(|seconds| {
+            let budget = std::time::Duration::from_secs(seconds);
+            eggfetch_core::Timeout {
+                pool: Some(budget),
+                connect: Some(budget),
+                write: Some(budget),
+                read: Some(budget),
+                total: Some(budget),
+            }
+        })
+    }
+
+    /// A secret-free description for status output. Carries no endpoint.
+    fn describe(&self) -> serde_json::Value {
+        match self.timeout_secs {
+            Some(seconds) => json!({"total_secs": seconds, "bounded": true}),
+            None => json!({"total_secs": null, "bounded": false}),
+        }
     }
 }
 
@@ -431,6 +484,8 @@ struct ReplayArgs {
     route: String,
     #[command(flatten)]
     outbound_version: OutboundVersionArgs,
+    #[command(flatten)]
+    timeout: TimeoutArgs,
     /// Candidate request scheduler; timeline requires stream event metadata.
     #[arg(long, value_enum, default_value_t = SchedulerChoice::Sequential)]
     scheduler: SchedulerChoice,
@@ -453,6 +508,8 @@ struct TestArgs {
     route: String,
     #[command(flatten)]
     outbound_version: OutboundVersionArgs,
+    #[command(flatten)]
+    timeout: TimeoutArgs,
     /// Candidate request scheduler; timeline requires stream event metadata.
     #[arg(long, value_enum, default_value_t = SchedulerChoice::Sequential)]
     scheduler: SchedulerChoice,
@@ -634,6 +691,7 @@ async fn run(cli: Cli) -> Result<(), (String, String)> {
                 args.target,
                 args.route,
                 args.outbound_version.outbound_version,
+                &args.timeout,
                 "replay",
                 args.output,
                 false,
@@ -652,6 +710,7 @@ async fn run(cli: Cli) -> Result<(), (String, String)> {
                 args.target,
                 args.route,
                 args.outbound_version.outbound_version,
+                &args.timeout,
                 "test",
                 args.output,
                 true,
@@ -684,14 +743,18 @@ async fn run(cli: Cli) -> Result<(), (String, String)> {
 fn build_client_with_version(
     route: &str,
     version: OutboundVersionChoice,
+    timeout: Option<eggfetch_core::Timeout>,
 ) -> Result<(eggfetch_core::Client, PhysicalRoute), (String, String)> {
     let policy = version.policy()?;
     match eggreplay_http::parse_route(route) {
         Ok(None) => {
-            let client = eggfetch_core::Client::builder()
+            let mut builder = eggfetch_core::Client::builder()
                 .retry_canceled_requests(false)
-                .http_version_policy(policy)
-                .build();
+                .http_version_policy(policy);
+            if let Some(timeout) = timeout {
+                builder = builder.timeout(timeout);
+            }
+            let client = builder.build();
             Ok((
                 client,
                 PhysicalRoute {
@@ -706,11 +769,14 @@ fn build_client_with_version(
                 description: Some(eggreplay_http::redact_route_credentials(route)),
             };
             let dialer = EggressDialer::new(connector);
-            let client = eggfetch_core::Client::builder()
+            let mut builder = eggfetch_core::Client::builder()
                 .retry_canceled_requests(false)
                 .http_version_policy(policy)
-                .dialer(dialer)
-                .build();
+                .dialer(dialer);
+            if let Some(timeout) = timeout {
+                builder = builder.timeout(timeout);
+            }
+            let client = builder.build();
             Ok((client, physical))
         }
         Err(message) => Err(("configuration".into(), message)),
@@ -724,6 +790,7 @@ async fn record(args: RecordArgs) -> Result<(), (String, String)> {
         .inbound
         .resolve()
         .map_err(|error| ("configuration".into(), error))?;
+    let timeout = args.timeout.resolve();
     if args.fixture.exists() && !args.overwrite {
         let message = "fixture exists; pass --overwrite to replace it".to_string();
         emit(
@@ -740,7 +807,7 @@ async fn record(args: RecordArgs) -> Result<(), (String, String)> {
             .map_err(|error| ("runtime".into(), error.to_string()))?;
     }
     let (redaction, profile_id) = effective_redaction_policy(&args);
-    let (client, physical_route) = args.outbound_version.client(&args.route)?;
+    let (client, physical_route) = args.outbound_version.client(&args.route, timeout)?;
     let session = RecordingSession::create(
         &args.fixture,
         SessionMetadata {
@@ -805,7 +872,7 @@ async fn record(args: RecordArgs) -> Result<(), (String, String)> {
         args.output.output,
         true,
         None,
-        json!({"fixture": args.fixture, "status": "finalized", "serving": serving, "websocket_acquisition_enabled": args.websockets, "websocket_conversations": websocket_count}),
+        json!({"fixture": args.fixture, "status": "finalized", "serving": serving, "websocket_acquisition_enabled": args.websockets, "websocket_conversations": websocket_count, "outbound_timeout": args.timeout.describe()}),
     );
     Ok(())
 }
@@ -931,13 +998,9 @@ async fn serve_sealed(
 }
 
 async fn record_once_from_serve(args: ServeArgs) -> Result<(), (String, String)> {
-    let upstream = args
-        .upstream
-        .as_deref()
-        .ok_or_else(|| ("configuration".into(), "--upstream is required".into()))?
-        .parse()
-        .map_err(|error: http::uri::InvalidUri| ("configuration".into(), error.to_string()))?;
-    let (client, physical_route) = args.outbound_version.client(&args.route)?;
+    let timeout = args.timeout.resolve();
+    let upstream = required_upstream(&args)?;
+    let (client, physical_route) = args.outbound_version.client(&args.route, timeout)?;
     let (redaction, profile_id) = effective_serve_redaction_policy(&args);
     let session = RecordingSession::create(
         &args.fixture,
@@ -1002,15 +1065,25 @@ async fn record_once_from_serve(args: ServeArgs) -> Result<(), (String, String)>
         args.output.output,
         true,
         None,
-        json!({"fixture": args.fixture, "record_mode": "once", "upstream_enabled": true, "serving": serving, "websocket_acquisition_enabled": args.websockets, "websocket_conversations": websocket_count, "matcher_profile": args.matcher_profile.as_str(), "redaction_profile": args.redaction_profile, "status": "finalized"}),
+        json!({"fixture": args.fixture, "record_mode": "once", "upstream_enabled": true, "serving": serving, "websocket_acquisition_enabled": args.websockets, "websocket_conversations": websocket_count, "matcher_profile": args.matcher_profile.as_str(), "redaction_profile": args.redaction_profile, "outbound_timeout": args.timeout.describe(), "status": "finalized"}),
     );
     Ok(())
 }
 
+/// Parse the `--upstream` argument every recording path requires.
+fn required_upstream(args: &ServeArgs) -> Result<http::Uri, (String, String)> {
+    args.upstream
+        .as_deref()
+        .ok_or_else(|| ("configuration".into(), "--upstream is required".into()))?
+        .parse()
+        .map_err(|error: http::uri::InvalidUri| ("configuration".into(), error.to_string()))
+}
+
 async fn serve_append_new(args: ServeArgs) -> Result<(), (String, String)> {
+    let timeout = args.timeout.resolve();
     let source = Session::open(&args.fixture, StoreLimits::default())
         .map_err(|error| ("fixture".into(), error.to_string()))?;
-    let (client, physical_route) = args.outbound_version.client(&args.route)?;
+    let (client, physical_route) = args.outbound_version.client(&args.route, timeout)?;
     let (redaction, profile_id) = effective_serve_redaction_policy(&args);
     if profile_id != source.manifest().metadata.redaction_profile {
         return Err((
@@ -1018,12 +1091,7 @@ async fn serve_append_new(args: ServeArgs) -> Result<(), (String, String)> {
             "append-new redaction profile must match the source fixture; select its --redaction-profile explicitly".into(),
         ));
     }
-    let upstream = args
-        .upstream
-        .as_deref()
-        .ok_or_else(|| ("configuration".into(), "--upstream is required".into()))?
-        .parse()
-        .map_err(|error: http::uri::InvalidUri| ("configuration".into(), error.to_string()))?;
+    let upstream = required_upstream(&args)?;
     let temporary = sibling_transaction_path(&args.fixture, "misses");
     let combined = sibling_transaction_path(&args.fixture, "combined");
     let recording = RecordingSession::create(
@@ -1112,19 +1180,15 @@ async fn serve_append_new(args: ServeArgs) -> Result<(), (String, String)> {
 }
 
 async fn serve_re_record(args: ServeArgs) -> Result<(), (String, String)> {
+    let timeout = args.timeout.resolve();
     if args.scenario.is_some() {
         return Err((
             "configuration".into(),
             "re-record cannot select an authored offline scenario".into(),
         ));
     }
-    let upstream = args
-        .upstream
-        .as_deref()
-        .ok_or_else(|| ("configuration".into(), "--upstream is required".into()))?
-        .parse()
-        .map_err(|error: http::uri::InvalidUri| ("configuration".into(), error.to_string()))?;
-    let (client, physical_route) = args.outbound_version.client(&args.route)?;
+    let upstream = required_upstream(&args)?;
+    let (client, physical_route) = args.outbound_version.client(&args.route, timeout)?;
     let (redaction, profile_id) = effective_serve_redaction_policy(&args);
     let temporary = sibling_transaction_path(&args.fixture, "rerecord");
     let session = RecordingSession::create(
@@ -1192,7 +1256,7 @@ async fn serve_re_record(args: ServeArgs) -> Result<(), (String, String)> {
         args.output.output,
         true,
         None,
-        json!({"fixture": args.fixture, "record_mode": "re-record", "upstream_enabled": true, "serving": serving, "websocket_acquisition_enabled": args.websockets, "websocket_conversations": websocket_count, "matcher_profile": args.matcher_profile.as_str(), "redaction_profile": args.redaction_profile, "new_flows": recorded_flows, "status": "finalized"}),
+        json!({"fixture": args.fixture, "record_mode": "re-record", "upstream_enabled": true, "serving": serving, "websocket_acquisition_enabled": args.websockets, "websocket_conversations": websocket_count, "matcher_profile": args.matcher_profile.as_str(), "redaction_profile": args.redaction_profile, "new_flows": recorded_flows, "outbound_timeout": args.timeout.describe(), "status": "finalized"}),
     );
     Ok(())
 }
@@ -1271,12 +1335,18 @@ async fn regression(
     target: String,
     route: String,
     outbound_version: OutboundVersionChoice,
+    timeout_args: &TimeoutArgs,
     command: &str,
     output: OutputArgs,
     enforce: bool,
     scheduler: SchedulerOptions,
     policy: ComparisonPolicy,
 ) -> Result<(), (String, String)> {
+    let timeout = timeout_args.resolve();
+    // Resolved once, reported verbatim: the operator's status output says
+    // whether the run was bounded, not what the resolver happened to default
+    // to.
+    let outbound_timeout = timeout_args.describe();
     let session = Session::open(&fixture, StoreLimits::default()).map_err(|error| {
         emit_reports(
             command,
@@ -1287,6 +1357,7 @@ async fn regression(
             &[],
             &[],
             0,
+            &outbound_timeout,
         );
         ("fixture".into(), error.to_string())
     })?;
@@ -1300,11 +1371,12 @@ async fn regression(
             &[],
             &[],
             0,
+            &outbound_timeout,
         );
         ("configuration".into(), error.to_string())
     })?;
-    let (client, physical_route) =
-        build_client_with_version(&route, outbound_version).map_err(|(class, message)| {
+    let (client, physical_route) = build_client_with_version(&route, outbound_version, timeout)
+        .map_err(|(class, message)| {
             emit_reports(
                 command,
                 output.output,
@@ -1314,6 +1386,7 @@ async fn regression(
                 &[],
                 &[],
                 0,
+                &outbound_timeout,
             );
             (class, message)
         })?;
@@ -1487,6 +1560,7 @@ async fn regression(
             &flow_ids,
             &reports,
             findings.len(),
+            &outbound_timeout,
         );
         if !success {
             return Err((
@@ -1505,6 +1579,7 @@ async fn regression(
             &flow_ids,
             &reports,
             findings.len(),
+            &outbound_timeout,
         );
         Ok(())
     }
@@ -1823,6 +1898,10 @@ fn diff(args: &DiffArgs) -> Result<(), (String, String)> {
         &flow_ids,
         &reports,
         reports.iter().map(|report| report.findings.len()).sum(),
+        // `diff` compares two fixtures and never opens a socket, so no
+        // outbound timeout applies at all. That is a different fact from
+        // "unbounded", and the two are kept distinguishable.
+        &serde_json::Value::Null,
     );
     if !success {
         return Err(("diff".into(), "fixtures differ".into()));
@@ -2652,6 +2731,7 @@ fn emit_reports(
     flow_ids: &[String],
     reports: &[eggreplay_core::RegressionReport],
     finding_count: usize,
+    outbound_timeout: &serde_json::Value,
 ) {
     match output {
         OutputChoice::Json => {
@@ -2661,7 +2741,7 @@ fn emit_reports(
                 success,
                 failure_class: failure.map(str::to_owned),
                 warnings: Vec::new(),
-                payload: json!({"target": if target.is_empty() { serde_json::Value::Null } else { json!(redact_url(target)) }, "reports": reports, "finding_count": finding_count}),
+                payload: json!({"target": if target.is_empty() { serde_json::Value::Null } else { json!(redact_url(target)) }, "reports": reports, "finding_count": finding_count, "outbound_timeout": outbound_timeout}),
             };
             println!(
                 "{}",

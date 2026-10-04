@@ -3,6 +3,7 @@
 #[cfg(all(feature = "eggserve", feature = "websocket"))]
 use base64::Engine;
 use bytes::Bytes;
+use eggfetch_core::transport::dialer::{DialError, DialErrorKind};
 use eggfetch_core::{Client, Error as FetchError};
 use eggreplay_core::{
     BodyRef, ErrorCategory, ErrorPhase, Flow, FlowError, FlowOutcome, HeaderEntry, HttpRequest,
@@ -940,6 +941,31 @@ pub async fn drain_active_blobs(session: &RecordingSession) {
         }
         tokio::task::yield_now().await;
     }
+}
+
+/// Wait until the relay has appended `expected` WebSocket conversations.
+///
+/// `ServerHandle::shutdown` is a *hard* stop for tracked tunnel tasks: it
+/// aborts them rather than letting them run to their own terminal state. That
+/// is correct production behaviour — a shutdown must not hang on a
+/// half-dead peer — but it means a caller that shuts down immediately after a
+/// clean Close handshake can win the race against the relay's final append. If
+/// the abort lands first, the conversation finalizer signals without a
+/// transcript and `RecordingSession::finish` correctly refuses to publish a
+/// fixture, failing with "missing required conversation metadata".
+///
+/// So shutdown order is the caller's contract, not something the server can
+/// infer. Wait for the append to land, *then* shut down. The wait is bounded
+/// so a genuinely stuck relay surfaces as an assertion failure rather than a
+/// hung test.
+pub async fn await_websocket_conversations(session: &RecordingSession, expected: usize) -> bool {
+    for _ in 0..10_000 {
+        if session.websocket_conversation_count().unwrap_or(0) >= expected {
+            return true;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+    }
+    false
 }
 
 #[cfg(feature = "eggserve")]
@@ -2328,6 +2354,24 @@ fn map_fetch_error(error: &FetchError) -> FlowError {
         FetchError::Connect(_) | FetchError::Io(_) | FetchError::Pool(_) => {
             (ErrorCategory::Unreachable, ErrorPhase::Connect)
         }
+        // A caller-supplied transport is how every Eggress route reports a
+        // failure. Without this arm a dead route, a route timeout, and a
+        // policy-rejected route all recorded as `Other`, and
+        // `ErrorCategory::ConnectionRefused` was unreachable anywhere in the
+        // product.
+        //
+        // `Unreachable` rather than `ConnectionRefused`: EggFetch's typed
+        // evidence collapses every connection-establishment failure to one
+        // kind, so inferring "refused" from it would be a guess. An honest
+        // general category beats a specific wrong one.
+        FetchError::CustomTransport(_) => match error.custom_transport_error().map(DialError::kind)
+        {
+            Some(DialErrorKind::Connection) => (ErrorCategory::Unreachable, ErrorPhase::Connect),
+            Some(DialErrorKind::Timeout) => (ErrorCategory::Timeout, ErrorPhase::Timeout),
+            Some(DialErrorKind::Authentication) => (ErrorCategory::Policy, ErrorPhase::Connect),
+            Some(DialErrorKind::Rejected) => (ErrorCategory::Policy, ErrorPhase::Policy),
+            Some(DialErrorKind::Other) | None => (ErrorCategory::Other, ErrorPhase::Other),
+        },
         _ => (ErrorCategory::Other, ErrorPhase::Other),
     };
     FlowError::new(category, phase, error.to_string())
@@ -2799,6 +2843,14 @@ mod tests {
         ));
         socket.flush().await.unwrap();
         upstream_task.await.unwrap();
+        // The relay appends the transcript after the Close handshake resolves.
+        // `shutdown` aborts tracked tunnel tasks, so it must not race that
+        // append: wait for the conversation to be staged, then shut down. See
+        // `await_websocket_conversations`.
+        assert!(
+            await_websocket_conversations(&session, 1).await,
+            "clean close must stage exactly one conversation before shutdown"
+        );
         // CLI shutdown -> wait -> finalization ordering (M014-C2): EggServe
         // drains tracked tunnel tasks before the session finalizes on the
         // blocking pool.
@@ -2826,6 +2878,177 @@ mod tests {
         );
         drop(fixture);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A shutdown that interrupts a live WebSocket must fail closed.
+    ///
+    /// This is the deliberate counterpart to
+    /// `recording_gateway_captures_upgrade_and_leading_post_101_messages`, and
+    /// it pins the product contract that the other test used to race against.
+    /// `shutdown` aborts the tracked tunnel task, so a conversation that has
+    /// not yet been appended is lost; the finalizer then signals with no
+    /// transcript. The store must refuse to publish that fixture rather than
+    /// emit a `websocket-messages` extension that disagrees with the recorded
+    /// 101 flow — a fixture that replays as a clean close it never observed is
+    /// worse than no fixture at all.
+    #[cfg(all(feature = "eggserve", feature = "websocket"))]
+    #[tokio::test]
+    async fn shutdown_during_a_live_websocket_fails_closed() {
+        use futures_util::SinkExt;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio_tungstenite::tungstenite::Message;
+
+        // This peer never closes and never sends a terminal frame, so the
+        // conversation is guaranteed to still be live when shutdown lands.
+        let upstream = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let upstream_addr = upstream.local_addr().unwrap();
+        let upstream_task = tokio::spawn(async move {
+            let (mut io, _) = upstream.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut chunk = [0u8; 512];
+            loop {
+                let count = io.read(&mut chunk).await.unwrap();
+                request.extend_from_slice(&chunk[..count]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let request = String::from_utf8_lossy(&request);
+            let key = request
+                .lines()
+                .find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.eq_ignore_ascii_case("sec-websocket-key")
+                        .then_some(value.trim())
+                })
+                .unwrap();
+            let accept = crate::websocket::derive_accept_key(key.as_bytes());
+            io.write_all(
+                format!("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Accept: {accept}\r\n\r\n")
+                    .as_bytes(),
+            )
+            .await
+            .unwrap();
+            // Hold the connection open until the test tears everything down.
+            let _ = std::future::pending::<()>().await;
+        });
+        let dir = std::env::temp_dir().join(format!("eggreplay-ws-abort-{}", now_ms()));
+        let session =
+            RecordingSession::create(&dir, SessionMetadata::default(), StoreLimits::default())
+                .unwrap();
+        let client = Client::builder().retry_canceled_requests(false).build();
+        let upstream_uri: Uri = format!("http://{upstream_addr}").parse().unwrap();
+        let server = start_recording_gateway_with_websockets(
+            "127.0.0.1:0".parse().unwrap(),
+            upstream_uri,
+            client,
+            session.clone(),
+            StoreLimits::default().max_blob_bytes,
+            RedactionConfig::default_secure(),
+            "test-v1".into(),
+            eggreplay_core::DEFAULT_MAX_STRUCTURED_REDACTION_BYTES,
+            eggreplay_core::PhysicalRoute {
+                kind: "direct".into(),
+                description: None,
+            },
+            WebSocketRecordingOptions {
+                enabled: true,
+                ..WebSocketRecordingOptions::default()
+            },
+        )
+        .await
+        .unwrap();
+        let stream = tokio::net::TcpStream::connect(server.local_addr())
+            .await
+            .unwrap();
+        let request = Request::builder()
+            .method("GET")
+            .uri(format!("ws://{}/socket", server.local_addr()))
+            .header("host", server.local_addr().to_string())
+            .header("connection", "Upgrade")
+            .header("upgrade", "websocket")
+            .header("sec-websocket-version", "13")
+            .header("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ==")
+            .body(())
+            .unwrap();
+        let (mut socket, response) = tokio_tungstenite::client_async(request, stream)
+            .await
+            .unwrap();
+        assert_eq!(response.status(), http::StatusCode::SWITCHING_PROTOCOLS);
+        // Exchange a real message so the 101 flow is unambiguously recorded,
+        // then stop mid-conversation.
+        socket
+            .send(Message::Text("still open".into()))
+            .await
+            .unwrap();
+        socket.flush().await.unwrap();
+        // No Close handshake: shut down while the tunnel is provably live.
+        server.shutdown();
+        server.wait().await;
+        session.shutdown();
+        drain_active_blobs(&session).await;
+        upstream_task.abort();
+        let outcome = finish_recording_session(session).await;
+        let error = outcome.expect_err(
+            "a WebSocket 101 flow with no conversation metadata must not publish a fixture",
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("missing required conversation metadata"),
+            "expected the fail-closed validator error, got: {error}"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+    /// the fixture as an attributable category.
+    ///
+    /// Before M016 there was no `CustomTransport` arm at all, so all five fell
+    /// through to `Other`. The integration suite only exercises `Connection`
+    /// (a dead route); this covers the rest, including the two that map to
+    /// `Policy`, so a future change cannot quietly collapse them again.
+    #[test]
+    fn caller_supplied_transport_failures_are_attributed() {
+        use std::sync::Arc;
+
+        let cases = [
+            (
+                DialErrorKind::Connection,
+                ErrorCategory::Unreachable,
+                ErrorPhase::Connect,
+            ),
+            (
+                DialErrorKind::Timeout,
+                ErrorCategory::Timeout,
+                ErrorPhase::Timeout,
+            ),
+            (
+                DialErrorKind::Authentication,
+                ErrorCategory::Policy,
+                ErrorPhase::Connect,
+            ),
+            (
+                DialErrorKind::Rejected,
+                ErrorCategory::Policy,
+                ErrorPhase::Policy,
+            ),
+            (
+                DialErrorKind::Other,
+                ErrorCategory::Other,
+                ErrorPhase::Other,
+            ),
+        ];
+        for (kind, expected_category, expected_phase) in cases {
+            let error = FetchError::CustomTransport(Arc::new(DialError::new(kind, "route failed")));
+            let mapped = map_fetch_error(&error);
+            assert_eq!(
+                mapped.category, expected_category,
+                "{kind:?} must be attributed, not collapsed to Other"
+            );
+            assert_eq!(
+                mapped.phase, expected_phase,
+                "{kind:?} must name the phase it failed in"
+            );
+        }
     }
 
     /// Build a recording session plus a single-finisher conversation task that

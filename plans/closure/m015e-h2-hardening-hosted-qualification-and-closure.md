@@ -142,11 +142,24 @@ each is now asserted as it actually behaves rather than as it ideally would.
    who reached for `from_secs` to bound a flaky origin would not have bounded
    it.
 
+   > **Superseded by M016.** Investigation widened this: the CLI set *no*
+   > timeout at all, so this was not a mis-shaped helper but a missing
+   > operator control. M016 adds `--timeout-secs`, which populates `total`
+   > alongside the per-phase budgets, on `record`, `replay`, `test`, and
+   > `serve`. It is unset by default so existing invocations are unchanged.
+
 5. **A dead Eggress route fails closed but is categorised `Other`.** The
    routing decision is honoured and the call fails, and the failed route is
    recorded in the flow — so the fail-closed property holds and the failure is
    attributable from the session's route metadata. The category itself is not
    diagnostic.
+
+   > **Superseded by M016.** `map_fetch_error` had no `CustomTransport` arm at
+   > all, so every `DialErrorKind` fell through to `Other` — and
+   > `ErrorCategory::ConnectionRefused` was unreachable anywhere in the
+   > product. M016 maps each `DialErrorKind` to a real category: a dead route
+   > now records `Unreachable`/`Connect`. The M015E assertion that pinned
+   > `Other` was updated to the fixed behaviour in the same change.
 
 6. **A TLS peer that claims `:scheme: http` is refused with 400 before the
    matcher runs.** That is the right place to catch it — a scheme mismatch

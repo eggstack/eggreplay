@@ -1477,15 +1477,22 @@ async fn a_failed_eggress_route_fails_closed_with_no_direct_fallback() {
             flow.outcome
         );
     };
-    // **Finding: a dead Eggress route fails closed but is categorised
-    // `Other`.** The routing decision is honoured and the call fails, which is
-    // the property that matters. The category is not diagnostic: an operator
-    // reading the session sees an unattributed error. M015E records it rather
-    // than asserting a category the product does not currently produce.
+    // M015E first recorded this as `Other` and named it a finding. M016 fixed
+    // it: `map_fetch_error` now maps the dialer's own `DialErrorKind`, so a
+    // route that cannot be reached is a connection failure with a phase, not an
+    // unattributed error. `Unreachable` rather than `ConnectionRefused`
+    // because EggFetch's typed evidence does not distinguish them, and
+    // inferring a distinction the transport did not make would be worse than
+    // an honest general category.
     assert_eq!(
         error.category,
-        eggreplay_core::ErrorCategory::Other,
-        "a dead route currently reports an unattributed category"
+        eggreplay_core::ErrorCategory::Unreachable,
+        "a dead route must be an attributable connection failure, not Other"
+    );
+    assert_eq!(
+        error.phase,
+        eggreplay_core::ErrorPhase::Connect,
+        "a connection-establishment failure must name the connect phase"
     );
     // And the route is recorded, so the failure is attributable.
     assert_eq!(

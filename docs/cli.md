@@ -58,6 +58,19 @@ which selects the **outbound** client policy. `h2` requires the CLI's `h2`
 feature. **`auto` means HTTP/1.1**, not EggFetch's `Auto`: an upstream release
 must not be able to change the protocol of an existing invocation.
 
+`record`, `replay`, `test`, and `serve` take `--timeout-secs <N>`, a wall-clock
+ceiling for one outbound request. It bounds every phase **including `total`**,
+which is the part that matters most: the per-phase `read` budget is "time
+between response body chunks", so an origin that accepts a connection and then
+says nothing is bounded only by `total`. The flag is **unset by default** —
+a new deadline would change the behaviour of every existing invocation, the
+same rule `--outbound-version auto` follows. A timed-out transaction is
+recorded as `ErrorCategory::Timeout` in the flow outcome; it is not a
+command-level error, so the command still exits 0. The effective timeout is
+reported as `outbound_timeout` in the JSON result (`{"bounded": false,
+"total_secs": null}` when unset). `diff` reports `outbound_timeout: null`
+because it never opens a socket.
+
 A fixture recorded over `https` replays only over TLS. A scheme mismatch is a
 bounded refusal (not a relaxed match), and a gateway flow records the
 *upstream* authority it reached rather than the inbound `:authority`.

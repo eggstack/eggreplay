@@ -78,6 +78,7 @@ boundary, and ADR 0008 owns interception security/transport ownership.
 | M015C | `implementation/protocols/015c-http2-end-to-end-semantic-and-regression-qualification.md` | closed | M015B, M010, M014B | end-to-end H2 semantic/regression qualification |
 | M015D | `implementation/protocols/015d-grpc-over-http2-integration-qualification.md` | closed | M015C (closed), M014D (closed) | real gRPC-over-H2 qualification |
 | M015E | `implementation/protocols/015e-h2-hardening-hosted-qualification-and-closure.md` | closed | M015A–M015D (all closed) | hardening + hosted Stage 11 closure |
+| M016 | `implementation/corrective/m016-post-m015-corrective.md` | **in progress** | M015E (closed), M015D (closed) | bounded outbound timeout, route error attribution, WebSocket shutdown race |
 
 ### Current execution gate
 
