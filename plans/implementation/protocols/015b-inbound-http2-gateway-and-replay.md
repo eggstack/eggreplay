@@ -1,6 +1,6 @@
 # M015B — Inbound HTTP/2 Gateway and Replay
 
-Status: blocked
+Status: closed
 Depends on: M015A closure
 Parent: M015
 

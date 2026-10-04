@@ -35,9 +35,18 @@ tokio.workspace = true
 # Release-binary policy for the interception feature is decided at M013F.
 # For now `intercept` is opt-in: default builds (library, Python wheel, source)
 # stay CA-dependency-free, and all-features CI may enable it.
+#
+# The inbound HTTP/2 features (M015B, ADR 0010) follow the same discipline for
+# the same reason: they admit EggServe Core and its `eggserve-static` closure.
+# `h2-inbound` gives the CLI the cleartext/H2 serving policy; `h2-inbound-tls`
+# adds ALPN-over-TLS with operator-supplied identity material. Neither is ever
+# a default, and the `protocol-boundary` CI lane asserts that the default CLI
+# graph is free of the multiprotocol closure.
 [features]
 default = []
 intercept = ["dep:eggreplay-intercept"]
+h2-inbound = ["eggreplay-http/h2-inbound"]
+h2-inbound-tls = ["h2-inbound", "eggreplay-http/h2-inbound-tls"]
 
 [lints]
 workspace = true

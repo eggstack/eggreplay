@@ -8,6 +8,7 @@ use eggreplay_core::{
     compare_flows_with_policy,
 };
 use eggreplay_http::{EggressDialer, ReplayFixture, execute_candidate};
+use eggreplay_http::{H2Limits, InboundProtocol, InboundProtocolDescription};
 use eggreplay_store::{RecordingSession, Session, StoreLimits};
 use serde::Serialize;
 use serde_json::json;
@@ -68,9 +69,97 @@ pub(crate) enum OutputChoice {
     Json,
     Junit,
 }
+/// Inbound serving protocol policy shared by `record` and `serve` (M015B).
+///
+/// Defaults to `http1`, which is the pre-M015B behaviour in full. Selecting
+/// HTTP/2 is explicit on the command line *and* opt-in at build time: a
+/// binary without the inbound-HTTP/2 features cannot express `--inbound
+/// http2` and refuses it rather than serving HTTP/1.1 under an HTTP/2 label.
+#[derive(Debug, Clone, Default, Args)]
+pub(crate) struct InboundServingArgs {
+    /// Inbound protocol for this listener: `http1` (default) or `http2`
+    /// (cleartext prior knowledge, a.k.a. h2c).
+    #[arg(long, default_value = "http1", value_name = "PROTOCOL")]
+    inbound: String,
+    /// Operator PEM certificate chain for inbound HTTP/2 over TLS (ALPN).
+    /// Enables the TLS serving policy; requires `--inbound-tls-key`.
+    #[arg(long, value_name = "PATH", requires = "inbound_tls_key")]
+    inbound_tls_cert: Option<PathBuf>,
+    /// Operator PEM private key for `--inbound-tls-cert`. Never written to
+    /// any output stream.
+    #[arg(long, value_name = "PATH", requires = "inbound_tls_cert")]
+    inbound_tls_key: Option<PathBuf>,
+    /// Maximum concurrent HTTP/2 request streams advertised per connection.
+    /// Unset keeps `EggServe`'s own default.
+    #[arg(long, value_name = "COUNT")]
+    h2_max_concurrent_streams: Option<u32>,
+}
+
+impl InboundServingArgs {
+    /// Resolve the operator flags into one serving policy.
+    ///
+    /// Fails closed: an unbuildable policy is a configuration error, never a
+    /// silent fallback to a weaker protocol.
+    fn resolve(&self) -> Result<InboundProtocol, String> {
+        let base = eggreplay_http::inbound::parse_protocol(&self.inbound).map_err(|error| {
+            let known = eggreplay_http::inbound::supported_protocol_names().join(", ");
+            format!("{error}; this build supports: {known}")
+        })?;
+        if self.inbound_tls_cert.is_some() || self.inbound_tls_key.is_some() {
+            // TLS serving needs `eggserve-core/tls`, which is the
+            // `h2-inbound-tls` feature. Supplying identity material in a build
+            // that cannot use it is a refusal, never a silent downgrade to a
+            // cleartext or default-identity listener.
+            #[cfg(feature = "h2-inbound-tls")]
+            {
+                if let (Some(certificate), Some(private_key)) =
+                    (&self.inbound_tls_cert, &self.inbound_tls_key)
+                {
+                    return Ok(InboundProtocol::Http2Tls {
+                        certificate: certificate.clone(),
+                        private_key: private_key.clone(),
+                    });
+                }
+            }
+            #[cfg(not(feature = "h2-inbound-tls"))]
+            {
+                let _ = &base;
+                return Err(
+                    "TLS serving is not available in this build; rebuild with the \
+                     opt-in inbound HTTP/2 TLS feature"
+                        .to_string(),
+                );
+            }
+        }
+        Ok(base)
+    }
+
+    /// The operator-facing limit set.
+    fn limits(&self) -> H2Limits {
+        H2Limits {
+            max_concurrent_streams: self.h2_max_concurrent_streams,
+            ..H2Limits::default()
+        }
+    }
+
+    /// The secret-free policy description for status output. Carries no
+    /// certificate path, no key path, and no identity material.
+    fn describe(&self) -> InboundProtocolDescription {
+        // The policy is already validated by `resolve` before any listener
+        // starts, so falling back to the H1 description here can only be
+        // reached on a path that already reported a configuration error.
+        self.resolve().map_or_else(
+            |_| InboundProtocol::Http1.describe(),
+            |policy| policy.describe(),
+        )
+    }
+}
+
 #[derive(Debug, Args)]
 #[allow(clippy::struct_excessive_bools)]
 struct RecordArgs {
+    #[command(flatten)]
+    inbound: InboundServingArgs,
     #[arg(long)]
     listen: std::net::SocketAddr,
     #[arg(long)]
@@ -113,6 +202,8 @@ struct RecordArgs {
 #[derive(Debug, Args)]
 #[allow(clippy::struct_excessive_bools)]
 struct ServeArgs {
+    #[command(flatten)]
+    inbound: InboundServingArgs,
     #[arg(long)]
     fixture: PathBuf,
     #[arg(long, default_value = "127.0.0.1:0")]
@@ -535,6 +626,12 @@ fn build_client(route: &str) -> Result<(eggfetch_core::Client, PhysicalRoute), (
 }
 
 async fn record(args: RecordArgs) -> Result<(), (String, String)> {
+    // Same ordering rule as `serve`: a configuration mistake is reported
+    // before any filesystem precondition is evaluated.
+    let inbound = args
+        .inbound
+        .resolve()
+        .map_err(|error| ("configuration".into(), error))?;
     if args.fixture.exists() && !args.overwrite {
         let message = "fixture exists; pass --overwrite to replace it".to_string();
         emit(
@@ -567,7 +664,7 @@ async fn record(args: RecordArgs) -> Result<(), (String, String)> {
         .upstream
         .parse()
         .map_err(|error: http::uri::InvalidUri| ("configuration".into(), error.to_string()))?;
-    let server = eggreplay_http::recording::start_recording_gateway_with_websockets(
+    let server = eggreplay_http::recording::start_recording_gateway_with_protocol(
         args.listen,
         upstream,
         client,
@@ -582,10 +679,17 @@ async fn record(args: RecordArgs) -> Result<(), (String, String)> {
             args.redact_websocket_text,
             args.redact_websocket_binary,
         ),
+        inbound,
+        args.inbound.limits(),
     )
     .await
     .map_err(|error| ("runtime".into(), error.to_string()))?;
-    eprintln!("recording on {}", server.local_addr());
+    let serving = args.inbound.describe();
+    eprintln!(
+        "recording on {} (inbound {})",
+        server.local_addr(),
+        serving.protocol,
+    );
     tokio::signal::ctrl_c()
         .await
         .map_err(|error| ("runtime".into(), error.to_string()))?;
@@ -594,7 +698,10 @@ async fn record(args: RecordArgs) -> Result<(), (String, String)> {
     // finalization. Blocking isolation via spawn_blocking keeps the executor
     // free even on current-thread runtimes.
     server.shutdown();
-    server.wait().await;
+    server
+        .wait()
+        .await
+        .map_err(|error| ("runtime".into(), error))?;
     session.shutdown();
     eggreplay_http::recording::drain_active_blobs(&session).await;
     let websocket_count = session.websocket_conversation_count().unwrap_or(0);
@@ -606,12 +713,19 @@ async fn record(args: RecordArgs) -> Result<(), (String, String)> {
         args.output.output,
         true,
         None,
-        json!({"fixture": args.fixture, "status": "finalized", "websocket_acquisition_enabled": args.websockets, "websocket_conversations": websocket_count}),
+        json!({"fixture": args.fixture, "status": "finalized", "serving": serving, "websocket_acquisition_enabled": args.websockets, "websocket_conversations": websocket_count}),
     );
     Ok(())
 }
 
 async fn serve(args: ServeArgs) -> Result<(), (String, String)> {
+    // Resolve the serving policy first. It is a pure configuration decision,
+    // so reporting it before touching the filesystem means an operator who
+    // mistyped `--inbound` hears about that rather than about a fixture path.
+    let inbound = args
+        .inbound
+        .resolve()
+        .map_err(|error| ("configuration".into(), error))?;
     recover_fixture_transactionally(&args.fixture).map_err(|error| ("fixture".into(), error))?;
     let policy = eggreplay_core::RecordMode::from(args.record_mode)
         .resolve(args.fixture.exists(), args.upstream.is_some())
@@ -665,6 +779,15 @@ async fn serve(args: ServeArgs) -> Result<(), (String, String)> {
     if policy.mode == eggreplay_core::RecordMode::ReRecord {
         return serve_re_record(args).await;
     }
+    serve_sealed(args, inbound, timing_mode).await
+}
+
+/// Sealed offline replay over an explicit serving policy.
+async fn serve_sealed(
+    args: ServeArgs,
+    inbound: InboundProtocol,
+    timing_mode: eggreplay_core::StreamTimingMode,
+) -> Result<(), (String, String)> {
     let session = Session::open(&args.fixture, StoreLimits::default())
         .map_err(|error| ("fixture".into(), error.to_string()))?;
     let (serve_redaction, _) = effective_serve_redaction_policy(&args);
@@ -682,25 +805,35 @@ async fn serve(args: ServeArgs) -> Result<(), (String, String)> {
     }
     .map_err(|error| ("fixture".into(), error.to_string()))?;
     let server = fixture
-        .start(args.listen, StoreLimits::default().max_blob_bytes)
+        .start_with_protocol(
+            args.listen,
+            StoreLimits::default().max_blob_bytes,
+            inbound,
+            args.inbound.limits(),
+        )
         .await
         .map_err(|error| ("runtime".into(), error.to_string()))?;
+    let serving = args.inbound.describe();
     eprintln!(
-        "serving {} on {}",
+        "serving {} on {} (inbound {})",
         args.fixture.display(),
-        server.local_addr()
+        server.local_addr(),
+        serving.protocol,
     );
     tokio::signal::ctrl_c()
         .await
         .map_err(|error| ("runtime".into(), error.to_string()))?;
     server.shutdown();
-    server.wait().await;
+    server
+        .wait()
+        .await
+        .map_err(|error| ("runtime".into(), error))?;
     emit(
         "serve",
         args.output.output,
         true,
         None,
-        json!({"fixture": args.fixture, "scenario": args.scenario, "record_mode": "sealed", "upstream_enabled": false, "websocket_acquisition_enabled": false, "websocket_conversations": 0, "matcher_profile": args.matcher_profile.as_str(), "timing_mode": args.timing_mode, "status": "stopped"}),
+        json!({"fixture": args.fixture, "scenario": args.scenario, "record_mode": "sealed", "upstream_enabled": false, "websocket_acquisition_enabled": false, "websocket_conversations": 0, "matcher_profile": args.matcher_profile.as_str(), "timing_mode": args.timing_mode, "serving": serving, "status": "stopped"}),
     );
     Ok(())
 }
@@ -725,7 +858,11 @@ async fn record_once_from_serve(args: ServeArgs) -> Result<(), (String, String)>
         StoreLimits::default(),
     )
     .map_err(|error| ("fixture".into(), error.to_string()))?;
-    let server = eggreplay_http::recording::start_recording_gateway_with_websockets(
+    let inbound = args
+        .inbound
+        .resolve()
+        .map_err(|error| ("configuration".into(), error))?;
+    let server = eggreplay_http::recording::start_recording_gateway_with_protocol(
         args.listen,
         upstream,
         client,
@@ -740,10 +877,17 @@ async fn record_once_from_serve(args: ServeArgs) -> Result<(), (String, String)>
             args.redact_websocket_text,
             args.redact_websocket_binary,
         ),
+        inbound,
+        args.inbound.limits(),
     )
     .await
     .map_err(|error| ("runtime".into(), error.to_string()))?;
-    eprintln!("recording once on {}", server.local_addr());
+    let serving = args.inbound.describe();
+    eprintln!(
+        "recording once on {} (inbound {})",
+        server.local_addr(),
+        serving.protocol,
+    );
     tokio::signal::ctrl_c()
         .await
         .map_err(|error| ("runtime".into(), error.to_string()))?;
@@ -751,7 +895,10 @@ async fn record_once_from_serve(args: ServeArgs) -> Result<(), (String, String)>
     // drains WebSocket tunnels before session finalization runs on the
     // blocking pool.
     server.shutdown();
-    server.wait().await;
+    server
+        .wait()
+        .await
+        .map_err(|error| ("runtime".into(), error))?;
     session.shutdown();
     eggreplay_http::recording::drain_active_blobs(&session).await;
     let websocket_count = session.websocket_conversation_count().unwrap_or(0);
@@ -763,7 +910,7 @@ async fn record_once_from_serve(args: ServeArgs) -> Result<(), (String, String)>
         args.output.output,
         true,
         None,
-        json!({"fixture": args.fixture, "record_mode": "once", "upstream_enabled": true, "websocket_acquisition_enabled": args.websockets, "websocket_conversations": websocket_count, "matcher_profile": args.matcher_profile.as_str(), "redaction_profile": args.redaction_profile, "status": "finalized"}),
+        json!({"fixture": args.fixture, "record_mode": "once", "upstream_enabled": true, "serving": serving, "websocket_acquisition_enabled": args.websockets, "websocket_conversations": websocket_count, "matcher_profile": args.matcher_profile.as_str(), "redaction_profile": args.redaction_profile, "status": "finalized"}),
     );
     Ok(())
 }
@@ -808,8 +955,12 @@ async fn serve_append_new(args: ServeArgs) -> Result<(), (String, String)> {
         None => ReplayFixture::load_with_matcher(&source, args.matcher_profile.matcher()),
     }
     .map_err(|error| ("fixture".into(), error.to_string()))?;
+    let inbound = args
+        .inbound
+        .resolve()
+        .map_err(|error| ("configuration".into(), error))?;
     let server = fixture
-        .start_append_new(
+        .start_with_protocol_and_append(
             args.listen,
             StoreLimits::default().max_blob_bytes,
             upstream,
@@ -819,10 +970,17 @@ async fn serve_append_new(args: ServeArgs) -> Result<(), (String, String)> {
             profile_id.clone(),
             eggreplay_core::DEFAULT_MAX_STRUCTURED_REDACTION_BYTES,
             physical_route,
+            inbound,
+            args.inbound.limits(),
         )
         .await
         .map_err(|error| ("runtime".into(), error.to_string()))?;
-    eprintln!("append-new replay on {}", server.local_addr());
+    let serving = args.inbound.describe();
+    eprintln!(
+        "append-new replay on {} (inbound {})",
+        server.local_addr(),
+        serving.protocol,
+    );
     tokio::signal::ctrl_c()
         .await
         .map_err(|error| ("runtime".into(), error.to_string()))?;
@@ -830,7 +988,10 @@ async fn serve_append_new(args: ServeArgs) -> Result<(), (String, String)> {
     // finalizers, so finalization is on the HTTP fast path; still run on the
     // blocking pool for executor safety.
     server.shutdown();
-    server.wait().await;
+    server
+        .wait()
+        .await
+        .map_err(|error| ("runtime".into(), error))?;
     recording.shutdown();
     eggreplay_http::recording::drain_active_blobs(&recording).await;
     let additional = eggreplay_http::recording::finish_recording_session(recording)
@@ -853,7 +1014,7 @@ async fn serve_append_new(args: ServeArgs) -> Result<(), (String, String)> {
         args.output.output,
         true,
         None,
-        json!({"fixture": args.fixture, "record_mode": "append-new", "upstream_enabled": true, "websocket_acquisition_enabled": false, "websocket_conversations": 0, "matcher_profile": args.matcher_profile.as_str(), "redaction_profile": profile_id, "new_flows": added_flows, "status": "finalized"}),
+        json!({"fixture": args.fixture, "record_mode": "append-new", "upstream_enabled": true, "serving": serving, "websocket_acquisition_enabled": false, "websocket_conversations": 0, "matcher_profile": args.matcher_profile.as_str(), "redaction_profile": profile_id, "new_flows": added_flows, "status": "finalized"}),
     );
     Ok(())
 }
@@ -885,7 +1046,11 @@ async fn serve_re_record(args: ServeArgs) -> Result<(), (String, String)> {
         StoreLimits::default(),
     )
     .map_err(|error| ("fixture".into(), error.to_string()))?;
-    let server = eggreplay_http::recording::start_recording_gateway_with_websockets(
+    let inbound = args
+        .inbound
+        .resolve()
+        .map_err(|error| ("configuration".into(), error))?;
+    let server = eggreplay_http::recording::start_recording_gateway_with_protocol(
         args.listen,
         upstream,
         client,
@@ -900,16 +1065,26 @@ async fn serve_re_record(args: ServeArgs) -> Result<(), (String, String)> {
             args.redact_websocket_text,
             args.redact_websocket_binary,
         ),
+        inbound,
+        args.inbound.limits(),
     )
     .await
     .map_err(|error| ("runtime".into(), error.to_string()))?;
-    eprintln!("re-record gateway on {}", server.local_addr());
+    let serving = args.inbound.describe();
+    eprintln!(
+        "re-record gateway on {} (inbound {})",
+        server.local_addr(),
+        serving.protocol,
+    );
     tokio::signal::ctrl_c()
         .await
         .map_err(|error| ("runtime".into(), error.to_string()))?;
     // Already drained + blocking isolation (see `record`).
     server.shutdown();
-    server.wait().await;
+    server
+        .wait()
+        .await
+        .map_err(|error| ("runtime".into(), error))?;
     session.shutdown();
     eggreplay_http::recording::drain_active_blobs(&session).await;
     let websocket_count = session.websocket_conversation_count().unwrap_or(0);
@@ -925,7 +1100,7 @@ async fn serve_re_record(args: ServeArgs) -> Result<(), (String, String)> {
         args.output.output,
         true,
         None,
-        json!({"fixture": args.fixture, "record_mode": "re-record", "upstream_enabled": true, "websocket_acquisition_enabled": args.websockets, "websocket_conversations": websocket_count, "matcher_profile": args.matcher_profile.as_str(), "redaction_profile": args.redaction_profile, "new_flows": recorded_flows, "status": "finalized"}),
+        json!({"fixture": args.fixture, "record_mode": "re-record", "upstream_enabled": true, "serving": serving, "websocket_acquisition_enabled": args.websockets, "websocket_conversations": websocket_count, "matcher_profile": args.matcher_profile.as_str(), "redaction_profile": args.redaction_profile, "new_flows": recorded_flows, "status": "finalized"}),
     );
     Ok(())
 }

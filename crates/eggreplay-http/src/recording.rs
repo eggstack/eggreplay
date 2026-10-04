@@ -24,13 +24,15 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 
 #[cfg(feature = "eggserve")]
+use crate::inbound::{InboundProtocol, InboundServerHandle};
+#[cfg(feature = "eggserve")]
 use eggserve_primitives::{
     HeaderBlock, RequestBodyPolicy, Response, ResponseBody, ResponseStream, ResponseStreamError,
     StatusCode, Trailers,
 };
 #[cfg(feature = "eggserve")]
 use eggserve_server::{
-    Request as ServeRequest, Server, ServerHandle, Service, ServiceError, ServiceFuture,
+    Request as ServeRequest, ServerHandle, Service, ServiceError, ServiceFuture,
 };
 #[cfg(feature = "eggserve")]
 use std::net::SocketAddr;
@@ -773,6 +775,55 @@ pub async fn start_recording_gateway_with_websockets(
     physical_route: eggreplay_core::PhysicalRoute,
     websocket: WebSocketRecordingOptions,
 ) -> Result<ServerHandle, HttpError> {
+    match start_recording_gateway_with_protocol(
+        bind,
+        upstream_base,
+        client,
+        session,
+        max_body_bytes,
+        redaction,
+        profile_id,
+        max_structured_bytes,
+        physical_route,
+        websocket,
+        InboundProtocol::Http1,
+        crate::inbound::H2Limits::default(),
+    )
+    .await?
+    {
+        InboundServerHandle::Http1(handle) => Ok(handle),
+        // Unreachable: the HTTP/1 policy can only produce the direct runtime.
+        // Kept exhaustive so a future policy cannot start here by accident.
+        #[cfg(feature = "h2-inbound")]
+        InboundServerHandle::Http2(_) => Err(HttpError::Conversion(
+            "HTTP/1 policy produced a multiprotocol runtime".into(),
+        )),
+    }
+}
+
+/// Start the recording gateway on an explicit inbound protocol policy (M015B).
+///
+/// The gateway's acquisition path is unchanged: EggServe owns inbound
+/// lifecycle and framing, EggFetch owns the upstream transaction, and the
+/// redaction and durable-publication authorities are the same ones the H1
+/// path uses. Only the listening protocol is a caller choice, and it is
+/// handed to the *same* `GatewayTunnelService` implementation.
+#[cfg(feature = "eggserve")]
+#[allow(clippy::too_many_arguments)]
+pub async fn start_recording_gateway_with_protocol(
+    bind: SocketAddr,
+    upstream_base: Uri,
+    client: Client,
+    session: RecordingSession,
+    max_body_bytes: u64,
+    redaction: RedactionConfig,
+    profile_id: String,
+    max_structured_bytes: u64,
+    physical_route: eggreplay_core::PhysicalRoute,
+    websocket: WebSocketRecordingOptions,
+    protocol: InboundProtocol,
+    h2_limits: crate::inbound::H2Limits,
+) -> Result<InboundServerHandle, HttpError> {
     if websocket.enabled && (websocket.max_active_tunnels == 0 || websocket.max_duration.is_zero())
     {
         return Err(HttpError::Conversion(
@@ -843,31 +894,16 @@ pub async fn start_recording_gateway_with_websockets(
             max_bytes: max_body_bytes,
         },
     };
-    // Server-level body cap defaults to 0 (reject all); align it with the
-    // service policy so the effective limit is the caller's bound.
-    let builder = eggserve_server::RuntimeConfig::builder()
-        .bind(bind)
-        .max_request_body_bytes(max_body_bytes)
-        .http1_request_target_mode(eggserve_server::Http1RequestTargetMode::OriginOnly)
-        .policy_ownership(eggserve_server::H1PolicyOwnership::eggserve_owned())
-        .admission_ownership(eggserve_server::AdmissionOwnership::eggserve_owned());
-    let builder = if websocket.enabled {
-        builder
-            .max_active_tunnels(websocket.max_active_tunnels)
-            .disable_connection_total_timeout()
-    } else {
-        builder
-    };
-    let runtime = builder
-        .build()
-        .map_err(|error| HttpError::Conversion(error.to_string()))?;
-    Server::builder()
-        .runtime(runtime)
-        .build()
-        .map_err(|error| HttpError::Conversion(error.to_string()))?
-        .start_with_service(service)
-        .await
-        .map_err(|error| HttpError::Conversion(error.to_string()))
+    crate::inbound::start_inbound_server(
+        bind,
+        protocol,
+        h2_limits,
+        max_body_bytes,
+        websocket.enabled.then_some(websocket.max_active_tunnels),
+        service,
+    )
+    .await
+    .map_err(|error| HttpError::Conversion(error.to_string()))
 }
 
 /// Finalize a [`RecordingSession`] from an async context (M014-C2).

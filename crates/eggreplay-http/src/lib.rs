@@ -12,6 +12,7 @@ pub mod eggress;
 pub mod grpc;
 #[cfg(feature = "h2")]
 pub mod h2;
+pub mod inbound;
 pub mod recording;
 pub mod regression;
 pub mod replay;
@@ -20,6 +21,7 @@ pub mod websocket;
 
 #[cfg(feature = "eggress")]
 pub use eggress::{EggressDialer, parse_route, physical_route_for, redact_route_credentials};
+pub use inbound::{H2Limits, InboundProtocol, InboundProtocolDescription, InboundServingError};
 pub use recording::{HttpError, RecordedRequest, record_request, record_request_with_session};
 #[cfg(feature = "websocket")]
 pub use regression::compare_websocket_candidate;

@@ -185,7 +185,11 @@ jobs:
           check_no_core "eggreplay-http eggserve H1" -p eggreplay-http --no-default-features --features eggserve
           check_no_core "eggreplay-http outbound H2 only" -p eggreplay-http --no-default-features --features eggserve,h2
           check_no_core "eggreplay-intercept" -p eggreplay-intercept --all-features
-          check_no_core "eggreplay-cli" -p eggreplay-cli --all-features
+          # The CLI's *default* graph, not --all-features: M015B gives the CLI
+          # opt-in `h2-inbound`/`h2-inbound-tls` features, so `--all-features`
+          # is deliberately a multiprotocol graph and asserting on it would
+          # assert against the design. The default is the supported profile.
+          check_no_core "eggreplay-cli default" -p eggreplay-cli
           check_no_core "eggreplay-python" -p eggreplay-python
           check_no_core "eggreplay-core" -p eggreplay-core --no-default-features
           check_no_core "eggreplay-store" -p eggreplay-store --no-default-features
@@ -201,6 +205,17 @@ jobs:
               exit 1
             fi
             echo "$features: eggserve-core present (opt-in, as designed)"
+          done
+          # The CLI's opt-in features must forward the capability, and the
+          # default CLI binary must not have it.
+          for features in h2-inbound h2-inbound-tls; do
+            cargo check -p eggreplay-cli --no-default-features --features "$features"
+            if ! cargo tree -p eggreplay-cli --no-default-features --features "$features" --edges normal --prefix none \
+              | grep -qE '^eggserve-core '; then
+              echo "eggreplay-cli/$features must activate eggserve-core" >&2
+              exit 1
+            fi
+            echo "eggreplay-cli/$features: eggserve-core present (opt-in, as designed)"
           done
           # `h2-inbound` is never a default feature of any product crate.
           if cargo tree -p eggreplay-http --no-default-features --edges normal --prefix none \

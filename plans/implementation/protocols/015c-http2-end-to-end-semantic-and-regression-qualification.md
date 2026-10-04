@@ -1,6 +1,6 @@
 # M015C — HTTP/2 End-to-End Semantic and Regression Qualification
 
-Status: blocked
+Status: ready
 Depends on: M015B closure, M010 closure, M014B closure
 Parent: M015
 

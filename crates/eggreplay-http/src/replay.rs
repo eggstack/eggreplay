@@ -17,7 +17,10 @@ use eggserve_primitives::{
     StatusCode,
 };
 #[cfg(feature = "eggserve")]
-use eggserve_server::{Server, ServerHandle, ServiceError};
+use eggserve_server::{ServerHandle, ServiceError};
+
+#[cfg(feature = "eggserve")]
+use crate::inbound::{InboundProtocol, InboundServerHandle};
 
 #[cfg(feature = "eggserve")]
 struct ReplayTunnelService<F> {
@@ -349,7 +352,43 @@ impl ReplayFixture {
         bind: SocketAddr,
         max_body_bytes: u64,
     ) -> Result<ServerHandle, ReplayError> {
-        self.start_inner(bind, max_body_bytes, None).await
+        let handle = self
+            .start_with_protocol(
+                bind,
+                max_body_bytes,
+                crate::inbound::InboundProtocol::Http1,
+                crate::inbound::H2Limits::default(),
+            )
+            .await?;
+        match handle {
+            InboundServerHandle::Http1(handle) => Ok(handle),
+            // Unreachable: the HTTP/1 policy can only produce the direct
+            // runtime. Kept exhaustive so a future policy cannot start here
+            // by accident.
+            #[cfg(feature = "h2-inbound")]
+            InboundServerHandle::Http2(_) => Err(ReplayError::Serve(
+                "HTTP/1 policy produced a multiprotocol runtime".into(),
+            )),
+        }
+    }
+
+    /// Start replay on an explicit inbound protocol policy (M015B).
+    ///
+    /// This is the one composition point for the replay server. The same
+    /// `ReplayTunnelService` — and therefore the same matcher, consumption,
+    /// scenario, redaction, and response-rendering authorities — is handed to
+    /// whichever EggServe runtime the policy selects. `InboundProtocol::Http1`
+    /// is exactly the pre-M015B behaviour.
+    #[cfg(feature = "eggserve")]
+    pub async fn start_with_protocol(
+        self,
+        bind: SocketAddr,
+        max_body_bytes: u64,
+        protocol: InboundProtocol,
+        h2_limits: crate::inbound::H2Limits,
+    ) -> Result<InboundServerHandle, ReplayError> {
+        self.start_inner(bind, max_body_bytes, None, protocol, h2_limits)
+            .await
     }
 
     /// Start replay with explicit upstream append-on-miss behavior. Existing
@@ -368,6 +407,49 @@ impl ReplayFixture {
         max_structured_bytes: u64,
         physical_route: eggreplay_core::PhysicalRoute,
     ) -> Result<ServerHandle, ReplayError> {
+        let handle = self
+            .start_with_protocol_and_append(
+                bind,
+                max_body_bytes,
+                upstream_base,
+                client,
+                recording,
+                redaction,
+                profile_id,
+                max_structured_bytes,
+                physical_route,
+                InboundProtocol::Http1,
+                crate::inbound::H2Limits::default(),
+            )
+            .await?;
+        match handle {
+            InboundServerHandle::Http1(handle) => Ok(handle),
+            #[cfg(feature = "h2-inbound")]
+            InboundServerHandle::Http2(_) => Err(ReplayError::Serve(
+                "HTTP/1 policy produced a multiprotocol runtime".into(),
+            )),
+        }
+    }
+
+    /// Start append-on-miss replay on an explicit inbound protocol policy
+    /// (M015B). The append path uses the same authorities as the sealed path;
+    /// only the serving policy differs.
+    #[cfg(feature = "eggserve")]
+    #[allow(clippy::too_many_arguments)]
+    pub async fn start_with_protocol_and_append(
+        self,
+        bind: SocketAddr,
+        max_body_bytes: u64,
+        upstream_base: http::Uri,
+        client: eggfetch_core::Client,
+        recording: eggreplay_store::RecordingSession,
+        redaction: eggreplay_core::RedactionConfig,
+        profile_id: String,
+        max_structured_bytes: u64,
+        physical_route: eggreplay_core::PhysicalRoute,
+        protocol: InboundProtocol,
+        h2_limits: crate::inbound::H2Limits,
+    ) -> Result<InboundServerHandle, ReplayError> {
         self.start_inner(
             bind,
             max_body_bytes,
@@ -381,6 +463,8 @@ impl ReplayFixture {
                 physical_route,
                 miss_locks: Arc::new(MissLocks::default()),
             }),
+            protocol,
+            h2_limits,
         )
         .await
     }
@@ -391,7 +475,9 @@ impl ReplayFixture {
         bind: SocketAddr,
         max_body_bytes: u64,
         append: Option<AppendContext>,
-    ) -> Result<ServerHandle, ReplayError> {
+        protocol: InboundProtocol,
+        h2_limits: crate::inbound::H2Limits,
+    ) -> Result<InboundServerHandle, ReplayError> {
         let state = self.state.clone();
         let handler = move |request, tunnel| {
             let state = state.clone();
@@ -409,29 +495,16 @@ impl ReplayFixture {
             .lock()
             .map(|state| !state.websockets.is_empty())
             .unwrap_or(false);
-        let builder = eggserve_server::RuntimeConfig::builder()
-            .bind(bind)
-            .max_request_body_bytes(max_body_bytes)
-            .http1_request_target_mode(eggserve_server::Http1RequestTargetMode::OriginOnly)
-            .policy_ownership(eggserve_server::H1PolicyOwnership::eggserve_owned())
-            .admission_ownership(eggserve_server::AdmissionOwnership::eggserve_owned());
-        let builder = if has_websockets {
-            builder
-                .max_active_tunnels(16)
-                .disable_connection_total_timeout()
-        } else {
-            builder
-        };
-        let runtime = builder
-            .build()
-            .map_err(|error| ReplayError::Serve(error.to_string()))?;
-        Server::builder()
-            .runtime(runtime)
-            .build()
-            .map_err(|error| ReplayError::Serve(error.to_string()))?
-            .start_with_service(service)
-            .await
-            .map_err(|error| ReplayError::Serve(error.to_string()))
+        crate::inbound::start_inbound_server(
+            bind,
+            protocol,
+            h2_limits,
+            max_body_bytes,
+            has_websockets.then_some(16),
+            service,
+        )
+        .await
+        .map_err(|error| ReplayError::Serve(error.to_string()))
     }
 }
 
@@ -647,6 +720,9 @@ async fn handle_request(
         Err(context) => return append_miss(state, context, actual, body.to_vec()).await,
     };
     let _ = index;
+    // The one protocol-aware step in the response renderer (M015B). Applied
+    // once, here, so every response-emission site below shares the rule.
+    let response_headers = render_recorded_headers(head.version(), response_headers);
     #[cfg(feature = "websocket")]
     if response_status == 101 {
         let conversation = websocket
@@ -1600,6 +1676,42 @@ fn request_from_eggserve(
         },
         trailers,
     })
+}
+
+/// Apply the one protocol-aware rule in the canonical response renderer
+/// (M015B).
+///
+/// Recorded response headers are version-neutral facts about an origin's
+/// response, but `content-length` is a *framing* fact, and framing is
+/// per-connection. Over HTTP/1.1 EggServe validates the recorded
+/// `content-length` against the bytes it actually writes, so replaying it
+/// verbatim is both correct and useful. Over HTTP/2 the same value can
+/// disagree with what this renderer streams — a scenario fault that truncates
+/// the body, an append-on-miss body streamed from disk, or a record whose
+/// body was replaced — and a peer that trusts a `content-length` larger than
+/// the DATA it receives will wait forever for bytes that never arrive. So on
+/// HTTP/2 the header is dropped and the transport frames the response from the
+/// DATA frames it actually observes.
+///
+/// Connection-specific headers are deliberately *not* filtered here.
+/// `connection`, `keep-alive`, `proxy-connection`, `transfer-encoding`,
+/// `upgrade`, and `te` are transport-owned on both protocols: Hyper's HTTP/2
+/// server strips them from every service response before framing, and
+/// HTTP/1.1 framing is the runtime's business. Re-filtering them in the
+/// product would be a second, weaker copy of a rule the transport already
+/// enforces — and would silently differ from it.
+fn render_recorded_headers(
+    version: eggserve_primitives::HttpVersion,
+    headers: Vec<HeaderEntry>,
+) -> Vec<HeaderEntry> {
+    if version == eggserve_primitives::HttpVersion::Http2 {
+        headers
+            .into_iter()
+            .filter(|header| !header.name.eq_ignore_ascii_case("content-length"))
+            .collect()
+    } else {
+        headers
+    }
 }
 
 #[cfg(feature = "eggserve")]
