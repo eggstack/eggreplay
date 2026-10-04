@@ -160,6 +160,8 @@ impl InboundServingArgs {
 struct RecordArgs {
     #[command(flatten)]
     inbound: InboundServingArgs,
+    #[command(flatten)]
+    outbound_version: OutboundVersionArgs,
     #[arg(long)]
     listen: std::net::SocketAddr,
     #[arg(long)]
@@ -204,6 +206,8 @@ struct RecordArgs {
 struct ServeArgs {
     #[command(flatten)]
     inbound: InboundServingArgs,
+    #[command(flatten)]
+    outbound_version: OutboundVersionArgs,
     #[arg(long)]
     fixture: PathBuf,
     #[arg(long, default_value = "127.0.0.1:0")]
@@ -345,6 +349,77 @@ fn comparison_policy(args: &ComparisonArgs) -> Result<ComparisonPolicy, (String,
     Ok(policy)
 }
 
+/// Outbound protocol policy (M014B outbound, M015C end-to-end).
+///
+/// HTTP/1.1 is the default everywhere. `http2` is an explicit per-invocation
+/// opt-in that makes `EggFetch` negotiate `h2` over ALPN and fail closed if the
+/// peer does not select it — it is never negotiated opportunistically, and it
+/// never changes how a fixture is matched.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, ValueEnum)]
+enum OutboundVersionChoice {
+    /// The `EggReplay` default. HTTP/1.1, with no `h2` offered at all.
+    #[default]
+    Auto,
+    /// HTTP/1.1 only; do not advertise `h2`.
+    Http1,
+    /// HTTP/2 only; fail rather than fall back.
+    Http2,
+}
+
+impl OutboundVersionChoice {
+    /// The `EggFetch` policy this choice maps to, or a refusal.
+    ///
+    /// `auto` is deliberately HTTP/1.1 rather than `EggFetch`'s own `Auto`:
+    /// `Http1Only` advertises no `h2`, so an existing invocation cannot have
+    /// its protocol changed by an upstream release that negotiates more
+    /// eagerly. Opting into HTTP/2 is an explicit act.
+    // With the outbound `h2` feature every arm resolves, so the `Result` is
+    // only fallible in a build that genuinely cannot speak HTTP/2.
+    #[cfg_attr(feature = "h2", allow(clippy::unnecessary_wraps))]
+    fn policy(self) -> Result<eggfetch_core::HttpVersionPolicy, (String, String)> {
+        match self {
+            Self::Auto | Self::Http1 => Ok(eggfetch_core::HttpVersionPolicy::Http1Only),
+            Self::Http2 => {
+                // `Http2Only` without the transport feature would fail deep
+                // inside the client. Refuse at the surface instead, with the
+                // feature named.
+                #[cfg(feature = "h2")]
+                {
+                    Ok(eggfetch_core::HttpVersionPolicy::Http2Only)
+                }
+                #[cfg(not(feature = "h2"))]
+                {
+                    Err((
+                        "configuration".into(),
+                        "outbound HTTP/2 is not available in this build; rebuild with the \
+                         opt-in outbound h2 feature"
+                            .into(),
+                    ))
+                }
+            }
+        }
+    }
+}
+
+impl OutboundVersionArgs {
+    /// Build the outbound client for this invocation's route and policy.
+    fn client(
+        &self,
+        route: &str,
+    ) -> Result<(eggfetch_core::Client, PhysicalRoute), (String, String)> {
+        build_client_with_version(route, self.outbound_version)
+    }
+}
+
+#[derive(Debug, Clone, Default, Args)]
+struct OutboundVersionArgs {
+    /// Outbound protocol for the upstream transaction: `auto` (HTTP/1.1, the
+    /// default), `http1`, or `http2` (ALPN `h2`, fails closed if the peer does
+    /// not select it).
+    #[arg(long, value_enum, default_value_t = OutboundVersionChoice::Auto)]
+    outbound_version: OutboundVersionChoice,
+}
+
 #[derive(Debug, Args)]
 struct ReplayArgs {
     #[arg(long)]
@@ -354,6 +429,8 @@ struct ReplayArgs {
     /// Outbound route: `direct` or a pproxy URI. See `record --route`.
     #[arg(long, default_value = "direct")]
     route: String,
+    #[command(flatten)]
+    outbound_version: OutboundVersionArgs,
     /// Candidate request scheduler; timeline requires stream event metadata.
     #[arg(long, value_enum, default_value_t = SchedulerChoice::Sequential)]
     scheduler: SchedulerChoice,
@@ -374,6 +451,8 @@ struct TestArgs {
     /// Outbound route: `direct` or a pproxy URI. See `record --route`.
     #[arg(long, default_value = "direct")]
     route: String,
+    #[command(flatten)]
+    outbound_version: OutboundVersionArgs,
     /// Candidate request scheduler; timeline requires stream event metadata.
     #[arg(long, value_enum, default_value_t = SchedulerChoice::Sequential)]
     scheduler: SchedulerChoice,
@@ -554,6 +633,7 @@ async fn run(cli: Cli) -> Result<(), (String, String)> {
                 args.fixture,
                 args.target,
                 args.route,
+                args.outbound_version.outbound_version,
                 "replay",
                 args.output,
                 false,
@@ -571,6 +651,7 @@ async fn run(cli: Cli) -> Result<(), (String, String)> {
                 args.fixture,
                 args.target,
                 args.route,
+                args.outbound_version.outbound_version,
                 "test",
                 args.output,
                 true,
@@ -595,11 +676,21 @@ async fn run(cli: Cli) -> Result<(), (String, String)> {
     }
 }
 
-fn build_client(route: &str) -> Result<(eggfetch_core::Client, PhysicalRoute), (String, String)> {
+/// Build the outbound client for an explicit route *and* protocol policy.
+///
+/// The two are separate decisions on purpose: a route says how to reach the
+/// peer, the version policy says which protocol to speak to it once reached.
+/// Routing H2 and speaking H2 are independent, and each is opt-in.
+fn build_client_with_version(
+    route: &str,
+    version: OutboundVersionChoice,
+) -> Result<(eggfetch_core::Client, PhysicalRoute), (String, String)> {
+    let policy = version.policy()?;
     match eggreplay_http::parse_route(route) {
         Ok(None) => {
             let client = eggfetch_core::Client::builder()
                 .retry_canceled_requests(false)
+                .http_version_policy(policy)
                 .build();
             Ok((
                 client,
@@ -617,6 +708,7 @@ fn build_client(route: &str) -> Result<(eggfetch_core::Client, PhysicalRoute), (
             let dialer = EggressDialer::new(connector);
             let client = eggfetch_core::Client::builder()
                 .retry_canceled_requests(false)
+                .http_version_policy(policy)
                 .dialer(dialer)
                 .build();
             Ok((client, physical))
@@ -648,7 +740,7 @@ async fn record(args: RecordArgs) -> Result<(), (String, String)> {
             .map_err(|error| ("runtime".into(), error.to_string()))?;
     }
     let (redaction, profile_id) = effective_redaction_policy(&args);
-    let (client, physical_route) = build_client(&args.route)?;
+    let (client, physical_route) = args.outbound_version.client(&args.route)?;
     let session = RecordingSession::create(
         &args.fixture,
         SessionMetadata {
@@ -845,7 +937,7 @@ async fn record_once_from_serve(args: ServeArgs) -> Result<(), (String, String)>
         .ok_or_else(|| ("configuration".into(), "--upstream is required".into()))?
         .parse()
         .map_err(|error: http::uri::InvalidUri| ("configuration".into(), error.to_string()))?;
-    let (client, physical_route) = build_client(&args.route)?;
+    let (client, physical_route) = args.outbound_version.client(&args.route)?;
     let (redaction, profile_id) = effective_serve_redaction_policy(&args);
     let session = RecordingSession::create(
         &args.fixture,
@@ -918,7 +1010,7 @@ async fn record_once_from_serve(args: ServeArgs) -> Result<(), (String, String)>
 async fn serve_append_new(args: ServeArgs) -> Result<(), (String, String)> {
     let source = Session::open(&args.fixture, StoreLimits::default())
         .map_err(|error| ("fixture".into(), error.to_string()))?;
-    let (client, physical_route) = build_client(&args.route)?;
+    let (client, physical_route) = args.outbound_version.client(&args.route)?;
     let (redaction, profile_id) = effective_serve_redaction_policy(&args);
     if profile_id != source.manifest().metadata.redaction_profile {
         return Err((
@@ -1032,7 +1124,7 @@ async fn serve_re_record(args: ServeArgs) -> Result<(), (String, String)> {
         .ok_or_else(|| ("configuration".into(), "--upstream is required".into()))?
         .parse()
         .map_err(|error: http::uri::InvalidUri| ("configuration".into(), error.to_string()))?;
-    let (client, physical_route) = build_client(&args.route)?;
+    let (client, physical_route) = args.outbound_version.client(&args.route)?;
     let (redaction, profile_id) = effective_serve_redaction_policy(&args);
     let temporary = sibling_transaction_path(&args.fixture, "rerecord");
     let session = RecordingSession::create(
@@ -1178,6 +1270,7 @@ async fn regression(
     fixture: PathBuf,
     target: String,
     route: String,
+    outbound_version: OutboundVersionChoice,
     command: &str,
     output: OutputArgs,
     enforce: bool,
@@ -1210,19 +1303,20 @@ async fn regression(
         );
         ("configuration".into(), error.to_string())
     })?;
-    let (client, physical_route) = build_client(&route).map_err(|(class, message)| {
-        emit_reports(
-            command,
-            output.output,
-            false,
-            Some(&class),
-            &target,
-            &[],
-            &[],
-            0,
-        );
-        (class, message)
-    })?;
+    let (client, physical_route) =
+        build_client_with_version(&route, outbound_version).map_err(|(class, message)| {
+            emit_reports(
+                command,
+                output.output,
+                false,
+                Some(&class),
+                &target,
+                &[],
+                &[],
+                0,
+            );
+            (class, message)
+        })?;
     let flows = session
         .iter_flows()
         .map_err(|error| ("fixture".into(), error.to_string()))?

@@ -75,8 +75,8 @@ boundary, and ADR 0008 owns interception security/transport ownership.
 | M015 | `implementation/protocols/015-bidirectional-http2-and-transport-baseline.md` | **ready** | M014-R2, M014B, M014D | Stage 11 umbrella |
 | M015A | `implementation/protocols/015a-published-dependency-and-h2-boundary-preflight.md` | closed | M014-R2, M014B | published dependency refresh + H2 ownership gate |
 | M015B | `implementation/protocols/015b-inbound-http2-gateway-and-replay.md` | closed | M015A | inbound H2 gateway/replay |
-| M015C | `implementation/protocols/015c-http2-end-to-end-semantic-and-regression-qualification.md` | **ready** | M015B, M010, M014B | end-to-end H2 semantic/regression qualification |
-| M015D | `implementation/protocols/015d-grpc-over-http2-integration-qualification.md` | blocked | M015C, M014D | real gRPC-over-H2 qualification |
+| M015C | `implementation/protocols/015c-http2-end-to-end-semantic-and-regression-qualification.md` | closed | M015B, M010, M014B | end-to-end H2 semantic/regression qualification |
+| M015D | `implementation/protocols/015d-grpc-over-http2-integration-qualification.md` | **ready** | M015C (closed), M014D (closed) | real gRPC-over-H2 qualification |
 | M015E | `implementation/protocols/015e-h2-hardening-hosted-qualification-and-closure.md` | blocked | M015A–M015D | hardening + hosted Stage 11 closure |
 
 ### Current execution gate
@@ -163,10 +163,12 @@ M014-C1 is closed (qualified via M014-C2) and M014-C2 is closed; see
 `closure/m014c2-websocket-finalization-qualification-and-closure-reconciliation.md`.
 Workspace suite: 379 tests. M014-R2 documentation reconciliation is closed; see
 `closure/m014r2-post-c2-documentation-reconciliation.md`. Stage 11 is now
-registered as M015 (bidirectional HTTP/2 and transport baseline). M015A is the
-sole executable child handoff; M015B–M015E remain blocked by their declared
-dependency chain. The M015 umbrella authorizes the program but is not a
-parallel implementation unit. See also
+registered as M015 (bidirectional HTTP/2 and transport baseline). M015A, M015B,
+and M015C are closed; M015D is the sole executable child handoff and M015E
+remains blocked until M015D closes. Workspace suite at M015C closure: 446 passed,
+2 pre-existing local `curl_interop` failures (hosted CI is authoritative). The
+M015 umbrella authorizes the program but is not a parallel implementation unit.
+See also
 `closure/m013b0-eggserve-0-3-adoption-and-absolute-form-qualification.md`.
 
 ## Canonical planning documents

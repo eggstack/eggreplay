@@ -45,6 +45,10 @@ tokio.workspace = true
 [features]
 default = []
 intercept = ["dep:eggreplay-intercept"]
+# Outbound HTTP/2 (M014B) is opt-in for the same reason inbound is: it
+# pulls the H2 protocol dependencies. Independent of the inbound features ---
+# an operator may want to *record* over H2 while serving H1, or the reverse.
+h2 = ["eggreplay-http/h2"]
 h2-inbound = ["eggreplay-http/h2-inbound"]
 h2-inbound-tls = ["h2-inbound", "eggreplay-http/h2-inbound-tls"]
 

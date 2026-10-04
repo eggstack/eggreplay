@@ -1,6 +1,6 @@
 # M015D — gRPC over HTTP/2 Integration Qualification
 
-Status: blocked
+Status: **ready**
 Depends on: M015C closure, M014D closure
 Parent: M015
 
