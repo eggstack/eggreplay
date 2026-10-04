@@ -1461,7 +1461,19 @@ impl eggreplay_store::WebSocketConversationFinalizer for ConversationCompletion 
                 }
             };
             if timed_out.timed_out() {
-                return Err(start.elapsed());
+                // `Condvar::wait_timeout` may report a timeout *slightly
+                // before* the deadline actually elapses: Windows in
+                // particular has a coarse system timer, so a 50ms wait can
+                // come back flagged as timed out at 49.9ms. Returning
+                // `Err(elapsed)` there would break this function's own
+                // contract — a caller that checks `elapsed >= deadline`
+                // (and reasonably so) would see a spurious early timeout.
+                //
+                // So treat `timed_out()` as a hint, not proof: loop back and
+                // re-read the clock. The top of the loop is the only place
+                // that decides the deadline was reached, and by then
+                // `elapsed` is measured at or after the deadline.
+                continue;
             }
         }
     }
@@ -3403,6 +3415,12 @@ mod tests {
         // Bounded wait: drive_with_deadline must observe the deadline and
         // return Err with the elapsed time when the completer has not yet
         // signalled; the wait must not block indefinitely.
+        //
+        // The `elapsed >= deadline` assertion below is the contract that
+        // Windows violated: `wait_timeout` there can report a timeout ~0.1ms
+        // early, and the old code returned that early reading as the result.
+        // Both the wall-clock elapsed and the *reported* duration are checked,
+        // because a caller may reasonably rely on either one.
         let (completion, completer) = ConversationCompletion::new();
         let deadline = std::time::Duration::from_millis(50);
         let start = std::time::Instant::now();
@@ -3412,13 +3430,16 @@ mod tests {
                 deadline,
             );
         let elapsed = start.elapsed();
-        assert!(
-            result.is_err(),
-            "drive_with_deadline must return Err when the completer has not signalled"
-        );
+        let reported = result
+            .expect_err("drive_with_deadline must return Err when the completer has not signalled");
         assert!(
             elapsed >= deadline,
             "wait must observe the deadline (elapsed={elapsed:?}, deadline={deadline:?})"
+        );
+        assert!(
+            reported >= deadline,
+            "the reported duration must not be short of the deadline \
+             (reported={reported:?}, deadline={deadline:?})"
         );
         // Drop the completer so the test cleans up; the waiter is no longer
         // holding the lock.

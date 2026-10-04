@@ -143,6 +143,53 @@ behaviour, and the original failure message points at exactly that. The fix
 removes the test's dependence on who wins the race rather than trying to lose
 it less often.
 
+## 4. A Windows-only flake found during hosted qualification
+
+Not part of the original three, but found while watching this milestone's CI:
+the Stage 11 commit `97f0589` (docs-only) failed hosted `verify (windows-latest,
+stable)` on `recording::tests::conversation_completer_drive_with_deadline_observations`.
+
+```text
+wait must observe the deadline (elapsed=49.8944ms, deadline=50ms)
+```
+
+The test asserts `elapsed >= deadline` and observed 49.89ms — 0.1ms short. This
+is a real contract violation in the product, not a bad assertion.
+
+`ConversationCompletion::drive_with_deadline` did:
+
+```rust
+if timed_out.timed_out() {
+    return Err(start.elapsed());
+}
+```
+
+`Condvar::wait_timeout` may report a timeout *slightly before* the deadline
+actually elapses — Windows' coarse system timer makes a 50ms wait come back
+flagged as timed out at 49.9ms. Returning `Err(elapsed)` on that signal hands
+back an elapsed time below the deadline, so a caller checking
+`elapsed >= deadline` — which is the natural reading of this function's
+contract — sees a spurious early timeout.
+
+The fix treats `timed_out()` as a hint rather than proof and re-reads the clock
+at the top of the loop, which is the only place that decides the deadline was
+reached:
+
+```rust
+if timed_out.timed_out() {
+    continue;   // top of loop re-checks `elapsed >= deadline`
+}
+```
+
+No busy-wait risk: each iteration calls `wait_timeout(remaining)` with a
+monotonically shrinking `remaining`, so it always blocks. Verified with an
+injected-early-signal harness (0/1/5/20 synthetic early timeouts) — the
+contract holds in every case.
+
+Worth noting: this is the *second* time the shutdown/deadline interaction in
+this area has turned out to be subtler than it looked. That is the argument for
+pinning the contract with a test rather than trusting it.
+
 ## Local gate
 
 ```text
