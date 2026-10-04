@@ -777,7 +777,17 @@ async fn start_gateway_with_timeout(
         .retry_canceled_requests(false)
         .tls_config(tls);
     if let Some(timeout) = timeout {
-        builder = builder.timeout(eggfetch_core::Timeout::from_secs(timeout.as_secs()));
+        // `from_secs` alone is not enough here, and M016 is why: it sets the
+        // per-phase budgets but NOT `total`, and the per-phase `read` budget
+        // only starts once a body chunk has arrived. Without a `total` cap a
+        // call whose request half never closes is not ended by the deadline at
+        // all — hyper tears the stream down with RST_STREAM instead, and the
+        // recorded failure is a protocol error rather than a timeout. Setting
+        // `total` is what makes "the outbound timeout ends the call" the real
+        // mechanism, which is the scenario this test claims to exercise.
+        let mut budget = eggfetch_core::Timeout::from_secs(timeout.as_secs());
+        budget.total = Some(timeout);
+        builder = builder.timeout(budget);
     }
     let client = builder.build();
     let handle = eggreplay_http::recording::start_recording_gateway_with_protocol(
@@ -830,10 +840,24 @@ impl Drop for Replay {
 /// Serve a published fixture over TLS HTTP/2, the same policy an operator
 /// selects for a sealed replay.
 async fn start_replay(name: &str, directory: &std::path::PathBuf) -> (Replay, TestCert) {
+    start_replay_with_matcher(name, directory, Matcher::strict(8)).await
+}
+
+/// Start a replay server with an explicit matcher profile.
+///
+/// Needed where the request that was recorded came from a raw H2 peer rather
+/// than from a Tonic client: such a peer sends no `user-agent`, so a Tonic
+/// client replaying it differs by a volatile header that the strict profile
+/// treats as significant. `practical` ignores exactly those volatile headers
+/// while still requiring an exact body, so the match stays meaningful.
+async fn start_replay_with_matcher(
+    name: &str,
+    directory: &std::path::PathBuf,
+    matcher: Matcher,
+) -> (Replay, TestCert) {
     let identity = test_cert(name);
     let session = Session::open(directory, StoreLimits::default()).expect("open session");
-    let fixture =
-        ReplayFixture::load_with_matcher(&session, Matcher::strict(8)).expect("replay fixture");
+    let fixture = ReplayFixture::load_with_matcher(&session, matcher).expect("replay fixture");
     let handle = fixture
         .start_with_protocol(
             "127.0.0.1:0".parse().expect("addr"),
@@ -1805,27 +1829,40 @@ async fn client_streaming_is_representable_in_the_canonical_model() {
     let _ = std::fs::remove_dir_all(&directory);
 }
 
-/// Bidirectional streaming is **deferred**, and this test is the evidence.
+/// An un-terminated bidirectional call is recorded faithfully, and replays
+/// faithfully.
 ///
-/// The gateway does forward a streaming request body, so a bidirectional call
-/// gets somewhere: the server replies to each message as it arrives, and the
-/// client sees those replies. What never happens is a *terminal* status,
-/// because the client never half-closes and the outbound timeout eventually
-/// ends the call.
+/// The gateway forwards a streaming request body, so a bidirectional call gets
+/// somewhere: the server replies to each message as it arrives, and the client
+/// sees those replies. What never happens is a *terminal* status, because the
+/// client never half-closes and the outbound timeout eventually ends the call.
 ///
-/// The observable outcome is precise, and it is the reason for the deferral:
-/// a 200 whose body carries the replies received so far and whose trailers
-/// carry **no `grpc-status` at all**. A gRPC client cannot call that a
-/// completed call, and a replay of that fixture would serve a response with no
-/// terminal status — which would be worse than not replaying it. The recorded
-/// flow is valid, its envelope is whole, and the missing status is exactly the
-/// signal that the call never finished.
+/// M015D deferred this case on the belief that a replay of such a fixture
+/// "would be worse than not replaying it". M017 found that premise did not hold
+/// and rewrote this test to prove the opposite:
 ///
-/// Supporting bidi needs a terminal-status story for a call that has no
-/// natural end. That is new canonical semantics, and M015D's rule is not to
-/// smuggle it in here.
+/// - The gateway is already full-duplex (hyper's `ResponseFuture` resolves on
+///   response *headers* while the connection task pumps the request body), so
+///   the transport was never the blocker.
+/// - The cut-off is already recorded: the deadline surfaces as a response-body
+///   error, which the recorder turns into a terminal `Error` stream event and
+///   suppresses the `End` event. M015D only ever asserted on trailers.
+/// - Replay is safe rather than dangerous, and this test shows it by
+///   observing a real client rather than predicting one. M017's research had
+///   predicted `Code::Unknown`, reasoning that replay would serve a clean 200
+///   with no `grpc-status` and that a gRPC client maps that to Unknown.
+///   Observing it disproved that specific prediction: replay reproduces the
+///   recorded terminal `Error` stream event as a broken stream, so the client
+///   sees `Internal`. The conclusion survives — the client sees a failure and
+///   never a false success — and the live-versus-replay code difference is
+///   documented at the assertion.
+///
+/// So the call's *ending* is not recorded because it had none, and its partial
+/// progress is recorded whole. That is a truthful fixture, and this test is what
+/// makes the support-matrix row "supported" rather than "deferred" load-bearing
+/// rather than a matter of opinion.
 #[tokio::test]
-async fn bidi_streaming_is_deferred_with_evidence() {
+async fn an_unterminated_bidi_call_records_its_cut_off_and_replays_faithfully() {
     let server = start_grpc_server("grpc-bidi-upstream").await;
     let gateway = start_gateway_with_timeout(
         "grpc-bidi",
@@ -1911,6 +1948,131 @@ async fn bidi_streaming_is_deferred_with_evidence() {
         grpc_status_from_trailers(&response.trailers).is_none(),
         "the missing terminal status must be visible in the fixture, so a reader can tell the call never completed"
     );
+
+    // The *other* half of the truth: the fixture records why the call stopped.
+    // M015D's deferral rested on the belief that nothing recorded the cut-off
+    // beyond the absent trailer. It did — the outbound deadline surfaces as a
+    // response-body error, which becomes a terminal `Error` stream event and
+    // suppresses the `End` event. Before M017 this category was hardcoded to
+    // "other", so a deadline looked identical to a reset.
+    let stream_events: eggreplay_core::StreamEvents = serde_json::from_slice(
+        &published
+            .read_extension("stream-events")
+            .expect("read extension")
+            .expect("a gateway-acquired session records stream events"),
+    )
+    .expect("stream events decode");
+    stream_events
+        .validate()
+        .expect("an interrupted stream must still produce valid stream events");
+    let bidi_events = stream_events
+        .flows
+        .iter()
+        .find(|flow| flow.flow_id == bidi_flow.id)
+        .expect("the bidi call must carry stream events");
+    let terminal = bidi_events
+        .response
+        .last()
+        .expect("a terminal event is recorded");
+    match &terminal.event {
+        eggreplay_core::StreamEventKind::Error {
+            category, phase, ..
+        } => {
+            assert_eq!(
+                category, "timeout",
+                "an outbound deadline must be recorded as a timeout, not as an unnamed failure"
+            );
+            assert_eq!(phase, "timeout");
+        }
+        other => panic!("an un-terminated call must record a terminal error, got {other:?}"),
+    }
+    assert!(
+        !bidi_events
+            .response
+            .iter()
+            .any(|event| matches!(event.event, eggreplay_core::StreamEventKind::End)),
+        "a cut-off call must not also record a clean End"
+    );
+
+    // And the replay is faithful. A real gRPC client receiving HTTP 200 with no
+    // `grpc-status` is required by the spec to treat the call as having no
+    // final status; tonic reports that as `Code::Unknown` with a protocol
+    // diagnostic. That is the same class of outcome the live client saw when
+    // the gateway timeout cut the call, which is what makes replaying this
+    // fixture honest rather than harmful.
+    let recorded_authority = bidi_flow.request.authority.clone();
+    // `practical`, not `strict`: the request was recorded from a raw H2 peer
+    // that sent no `user-agent`, so a Tonic client differs by that one volatile
+    // header. Everything else — path, scheme, authority, and the exact request
+    // body — must still match for the replay to be served at all.
+    let (replay, identity) = start_replay_with_matcher(
+        "grpc-bidi-unterminated-listener",
+        &directory,
+        Matcher::practical(8),
+    )
+    .await;
+    let channel = tonic_client_at(&identity, &recorded_authority, replay.address).await;
+    let mut replayed = bidi(&channel, vec![EchoRequest::new("one")])
+        .await
+        .expect("the recorded call must be selectable for replay");
+    let mut replay_messages = Vec::new();
+    let replay_terminal = loop {
+        match replayed.message().await {
+            Ok(Some(message)) => replay_messages.push(message.message),
+            Ok(None) => break None,
+            Err(status) => break Some(status),
+        }
+    };
+    // Both facts are reported together: a status-less replay is only
+    // meaningful alongside whatever the client did with the body first.
+    assert_eq!(
+        replay_messages,
+        vec!["bidi:one"],
+        "the partial progress the call made is replayed whole (terminal: {:?})",
+        replay_terminal
+            .as_ref()
+            .map(|status| status.message().to_string())
+    );
+    let replay_terminal = replay_terminal.expect(
+        "a replayed call with no recorded terminal status must not look complete to a gRPC client",
+    );
+    // The safety property, and the one that decides the support-matrix row: a
+    // gRPC client must NOT observe a successful call.
+    //
+    // M017's research predicted `Code::Unknown`, on the theory that replay
+    // would serve a clean 200 with no `grpc-status` and that tonic maps that
+    // to Unknown. Observing it disproved the prediction and kept the
+    // conclusion. Replay does not serve a clean end: it reproduces the
+    // recorded terminal `Error` stream event as a broken stream
+    // (`replay.rs:832-845` -> `TimedStreamStep::Error`), so the client's body
+    // read fails and tonic reports the h2 error as `Internal`.
+    //
+    // So the live and replayed clients see different *codes* — and that
+    // asymmetry is recorded rather than papered over:
+    //
+    // - Live: the gateway ends the downstream response cleanly after the
+    //   outbound timeout, so the client gets 200 + partial body + no trailers,
+    //   which tonic reports as `Unknown`.
+    // - Replay: the recorded stream events say the *outbound* leg was cut off,
+    //   and replay applies that termination to the downstream response too, so
+    //   the client sees the body read fail.
+    //
+    // Both are failures, and neither is a false success. The recorded
+    // truncation is upstream reality; whether replay should reproduce a
+    // downstream *client experience* different from that is a separate
+    // question this milestone does not open.
+    assert_eq!(
+        replay_terminal.code(),
+        Code::Internal,
+        "replay reproduces the recorded truncation, so the body read fails (message: {})",
+        replay_terminal.message()
+    );
+    assert_ne!(
+        replay_terminal.code(),
+        Code::Ok,
+        "a call with no recorded terminal status must never replay as success"
+    );
+    replay.close().await;
 
     let _ = std::fs::remove_dir_all(&directory);
 }

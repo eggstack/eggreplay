@@ -16,15 +16,41 @@ Streaming classes, as qualified over HTTP/2:
 | Server streaming | qualified |
 | Client streaming | qualified |
 | Bidirectional, terminated | qualified |
-| Bidirectional, un-terminated | **deferred** |
+| Bidirectional, un-terminated | qualified (M017) |
 
-An un-terminated bidirectional call is deferred for a specific reason. The
-recording gateway forwards a streaming request body, so the server's replies
-do reach the client — but a client that never half-closes produces no terminal
-`grpc-status`. The recorded flow is valid and its envelope is whole; the
-*missing* `grpc-status` is the signal that the call never completed. A gRPC
-client cannot call that a completed call, and replaying it as if it were
-complete would be worse than not replaying it.
+An un-terminated bidirectional call is qualified, with an honest scope. The
+recording gateway forwards a streaming request body, so the server's replies do
+reach the client — but a client that never half-closes produces no terminal
+`grpc-status`. The recorded flow is valid, its envelope is whole, and the
+*missing* `grpc-status` is the signal that the call never completed.
+
+What the fixture also records is **why** it stopped. The outbound deadline
+surfaces as a response-body failure, which the recorder turns into a terminal
+`Error` stream event (category `timeout`) and uses to suppress the clean `End`
+event. So both facts are in the recording: the call did not finish, and it was
+cut off by a deadline.
+
+Replaying such a fixture is safe. A gRPC client never observes a successful
+call. The live and replayed clients do see *different* failure codes, which is
+worth knowing:
+
+- **Live** — the gateway ends the downstream response cleanly after the outbound
+  timeout, so the client gets 200, a partial body, and no trailers, which Tonic
+  reports as `Unknown`.
+- **Replay** — the recorded stream events say the outbound leg was cut off, and
+  replay reproduces that termination downstream, so the body read fails and
+  Tonic reports `Internal`.
+
+Both are failures. Whether replay should instead reproduce the *downstream*
+client experience differs from the recorded upstream truncation is an open
+question, tracked separately; the safety property this milestone pins is that
+the call never replays as success.
+
+> M015D deferred this class on the belief that replaying a status-less response
+> "would be worse than not replaying it". M017 investigated, found the stated
+> blocker did not exist (the gateway is already full-duplex), and replaced the
+> prediction with an observed client outcome. See
+> `plans/closure/m017-unterminated-bidi-grpc.md`.
 
 One more property worth stating plainly, because it surprises people: the gate
 recognises a gRPC **response framing**, not a gRPC request. A server may answer

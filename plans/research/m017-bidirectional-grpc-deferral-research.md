@@ -131,6 +131,15 @@ timeout cut the call.
 honest position is that replay already reproduces the observed behaviour, and
 the deferral's stated reason does not hold.
 
+> **M017 corrected this section.** The prediction below was tested and
+> **disproved in its specifics**. Replay does not serve a clean status-less
+> 200: it reproduces the recorded terminal `Error` stream event as a broken
+> stream, so a real client sees `Code::Internal`, not `Code::Unknown`. The
+> conclusion survives — the client never sees a false success — but the
+> mechanism is not the one predicted here, and a live client and a replayed
+> client observe different codes. The observed outcome, and the asymmetry, are
+> recorded in `plans/closure/m017-unterminated-bidi-grpc.md`.
+
 ## What is genuinely still open
 
 | # | Item | Status |

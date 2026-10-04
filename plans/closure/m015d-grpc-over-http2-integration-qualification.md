@@ -188,9 +188,23 @@ flow or no flow; what it must not do is publish half an envelope.
 | Server streaming | **supported (experimental tier)** | `server_streaming_envelopes_are_ordered_in_one_recorded_stream`, `recorded_server_stream_replays_as_ordered_messages` |
 | Client streaming | **supported (experimental tier)** | `client_streaming_is_representable_in_the_canonical_model` — three envelopes in one stored request body, replayed intact |
 | Bidirectional, terminated | **supported (experimental tier)** | `a_terminated_bidi_call_records_and_replays_normally` — both directions recorded, terminal status recorded, all of it replayed |
-| Bidirectional, un-terminated | **deferred** | `bidi_streaming_is_deferred_with_evidence` |
+| Bidirectional, un-terminated | **deferred** → supported (M017) | `bidi_streaming_is_deferred_with_evidence`, renamed to `an_unterminated_bidi_call_records_its_cut_off_and_replays_faithfully` |
 
-### Why un-terminated bidi is deferred, with the evidence
+> **Superseded by M017.** The row is now **supported (experimental)** and the
+> test is renamed
+> `an_unterminated_bidi_call_records_its_cut_off_and_replays_faithfully`. The
+> deferral rested on two claims that did not survive investigation: that the
+> gateway could not forward request DATA while response DATA arrived (it
+> already can — hyper's `ResponseFuture` resolves on headers), and that
+> replaying a status-less fixture would be worse than not replaying it (a real
+> client was observed, and it never sees success). See
+> `closure/m017-unterminated-bidi-grpc.md`.
+
+### Why un-terminated bidi was deferred, and why M017 reversed it
+
+> The section below is M015D's original reasoning, retained as written. M017
+> investigated it and two of its three claims did not survive. Read it as the
+> record of what was believed, not as the current position.
 
 The gateway *does* forward a streaming request body, so a bidirectional client
 gets somewhere: the server replies to each message as it arrives and the client
@@ -330,7 +344,7 @@ automatically.
 | product runtime gains no Tonic | met | `--edges normal` is tonic-free for every product crate and every feature graph |
 | unary and server streaming qualified | met | 3 tests |
 | client streaming and bidi evaluated | met | client streaming supported; bidi evaluated and scoped to a deferral with evidence |
-| deferred classes recorded with evidence, not smuggled in | met | `bidi_streaming_is_deferred_with_evidence` + the terminated-bidi boundary test |
+| deferred classes recorded with evidence, not smuggled in | met | `bidi_streaming_is_deferred_with_evidence` (since renamed `an_unterminated_bidi_call_records_its_cut_off_and_replays_faithfully`) + the terminated-bidi boundary test |
 | M014D descriptor/security rules kept | met | the rules table above |
 | non-goals honoured | met | no codegen, no reflection, no gRPC-Web, no MITM |
 

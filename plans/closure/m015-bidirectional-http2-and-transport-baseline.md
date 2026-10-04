@@ -166,7 +166,7 @@ all-features gate is the wrong instrument for a feature-boundary claim.
 | H2 over an Eggress TCP route | experimental | `eggress` | M015C row 2, row 5 |
 | gRPC unary / server / client streaming | experimental | `grpc` | 16 in `grpc_integration` |
 | gRPC bidirectional, terminated | experimental | `grpc` | `a_terminated_bidi_call_records_and_replays_normally` |
-| gRPC bidirectional, un-terminated | **deferred** | — | `bidi_streaming_is_deferred_with_evidence` |
+| gRPC bidirectional, un-terminated | **supported** (M017) | `grpc` | `an_unterminated_bidi_call_records_its_cut_off_and_replays_faithfully` |
 | H2 interception (MITM) | unsupported | — | `protocol-boundary` asserts the absence |
 | WSS, extended-CONNECT WebSockets | unsupported | — | replay handshake still requires H1 |
 | HTTP/3 / QUIC | deferred (ADR 0009) | — | `protocol-boundary` asserts absence |
@@ -197,6 +197,12 @@ operator-facing.
 8. An un-terminated bidirectional gRPC call records a valid flow with **no
    terminal `grpc-status`**. That absence is the signal the call never
    completed; replaying it as complete would be misleading.
+
+   > **Resolved by M017.** Item 8 is superseded: the call is recorded and
+   > replays without ever appearing successful to a gRPC client, and the
+   > *reason* it stopped is now recorded too (a terminal `Error` stream event
+   > categorised `timeout`). See
+   > `closure/m017-unterminated-bidi-grpc.md`.
 
 Two further items are inherited rather than introduced: the pre-existing
 `curl_interop` local failures (now proven machine-specific) and the pre-existing
@@ -232,6 +238,13 @@ Carry these forward:
 2. **Un-terminated bidirectional gRPC** needs a terminal-status story before it
    can be qualified. That is new canonical semantics and needs a milestone that
    explicitly owns it — it was deliberately not smuggled into M015D.
+
+   > **Resolved by M017**, and the premise did not survive contact with the
+   > code. No new canonical semantics were needed: the gateway is already
+   > full-duplex, the cut-off is already recorded as a terminal stream event,
+   > and replay was observed against a real client rather than predicted. M017
+   > also fixed the body-error categorisation that would otherwise have left
+   > the fixture saying only "other".
 3. **Hardening items 1, 2, and 5** are candidate fixes for a future milestone:
    advertise the header-list bound, return 413 for an oversized body, and
    categorise a dead route. Each needs its own evidence; none is a

@@ -3,7 +3,7 @@
 #[cfg(all(feature = "eggserve", feature = "websocket"))]
 use base64::Engine;
 use bytes::Bytes;
-use eggfetch_core::transport::dialer::{DialError, DialErrorKind};
+use eggfetch_core::transport::dialer::DialErrorKind;
 use eggfetch_core::{Client, Error as FetchError};
 use eggreplay_core::{
     BodyRef, ErrorCategory, ErrorPhase, Flow, FlowError, FlowOutcome, HeaderEntry, HttpRequest,
@@ -218,19 +218,19 @@ where
                 let frame = match frame {
                     Ok(frame) => frame,
                     Err(error) => {
+                        let (category, phase) = classify_body_error(&error);
                         push_stream_event(
                             &mut response_events,
                             eggreplay_core::StreamEvent {
                                 delta_ns: elapsed_ns(response_started),
                                 event: eggreplay_core::StreamEventKind::Error {
                                     offset: response_offset,
-                                    category: "other".into(),
-                                    phase: "body".into(),
+                                    category: category.as_str().to_owned(),
+                                    phase: phase.as_str().to_owned(),
                                 },
                             },
                         )?;
                         response_failed = true;
-                        let _ = error;
                         break;
                     }
                 };
@@ -472,18 +472,18 @@ where
                 let frame = match frame {
                     Ok(frame) => frame,
                     Err(error) => {
+                        let (category, phase) = classify_body_error(&error);
                         push_stream_event(
                             &mut response_events,
                             eggreplay_core::StreamEvent {
                                 delta_ns: elapsed_ns(response_started),
                                 event: eggreplay_core::StreamEventKind::Error {
                                     offset: response_offset,
-                                    category: "other".into(),
-                                    phase: "body".into(),
+                                    category: category.as_str().to_owned(),
+                                    phase: phase.as_str().to_owned(),
                                 },
                             },
                         )?;
-                        let _ = error;
                         response_failed = true;
                         break;
                     }
@@ -2180,10 +2180,18 @@ where
                         &mut events,
                         eggreplay_core::StreamEvent {
                             delta_ns: elapsed_ns(this.started),
+                            // Deliberately `Other`, and deliberately not routed
+                            // through `classify_body_error`: this error comes
+                            // from the *inbound* EggServe body, whose error
+                            // type is opaque and carries no EggFetch category
+                            // to consult. The response side classifies because
+                            // it has real evidence; claiming a category here
+                            // would be a guess, and a wrong guess in a
+                            // recording is worse than an honest `Other`.
                             event: eggreplay_core::StreamEventKind::Error {
                                 offset: this.offset,
-                                category: "other".into(),
-                                phase: "body".into(),
+                                category: ErrorCategory::Other.as_str().to_owned(),
+                                phase: ErrorPhase::Body.as_str().to_owned(),
                             },
                         },
                     );
@@ -2376,17 +2384,81 @@ fn map_fetch_error(error: &FetchError) -> FlowError {
         // evidence collapses every connection-establishment failure to one
         // kind, so inferring "refused" from it would be a guess. An honest
         // general category beats a specific wrong one.
-        FetchError::CustomTransport(_) => match error.custom_transport_error().map(DialError::kind)
-        {
-            Some(DialErrorKind::Connection) => (ErrorCategory::Unreachable, ErrorPhase::Connect),
-            Some(DialErrorKind::Timeout) => (ErrorCategory::Timeout, ErrorPhase::Timeout),
-            Some(DialErrorKind::Authentication) => (ErrorCategory::Policy, ErrorPhase::Connect),
-            Some(DialErrorKind::Rejected) => (ErrorCategory::Policy, ErrorPhase::Policy),
-            Some(DialErrorKind::Other) | None => (ErrorCategory::Other, ErrorPhase::Other),
+        FetchError::CustomTransport(_) => match classify_dial_error(error) {
+            Some(class) => class,
+            None => (ErrorCategory::Other, ErrorPhase::Other),
         },
         _ => (ErrorCategory::Other, ErrorPhase::Other),
     };
     FlowError::new(category, phase, error.to_string())
+}
+
+/// Map a caller-supplied transport's `DialErrorKind` onto the stable
+/// vocabulary.
+///
+/// Shared by [`map_fetch_error`] and [`classify_body_error`] so a route
+/// failure reads the same whichever layer observed it. Before M017 only the
+/// request-level site consulted this, which is why a dead route was
+/// attributable there but invisible from a body error.
+fn classify_dial_error(error: &FetchError) -> Option<(ErrorCategory, ErrorPhase)> {
+    let kind = error.custom_transport_error()?.kind();
+    Some(match kind {
+        DialErrorKind::Connection => (ErrorCategory::Unreachable, ErrorPhase::Connect),
+        DialErrorKind::Timeout => (ErrorCategory::Timeout, ErrorPhase::Timeout),
+        DialErrorKind::Authentication => (ErrorCategory::Policy, ErrorPhase::Connect),
+        DialErrorKind::Rejected => (ErrorCategory::Policy, ErrorPhase::Policy),
+        DialErrorKind::Other => (ErrorCategory::Other, ErrorPhase::Other),
+    })
+}
+
+/// Classify a response-body streaming failure.
+///
+/// The body-phase counterpart of [`map_fetch_error`]. Same `FetchError` type
+/// and the same category decisions, but the phase is `Body` because that is
+/// where the failure happened — except for a deadline, which is reported as
+/// `Timeout` rather than as a generic body failure so that a call cut off by
+/// the outbound timeout is distinguishable from one killed by a reset.
+///
+/// Before M017 this site discarded the error and hardcoded
+/// `("other", "body")`, so a deadline cut-off, a connection reset, and a
+/// protocol violation all recorded identically. That is the same defect M016
+/// fixed one layer up, where every `DialErrorKind` collapsed to `Other`; it
+/// survived here because nobody looked at the body path.
+fn classify_body_error(error: &FetchError) -> (ErrorCategory, ErrorPhase) {
+    match error {
+        // An expired deadline is the actionable fact, and it is what makes an
+        // un-terminated gRPC call legible: the fixture then says the call was
+        // cut off by a deadline rather than merely "failed".
+        FetchError::Timeout { .. } | FetchError::TransportIoTimeout { .. } => {
+            (ErrorCategory::Timeout, ErrorPhase::Timeout)
+        }
+        FetchError::Tls(_)
+        | FetchError::CertificateVerification(_)
+        | FetchError::HostnameVerification(_)
+        | FetchError::TlsConfig(_)
+        | FetchError::CaBundle(_) => (ErrorCategory::Tls, ErrorPhase::Body),
+        // A route that fails mid-body is the same route failure as at
+        // request level; only the phase differs.
+        FetchError::CustomTransport(_) => {
+            let (category, _) =
+                classify_dial_error(error).unwrap_or((ErrorCategory::Other, ErrorPhase::Other));
+            (category, ErrorPhase::Body)
+        }
+        FetchError::Body(_)
+        | FetchError::DecodedBodyTooLarge
+        | FetchError::Decompression(_)
+        | FetchError::DecompressionRatioExceeded => (ErrorCategory::Other, ErrorPhase::Body),
+        // Protocol-shaped failures are `Body` here, where `map_fetch_error`
+        // uses `Headers`: this site is past the headers by construction.
+        FetchError::Protocol(_) | FetchError::Hyper(_) | FetchError::HyperClient(_) => {
+            (ErrorCategory::Protocol, ErrorPhase::Body)
+        }
+        // The stream died underneath us, so the connection is gone.
+        FetchError::Connect(_) | FetchError::Io(_) | FetchError::Pool(_) => {
+            (ErrorCategory::Unreachable, ErrorPhase::Body)
+        }
+        _ => (ErrorCategory::Other, ErrorPhase::Body),
+    }
 }
 
 fn now_ms() -> u64 {
@@ -2508,6 +2580,7 @@ fn _size_hint<B: Body>(body: &B) -> SizeHint {
 #[cfg(all(test, feature = "eggserve"))]
 mod tests {
     use super::*;
+    use eggfetch_core::transport::dialer::DialError;
     use eggreplay_core::SessionMetadata;
     use eggreplay_store::{RecordingSession, StoreLimits};
     use http_body_util::Full;
@@ -3061,6 +3134,83 @@ mod tests {
                 "{kind:?} must name the phase it failed in"
             );
         }
+    }
+
+    /// Body-stream failures must be attributable, and a deadline must not look
+    /// like a reset.
+    ///
+    /// Before M017 this site discarded the error and hardcoded
+    /// `("other", "body")`, so an un-terminated gRPC call cut off by the
+    /// outbound deadline recorded the same category as a connection reset. The
+    /// integration suite could not catch it: the deferral test only ever
+    /// asserted on trailers, never on the terminal stream event.
+    #[test]
+    fn body_stream_failures_are_attributed_and_timeouts_are_distinct() {
+        use eggfetch_core::timeout::TimeoutPhase;
+
+        // A deadline is the case that matters most: it is what an
+        // un-terminated gRPC call actually ends with, and it must be
+        // distinguishable from a stream that simply died.
+        let timeout = FetchError::Timeout {
+            phase: TimeoutPhase::Total,
+            elapsed: std::time::Duration::from_secs(2),
+        };
+        assert_eq!(
+            classify_body_error(&timeout),
+            (ErrorCategory::Timeout, ErrorPhase::Timeout),
+            "an expired deadline must be recorded as a timeout, not as an unnamed body failure"
+        );
+
+        // A transport death is not a deadline, and must not be reported as one.
+        let reset = FetchError::Io(std::sync::Arc::new(std::io::Error::new(
+            std::io::ErrorKind::ConnectionReset,
+            "peer reset",
+        )));
+        assert_eq!(
+            classify_body_error(&reset),
+            (ErrorCategory::Unreachable, ErrorPhase::Body),
+            "a connection reset is not a timeout"
+        );
+
+        // Protocol-shaped failures are Body here, where `map_fetch_error`
+        // would say Headers: this site is past the headers by construction.
+        let protocol = FetchError::Protocol("malformed chunked body".into());
+        assert_eq!(
+            classify_body_error(&protocol),
+            (ErrorCategory::Protocol, ErrorPhase::Body)
+        );
+
+        // A route failure mid-body keeps its request-level category so the
+        // two layers do not disagree about what went wrong with the route.
+        let route = FetchError::CustomTransport(Arc::new(DialError::new(
+            DialErrorKind::Connection,
+            "route down",
+        )));
+        assert_eq!(
+            classify_body_error(&route).0,
+            map_fetch_error(&route).category,
+            "a route failure must read the same from either layer"
+        );
+
+        // Anything unrecognized stays honest rather than being invented.
+        assert_eq!(
+            classify_body_error(&FetchError::Unsupported("nope".into())),
+            (ErrorCategory::Other, ErrorPhase::Body)
+        );
+    }
+
+    /// The recorded strings must be exactly what the stream-events validator
+    /// will later read back, or a classified error would be rejected at
+    /// finalization instead of stored.
+    #[test]
+    fn classified_body_errors_fit_the_stream_event_contract() {
+        let (category, phase) = classify_body_error(&FetchError::Timeout {
+            phase: eggfetch_core::timeout::TimeoutPhase::Total,
+            elapsed: std::time::Duration::from_secs(1),
+        });
+        assert_eq!(category.as_str(), "timeout");
+        assert_eq!(phase.as_str(), "timeout");
+        assert!(category.as_str().len() <= 64 && phase.as_str().len() <= 64);
     }
 
     /// Build a recording session plus a single-finisher conversation task that

@@ -288,5 +288,7 @@ are exactly the lanes that would catch a new edge into a forbidden graph.
 - No change to `ErrorCategory` variants or their serialized values.
 - No change to the WebSocket relay, the completion barrier, or the store
   validator. The product behaviour is correct as written and is now pinned.
-- The un-terminated bidirectional gRPC deferral from M015D remains deferred; it
-  needs a terminal-status story and its own milestone.
+- The un-terminated bidirectional gRPC deferral from M015D was deliberately left
+  alone here, on the view that it needs a terminal-status story of its own.
+  **That deferral is closed by M017**, which found no new canonical semantics
+  were required; see `closure/m017-unterminated-bidi-grpc.md`.
