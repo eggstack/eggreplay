@@ -169,7 +169,7 @@ M015A–M015E are all closed, and the umbrella record is
 serving, `h2c`, and gRPC over H2 are qualified **experimental** opt-in tiers
 behind the `h2-inbound`/`h2-inbound-tls`/`grpc` features; H1 remains the
 default and the only multiprotocol-free profile. Workspace suite at M015E
-closure: 477 passed across 32 suites, with 2 pre-existing local
+closure: 477 passed across 25 suites, with 2 pre-existing local
 `curl_interop` failures that all four hosted `verify` jobs prove
 machine-specific. Hosted run `37229585308` on `874d6de`. The M015 umbrella
 authorized the program but was not a parallel implementation unit. See also

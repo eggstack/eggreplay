@@ -59,39 +59,46 @@ asserted absent from every product graph and present only as a dev edge.
 
 ## Exact test counts
 
+Read directly from a `cargo test --workspace --all-features --locked
+--no-fail-fast` run, per suite:
+
 | Suite | Tests |
 |---|---|
 | `eggreplay-http` unit | 76 |
-| `h2_qualification` (pre-existing outbound H2) | 16 |
+| `eggreplay-intercept` unit | 64 |
+| `eggreplay-core` unit | 37 |
+| `eggreplay-store` unit | 21 |
 | `h2_inbound_serving` (M015B) | 30 |
-| `m015b_inbound_serving` (M015B CLI) | 8 |
+| `mitm` | 24 |
 | `h2_end_to_end` (M015C) | 23 |
+| `proxy_policy` | 23 |
 | `grpc_integration` (M015D) | 16 |
-| `h2_hardening` (M015E) | 15 |
-| `scenario_faults` | 7 |
+| `h2_qualification` (pre-existing outbound H2) | 16 |
 | `v01_qualification` | 16 |
-| `cli_contracts` | 64 |
+| `h2_hardening` (M015E) | 15 |
+| CLI unit | 12 |
+| `cli_contracts` | 12 |
+| `substrate` | 12 |
 | `har_migrate` | 11 |
-| `m013e_operator` | 7 |
-| `m013e_proxy_stats` | 9 |
-| `hardening` | 12 |
-| `mitm` | 9 |
-| `proxy_policy` | 21 |
-| `resource_bounds` | 3 |
-| `substrate` | 24 |
-| `tls_shutdown_isolation` | 3 |
-| `ca_leaf` | 7 |
-| `curl_interop` | 2 (both failing locally) |
-| `eggreplay-core` unit | 76 |
-| `eggreplay-store` unit | 11 |
-| `eggreplay-intercept` unit | 12 |
+| `ca_leaf` | 11 |
+| `resource_bounds` | 9 |
+| `tls_shutdown_isolation` | 9 |
+| `m013e_operator` | 8 |
+| `m015b_inbound_serving` (M015B CLI) | 8 |
 | `eggreplay-har` unit | 7 |
-| `eggreplay-core-version` | 3 |
-| CLI unit | 7 |
-| doc-tests | 0 |
+| `scenario_faults` | 7 |
+| `hardening` | 7 |
+| `m013e_proxy_stats` | 3 |
+| `curl_interop` | 0 passed, **2 failed** |
 
-**477 passed, 2 failed, across 32 suites** on the repository-standard locked
-gate. Stage 11 contributed 92 of those tests (30 + 8 + 23 + 16 + 15).
+**477 passed, 2 failed**, across 25 suites that carry tests. Stage 11
+contributed **92** of the passing tests: 30 + 8 (M015B), 23 (M015C), 16
+(M015D), 15 (M015E).
+
+An earlier draft of this table carried inferred per-suite numbers; they were
+replaced with the run's own output rather than left approximate. The aggregate
+was always correct, but a table of wrong numbers next to a correct total is
+worse than no table.
 
 The two failures are the same pre-existing, environment-specific
 `eggreplay-intercept/tests/curl_interop.rs` cases carried since the M015A

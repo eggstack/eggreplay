@@ -191,7 +191,7 @@ cargo clippy  --workspace --all-targets --all-features --locked -- -D warnings
 cargo test   --workspace --all-features --locked --no-fail-fast
 ```
 
-**477 passed, 2 failed** across 32 suites (462 + 15 in `h2_hardening`). The two
+**477 passed, 2 failed**, across 25 suites that carry tests (462 + 15 in `h2_hardening`). The two
 failures are the same pre-existing, environment-specific
 `eggreplay-intercept/tests/curl_interop.rs` cases carried since the M015A
 closure: `curl_plain_http_proxies_and_records` and
