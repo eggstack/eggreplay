@@ -73,8 +73,8 @@ boundary, and ADR 0008 owns interception security/transport ownership.
 | M014-C2 | `implementation/corrective/m014c2-websocket-finalization-qualification-and-closure-reconciliation.md` | closed | M014-C1 implementation (`b188c552`) | hosted qualification + closure reconciliation |
 | M014-R2 | `implementation/corrective/m014r2-post-c2-documentation-reconciliation.md` | closed | M014-C2 closure (`cbc9257`) | final documentation/status reconciliation |
 | M015 | `implementation/protocols/015-bidirectional-http2-and-transport-baseline.md` | **ready** | M014-R2, M014B, M014D | Stage 11 umbrella |
-| M015A | `implementation/protocols/015a-published-dependency-and-h2-boundary-preflight.md` | **ready** | M014-R2, M014B | published dependency refresh + H2 ownership gate |
-| M015B | `implementation/protocols/015b-inbound-http2-gateway-and-replay.md` | blocked | M015A | inbound H2 gateway/replay |
+| M015A | `implementation/protocols/015a-published-dependency-and-h2-boundary-preflight.md` | closed | M014-R2, M014B | published dependency refresh + H2 ownership gate |
+| M015B | `implementation/protocols/015b-inbound-http2-gateway-and-replay.md` | **ready** | M015A | inbound H2 gateway/replay |
 | M015C | `implementation/protocols/015c-http2-end-to-end-semantic-and-regression-qualification.md` | blocked | M015B, M010, M014B | end-to-end H2 semantic/regression qualification |
 | M015D | `implementation/protocols/015d-grpc-over-http2-integration-qualification.md` | blocked | M015C, M014D | real gRPC-over-H2 qualification |
 | M015E | `implementation/protocols/015e-h2-hardening-hosted-qualification-and-closure.md` | blocked | M015A–M015D | hardening + hosted Stage 11 closure |

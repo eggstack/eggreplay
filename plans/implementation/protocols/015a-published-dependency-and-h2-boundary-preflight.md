@@ -1,6 +1,6 @@
 # M015A — Published Dependency Refresh and H2 Serving Boundary Preflight
 
-Status: ready
+Status: closed
 Depends on: M014-R2 closure, M014B closure
 Parent: M015
 

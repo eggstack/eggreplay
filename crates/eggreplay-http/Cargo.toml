@@ -14,9 +14,24 @@ eggserve = ["dep:eggserve-primitives", "dep:eggserve-server"]
 websocket = ["dep:base64", "dep:tokio-tungstenite"]
 # Experimental HTTP/2 outbound qualification (M014B). Capability only: H1
 # remains the default policy everywhere; H2 requires an explicit
-# `HttpVersionPolicy` on the caller-constructed EggFetch client. Inbound H2
-# (EggServe replay/gateway) and H2 interception remain unsupported.
+# `HttpVersionPolicy` on the caller-constructed EggFetch client. This feature
+# is *outbound only* and must never imply inbound multiprotocol serving; see
+# `h2-inbound`.
 h2 = ["eggfetch-core/native-http2"]
+# Opt-in inbound HTTP/2 serving (M015A/M015B, ADR 0010). This is the explicit
+# boundary that admits EggServe Core — the multiprotocol composition layer —
+# and therefore its `eggserve-static` closure plus Hyper/h2 H2 protocol
+# dependencies. It is never a default feature: the ordinary H1/direct profile
+# stays on `eggserve-server` + `eggserve-primitives` alone (M015A section 1).
+# Selecting this feature reuses the *same* `eggserve_server::Service`
+# implementation as the H1 path; it does not fork the runtime, matcher, store,
+# redaction, scenario, or response-rendering authorities.
+h2-inbound = ["eggserve", "dep:eggserve-core", "eggserve-core/http2"]
+# TLS/ALPN HTTP/2 serving is separately explicit because EggServe's feature
+# graph requires `eggserve-core/tls` for a server identity. Operator-supplied
+# certificate/key material is mandatory; this feature never mints or installs
+# a CA and must not reuse the interception CA as an implicit server identity.
+h2-inbound-tls = ["h2-inbound", "eggserve-core/tls", "dep:eggnet-tls"]
 # Optional gRPC-aware views (M014D). Pure projections over recorded flow
 # bodies; kept off the default build so direct/H1 builds stay codec-free.
 grpc = ["dep:prost-reflect"]
@@ -45,6 +60,8 @@ tokio-tungstenite = { workspace = true, optional = true }
 url.workspace = true
 eggserve-primitives = { workspace = true, optional = true }
 eggserve-server = { workspace = true, optional = true }
+eggserve-core = { workspace = true, optional = true }
+eggnet-tls = { workspace = true, optional = true }
 eggress-outbound = { workspace = true, optional = true }
 prost-reflect = { workspace = true, optional = true }
 

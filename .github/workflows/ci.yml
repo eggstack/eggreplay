@@ -152,6 +152,102 @@ jobs:
           done
       - run: cargo check -p eggreplay-intercept --all-targets --locked
 
+  protocol-boundary:
+    # M015A/M015E lane: the opt-in inbound-HTTP/2 boundary (ADR 0010). The
+    # `h2-inbound` feature is the ONLY thing that may admit EggServe Core (and
+    # therefore `eggserve-static` plus the Hyper/h2 H2 protocol graph). Every
+    # ordinary profile must stay free of that multiprotocol closure, and
+    # outbound H2 must never imply inbound multiprotocol serving. QUIC/H3 stays
+    # absent from every M015-supported graph. `shell: bash` keeps the
+    # pipe/`&&`/`||` chains portable across runners.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+      - name: Ordinary profiles exclude the EggServe Core multiprotocol closure
+        shell: bash
+        run: |
+          set -euo pipefail
+          # First argument is a human label; the rest is passed to `cargo tree`.
+          check_no_core() {
+            label="$1"; shift
+            if cargo tree "$@" --edges normal --prefix none \
+              | grep -E '^(eggserve-core|eggserve-static|eggserve-h3) '; then
+              echo "$label unexpectedly pulled the EggServe Core/Static closure" >&2
+              exit 1
+            fi
+            echo "$label: no EggServe Core/Static"
+          }
+          check_no_core "workspace default" --workspace
+          check_no_core "eggreplay-http direct/default" -p eggreplay-http --no-default-features --features direct
+          check_no_core "eggreplay-http eggserve H1" -p eggreplay-http --no-default-features --features eggserve
+          check_no_core "eggreplay-http outbound H2 only" -p eggreplay-http --no-default-features --features eggserve,h2
+          check_no_core "eggreplay-intercept" -p eggreplay-intercept --all-features
+          check_no_core "eggreplay-cli" -p eggreplay-cli --all-features
+          check_no_core "eggreplay-python" -p eggreplay-python
+          check_no_core "eggreplay-core" -p eggreplay-core --no-default-features
+          check_no_core "eggreplay-store" -p eggreplay-store --no-default-features
+      - name: The opt-in inbound-H2 feature is explicit and does pull the closure
+        shell: bash
+        run: |
+          set -euo pipefail
+          for features in h2-inbound h2-inbound-tls; do
+            cargo check -p eggreplay-http --no-default-features --features "$features" --all-targets
+            if ! cargo tree -p eggreplay-http --no-default-features --features "$features" --edges normal --prefix none \
+              | grep -qE '^eggserve-core '; then
+              echo "$features must activate eggserve-core" >&2
+              exit 1
+            fi
+            echo "$features: eggserve-core present (opt-in, as designed)"
+          done
+          # `h2-inbound` is never a default feature of any product crate.
+          if cargo tree -p eggreplay-http --no-default-features --edges normal --prefix none \
+            | grep -qE '^eggserve-core '; then
+            echo "h2-inbound must not be reachable without an explicit feature" >&2
+            exit 1
+          fi
+      - name: QUIC/H3 stays absent from every M015-supported graph
+        shell: bash
+        run: |
+          set -euo pipefail
+          for features in direct eggserve h2 "eggserve,h2" h2-inbound h2-inbound-tls \
+                        "h2-inbound,h2-inbound-tls,h2,grpc,eggress,websocket"; do
+            if cargo tree -p eggreplay-http --no-default-features --features "$features" --edges normal --prefix none \
+              | grep -Ei '(quinn|eggserve-h3|eggress-transport-quic|eggress-protocol-h3) '; then
+              echo "QUIC/H3 leaked into the '$features' graph" >&2
+              exit 1
+            fi
+          done
+          echo "no QUIC/H3 in any M015-supported eggreplay-http graph"
+      - name: Interception never adopts inbound multiprotocol serving
+        shell: bash
+        run: |
+          set -euo pipefail
+          # eggreplay-intercept depends on eggserve-server only; it must never
+          # gain eggserve-core, and must never enable the inbound-H2 feature.
+          if cargo tree -p eggreplay-intercept --all-features --edges normal --prefix none \
+            | grep -E '^(eggserve-core|eggserve-static) '; then
+            echo "interception unexpectedly pulled the multiprotocol layer" >&2
+            exit 1
+          fi
+          if grep -Eq 'h2-inbound' crates/eggreplay-intercept/Cargo.toml; then
+            echo "eggreplay-intercept must not enable the inbound-H2 feature" >&2
+            exit 1
+          fi
+          echo "interception stays H1-only on eggserve-server"
+      - name: Python binding lane remains free of the multiprotocol closure
+        shell: bash
+        run: |
+          set -euo pipefail
+          if cargo tree -p eggreplay-python --edges normal --prefix none \
+            | grep -E '^(eggserve-core|eggserve-static|eggserve-h3) '; then
+            echo "the Python wheel must not gain the inbound-H2 closure" >&2
+            exit 1
+          fi
+          echo "python wheel is multiprotocol-free"
+
   interception:
     # M013F qualification lane: deterministic local CA/CONNECT/MITM coverage
     # that the ordinary all-features matrix also runs, pinned here so the

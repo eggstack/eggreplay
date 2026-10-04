@@ -61,15 +61,22 @@ url = { version = "2", features = ["serde"] }
 uuid = { version = "1", features = ["serde", "v4"] }
 tokio-tungstenite = { version = "=0.30.0", default-features = false, features = ["handshake"] }
 
-# Published sibling seams. EggServe uses only its direct runtime; Core, Static,
-# and Tower surfaces remain outside the EggReplay graph. Eggress remains on the
-# last qualified release until upstream fixes its pooled route-isolation and
-# metadata blockers.
-eggfetch-core = { version = "0.2.0", default-features = false, features = ["native-http1", "high-level-url", "tls-rustls", "tls-native-roots"] }
-eggserve-primitives = { version = "=0.2.1" }
-eggserve-server = { version = "=0.3.0" }
-eggress-outbound = { version = "=1.0.8", default-features = false }
+# Published sibling seams. EggServe's direct runtime (`eggserve-server` +
+# `eggserve-primitives`) owns ordinary H1 serving. `eggserve-core` is the
+# multiprotocol composition layer and is *opt-in only*, behind the explicit
+# `h2-inbound` feature of `eggreplay-http` (ADR 0010, M015A): the default
+# H1/direct graph must never pull it, nor the `eggserve-static` closure it
+# brings with it, nor any H2/QUIC/H3 dependency. Do not add `eggserve-core` as
+# a default dependency merely to obtain inbound HTTP/2.
+eggfetch-core = { version = "0.2.2", default-features = false, features = ["native-http1", "high-level-url", "tls-rustls", "tls-native-roots"] }
+eggserve-primitives = { version = "=0.2.2" }
+eggserve-server = { version = "=0.4.0" }
+eggress-outbound = { version = "=1.0.11", default-features = false }
 eggnet-tls = { version = "=0.2.0" }
+# Opt-in inbound HTTP/2 serving authority (M015A/M015B). `default-features =
+# false` keeps the H1/direct graph clean; `http2`/`tls` are turned on only by
+# the `h2-inbound`/`h2-inbound-tls` features of `eggreplay-http`.
+eggserve-core = { version = "=0.4.0", default-features = false }
 rustls = { version = "=0.23.45", default-features = false, features = ["ring", "std", "tls12"] }
 tokio-rustls = { version = "=0.26.2", default-features = false, features = ["ring", "tls12"] }
 rcgen = { version = "=0.13.2", default-features = false, features = ["ring", "pem", "x509-parser"] }
