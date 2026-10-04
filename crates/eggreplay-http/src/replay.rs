@@ -1700,6 +1700,12 @@ fn request_from_eggserve(
 /// HTTP/1.1 framing is the runtime's business. Re-filtering them in the
 /// product would be a second, weaker copy of a rule the transport already
 /// enforces — and would silently differ from it.
+///
+/// `eggserve_primitives` is an optional dependency, so this rule is gated with
+/// the rest of the serving path it belongs to. Its only caller is
+/// `handle_request`, which is itself `eggserve`-gated; leaving the definition
+/// ungated is what broke the `direct` profile in M015B.
+#[cfg(feature = "eggserve")]
 fn render_recorded_headers(
     version: eggserve_primitives::HttpVersion,
     headers: Vec<HeaderEntry>,
@@ -1737,7 +1743,10 @@ fn eggserve_trailers(trailers: &eggserve_primitives::Trailers) -> Vec<HeaderEntr
         .collect()
 }
 
-#[cfg(test)]
+/// These tests exercise the EggServe serving path, so they need
+/// `eggserve` just as the code they cover does. Un-gated, they broke
+/// `cargo check --all-targets` for the `direct` profile.
+#[cfg(all(test, feature = "eggserve"))]
 mod tests {
     use super::*;
     use eggreplay_core::{

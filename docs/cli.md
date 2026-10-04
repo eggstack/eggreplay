@@ -41,6 +41,29 @@ automatically use recorded WebSocket transcripts. The optional
 direction, timing, payload digest/length, close metadata, and redaction markers;
 it never prints message bytes.
 
+## Transport protocol flags
+
+`serve` and `record` take `--inbound`, which selects the **serving** protocol:
+`h1` (default), `h2c` (cleartext HTTP/2 prior knowledge), or `h2-tls` (HTTP/2
+negotiated by ALPN). The last two require a build with the `h2-inbound` or
+`h2-inbound-tls` cargo feature; without them the flag fails closed with exit
+code `2` rather than silently serving HTTP/1.1. TLS additionally requires
+`--inbound-tls-cert` and `--inbound-tls-key` — an operator identity, never a
+minted CA. `--h2-max-concurrent-streams` bounds concurrent streams per
+connection. The JSON result of both commands reports the effective `serving`
+policy.
+
+`serve`, `replay`, `record`, and `test` take `--outbound-version h1|h2|auto`,
+which selects the **outbound** client policy. `h2` requires the CLI's `h2`
+feature. **`auto` means HTTP/1.1**, not EggFetch's `Auto`: an upstream release
+must not be able to change the protocol of an existing invocation.
+
+A fixture recorded over `https` replays only over TLS. A scheme mismatch is a
+bounded refusal (not a relaxed match), and a gateway flow records the
+*upstream* authority it reached rather than the inbound `:authority`.
+
+See `docs/http2-support.md` for tiers, invariants, and known limitations.
+
 `serve --scenario <ID>` explicitly enables one authored scenario from the
 fixture's `rules` extension. Without the flag, a required scenario extension
 fails closed instead of being silently ignored. Scenario state is isolated to

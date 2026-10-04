@@ -3,6 +3,42 @@
 M014D adds optional semantic helpers above already-qualified transports.
 Neither changes the canonical flow store.
 
+Stage 11 (M015D) qualified the gRPC view against real traffic from an
+independent gRPC implementation and made the limits below testable rather than
+asserted. What changed in the product: **nothing**. The view is still a
+caller-side projection, and no product code path calls it automatically.
+
+Streaming classes, as qualified over HTTP/2:
+
+| Class | Status |
+|---|---|
+| Unary | qualified |
+| Server streaming | qualified |
+| Client streaming | qualified |
+| Bidirectional, terminated | qualified |
+| Bidirectional, un-terminated | **deferred** |
+
+An un-terminated bidirectional call is deferred for a specific reason. The
+recording gateway forwards a streaming request body, so the server's replies
+do reach the client — but a client that never half-closes produces no terminal
+`grpc-status`. The recorded flow is valid and its envelope is whole; the
+*missing* `grpc-status` is the signal that the call never completed. A gRPC
+client cannot call that a completed call, and replaying it as if it were
+complete would be worse than not replaying it.
+
+One more property worth stating plainly, because it surprises people: the gate
+recognises a gRPC **response framing**, not a gRPC request. A server may answer
+a non-gRPC request with a gRPC content-type — Tonic's `Unimplemented` reply
+does exactly that — and `is_grpc_content_type` correctly returns true about
+that response. Recognition alone never invents envelopes: an empty body yields
+a view with zero messages.
+
+For the full qualification, including the strict/lenient split between
+`decode_grpc_payload` (typed errors) and `grpc_view` (degrades to
+`decoded: None`), see
+`plans/closure/m015d-grpc-over-http2-integration-qualification.md` and
+`docs/http2-support.md`.
+
 ## gRPC views (`eggreplay_http::grpc`, behind the `grpc` cargo feature)
 
 For qualified HTTP/1.1 or HTTP/2 flows with `application/grpc*` content

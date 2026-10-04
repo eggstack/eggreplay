@@ -100,10 +100,16 @@ M014A HAR interchange/migration is closed with lossy, redacted, transactional
 tooling and a golden corpus (see `closure/m014a-har-and-migration.md`); HAR
 remains explicit interchange, never canonical.
 
-M014B qualifies experimental outbound H2 record/regression on the unchanged
-dependency line (`eggfetch-core 0.2.0` + `native-http2`); inbound H2, H2
-MITM, and `h2c` remain unsupported (see
-`closure/m014b-http2-qualification.md` and `docs/http2-support.md`).
+M014B qualifies experimental outbound H2 record/regression (see
+`closure/m014b-http2-qualification.md` and `docs/http2-support.md`). Stage 11
+extends that to a coherent bidirectional H2 path on a refreshed dependency
+line: M015A adopted `eggfetch-core 0.2.2`, `eggserve-server 0.4.0`,
+`eggserve-core 0.4.0`, `eggserve-primitives 0.2.2`, and `eggress-outbound
+1.0.11`, and M015B–M015E qualified inbound H2 serving, `h2c`, and gRPC over H2
+as experimental opt-in tiers (see `adrs/0010` and
+`closure/m015b-…`, `closure/m015c-…`, `closure/m015d-…`). H2 MITM remains
+unsupported: `eggreplay-intercept` never adopts the multiprotocol serving
+layer.
 
 M014C defers HTTP/3 on all paths: no Eggress QUIC route connector on the
 qualified line, no H3 serving seam in the adopted EggServe closure, and

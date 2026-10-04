@@ -262,6 +262,44 @@ jobs:
             exit 1
           fi
           echo "python wheel is multiprotocol-free"
+      - name: Every feature profile of eggreplay-http compiles
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The existing `dependency-boundary` steps check the *lib* for a few
+          # profiles. `--all-targets` is added here because the M015B regression
+          # that broke the `direct` profile lived partly in unit-test modules:
+          # `inbound.rs` and `render_recorded_headers` referenced optional
+          # `eggserve-*` crates without a gate, and two `mod tests` blocks
+          # exercised the serving path unguarded. A lib-only check missed all
+          # of it, because the optional crates are absent from that graph too
+          # but the failure only surfaced on a target the lane never built.
+          #
+          # Every profile must compile, including its tests. An optional
+          # feature is only a boundary if the profiles on both sides of it
+          # still build.
+          check_profile() {
+            label="$1"; shift
+            cargo check -p eggreplay-http --no-default-features "$@" --all-targets
+            echo "  profile ok: $label"
+          }
+          check_profile "no features"
+          check_profile "direct"          --features direct
+          check_profile "eggress"         --features eggress
+          check_profile "websocket"       --features websocket
+          check_profile "h2"              --features h2
+          check_profile "grpc"            --features grpc
+          check_profile "eggserve"        --features eggserve
+          check_profile "h2-inbound"      --features h2-inbound
+          check_profile "h2-inbound-tls"  --features h2-inbound-tls
+          check_profile "all M015 features" \
+            --features h2-inbound-tls,grpc,eggress,websocket
+          # The CLI reaches `inbound` through the `eggserve` feature its
+          # dependency declaration always enables, so an opt-in H2 feature must
+          # not change that.
+          cargo check -p eggreplay-cli --no-default-features --locked
+          cargo check -p eggreplay-cli --no-default-features --features h2-inbound-tls --locked
+          echo "every eggreplay-http feature profile compiles"
       - name: The gRPC oracle never enters a product graph
         shell: bash
         run: |

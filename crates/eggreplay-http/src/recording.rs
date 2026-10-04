@@ -2446,7 +2446,10 @@ fn _size_hint<B: Body>(body: &B) -> SizeHint {
     body.size_hint()
 }
 
-#[cfg(test)]
+/// These tests exercise the recording gateway, so they need the `eggserve`
+/// feature just as the code they cover does. Un-gated, they broke
+/// `cargo check --all-targets` for the `direct` profile.
+#[cfg(all(test, feature = "eggserve"))]
 mod tests {
     use super::*;
     use eggreplay_core::SessionMetadata;

@@ -56,13 +56,12 @@ M014, M014-R1, M014A–M014D, M014-C1, and M014-C2 are closed. M014-R2
 post-C2 documentation reconciliation is closed; see
 `closure/m014r2-post-c2-documentation-reconciliation.md`.
 
-Stage 11 is registered as M015 — bidirectional HTTP/2 and transport baseline.
-M015A (published dependency refresh + H2 serving-boundary preflight) is the
-sole executable child handoff. M015B–M015E are blocked by their declared
-dependency chain. The M015 umbrella is ready as the program authority, not as
-a separate parallel implementation task.
-
-See `registry.md` for the exact handoff state.
+Stage 11 executed as M015 — bidirectional HTTP/2 and transport baseline — and
+is closed. M015A (published dependency refresh + H2 serving-boundary preflight),
+M015B (inbound H2 gateway and replay), M015C (end-to-end H2 semantic and
+regression qualification), M015D (gRPC over HTTP/2), and M015E (hardening and
+hosted qualification) are all closed. See `registry.md` for the exact closure
+state.
 
 Do not start a blocked milestone by duplicating a dependency-owned subsystem.
 If repository evidence invalidates a plan assumption, update the plan and

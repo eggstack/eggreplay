@@ -72,12 +72,12 @@ boundary, and ADR 0008 owns interception security/transport ownership.
 | M014-C1 | `implementation/corrective/m014c1-post-m014-closure-and-websocket-finalization.md` | closed | M014 closure | closure truth + deterministic WebSocket finalization |
 | M014-C2 | `implementation/corrective/m014c2-websocket-finalization-qualification-and-closure-reconciliation.md` | closed | M014-C1 implementation (`b188c552`) | hosted qualification + closure reconciliation |
 | M014-R2 | `implementation/corrective/m014r2-post-c2-documentation-reconciliation.md` | closed | M014-C2 closure (`cbc9257`) | final documentation/status reconciliation |
-| M015 | `implementation/protocols/015-bidirectional-http2-and-transport-baseline.md` | **ready** | M014-R2, M014B, M014D | Stage 11 umbrella |
+| M015 | `implementation/protocols/015-bidirectional-http2-and-transport-baseline.md` | closed | M014-R2, M014B, M014D | Stage 11 umbrella |
 | M015A | `implementation/protocols/015a-published-dependency-and-h2-boundary-preflight.md` | closed | M014-R2, M014B | published dependency refresh + H2 ownership gate |
 | M015B | `implementation/protocols/015b-inbound-http2-gateway-and-replay.md` | closed | M015A | inbound H2 gateway/replay |
 | M015C | `implementation/protocols/015c-http2-end-to-end-semantic-and-regression-qualification.md` | closed | M015B, M010, M014B | end-to-end H2 semantic/regression qualification |
 | M015D | `implementation/protocols/015d-grpc-over-http2-integration-qualification.md` | closed | M015C (closed), M014D (closed) | real gRPC-over-H2 qualification |
-| M015E | `implementation/protocols/015e-h2-hardening-hosted-qualification-and-closure.md` | **ready** | M015A–M015D (all closed) | hardening + hosted Stage 11 closure |
+| M015E | `implementation/protocols/015e-h2-hardening-hosted-qualification-and-closure.md` | closed | M015A–M015D (all closed) | hardening + hosted Stage 11 closure |
 
 ### Current execution gate
 
@@ -161,14 +161,18 @@ and wheel run
 M014-C1 is closed (qualified via M014-C2) and M014-C2 is closed; see
 `closure/m014c1-post-m014-closure-and-websocket-finalization.md` and
 `closure/m014c2-websocket-finalization-qualification-and-closure-reconciliation.md`.
-Workspace suite: 379 tests. M014-R2 documentation reconciliation is closed; see
+Workspace suite at M014-R2 closure: 379 tests. M014-R2 documentation reconciliation is closed; see
 `closure/m014r2-post-c2-documentation-reconciliation.md`. Stage 11 is now
-registered as M015 (bidirectional HTTP/2 and transport baseline). M015A, M015B,
-M015C, and M015D are closed; M015E is the sole executable child handoff and
-closes Stage 11. Workspace suite at M015D closure: 462 passed across 31 suites,
-2 pre-existing local `curl_interop` failures (hosted CI is authoritative). The
-M015 umbrella authorizes the program but is not a parallel implementation unit.
-See also
+executed as M015 (bidirectional HTTP/2 and transport baseline) and is closed:
+M015A–M015E are all closed, and the umbrella record is
+`closure/m015-bidirectional-http2-and-transport-baseline.md`. Inbound HTTP/2
+serving, `h2c`, and gRPC over H2 are qualified **experimental** opt-in tiers
+behind the `h2-inbound`/`h2-inbound-tls`/`grpc` features; H1 remains the
+default and the only multiprotocol-free profile. Workspace suite at M015E
+closure: 477 passed across 32 suites, with 2 pre-existing local
+`curl_interop` failures that all four hosted `verify` jobs prove
+machine-specific. Hosted run `37229585308` on `874d6de`. The M015 umbrella
+authorized the program but was not a parallel implementation unit. See also
 `closure/m013b0-eggserve-0-3-adoption-and-absolute-form-qualification.md`.
 
 ## Canonical planning documents
