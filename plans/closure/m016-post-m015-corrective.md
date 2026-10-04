@@ -1,18 +1,19 @@
 # M016 — Post-M015 Corrective: Bounded Outbound Time, Route Error Attribution, and the WebSocket Shutdown Race
 
-Status: closed (local gate green; hosted qualification recorded below)
+Status: closed (qualifying hosted run 37235015972 on b5be2d1, all 14 jobs green)
 
 ## Scope
 
 | File | Change |
 |---|---|
 | `crates/eggreplay-cli/src/main.rs` | **feature**: `--timeout-secs` on `record`, `replay`, `test`, `serve`; `outbound_timeout` in the JSON status payloads; `required_upstream` helper |
-| `crates/eggreplay-http/src/recording.rs` | **fix**: `FetchError::CustomTransport` arm in `map_fetch_error`; `await_websocket_conversations`; 101 test waits before shutdown; new `shutdown_during_a_live_websocket_fails_closed`; new `caller_supplied_transport_failures_are_attributed` |
+| `crates/eggreplay-http/src/recording.rs` | **fix**: `FetchError::CustomTransport` arm in `map_fetch_error`; `drive_with_deadline` early-timeout contract; `await_websocket_conversations`; 101 test waits before shutdown; new `shutdown_during_a_live_websocket_fails_closed`; new `caller_supplied_transport_failures_are_attributed`; strengthened `conversation_completer_drive_with_deadline_observations` |
 | `crates/eggreplay-http/tests/h2_hardening.rs` | assertion updated: a dead route is now `Unreachable`/`Connect` |
 | `docs/cli.md`, `plans/closure/m015e-…`, `plans/closure/m015-…` | documentation and supersession annotations |
 
-Three defects from the M015E and M015 closures. Two of them turned out, on
-investigation, to be larger than the finding stated.
+Three defects from the M015E and M015 closures, plus one found during hosted
+qualification. The first two turned out, on investigation, to be larger than the
+finding stated.
 
 ## 1. The CLI had no request timeout at all
 
@@ -244,9 +245,41 @@ Per-suite, from the run's own output:
 | `eggreplay-intercept` unittests | 21 | 0 |
 | **Total** | **479** | **2** |
 
-## Hosted qualification
+## Hosted runs
 
-See the "Hosted runs" section appended below once run IDs are recorded.
+**Qualifying run:** [`37235015972`](https://github.com/eggstack/eggreplay/actions/runs/37235015972)
+on `b5be2d1` — **all 14 jobs green**, including `verify (windows-latest, stable)`,
+which is the job that proves the section 4 fix.
+
+- `37234665655` on `6c6f395` — superseded before completion when the Windows fix
+  landed; its non-green jobs were cancellations, not failures.
+- `37230696837` on `97f0589` (Stage 11 docs) — **failed** `verify (windows-latest,
+  stable)`. This is the run that surfaced section 4, and it is retained as
+  evidence: it is why `97f0589` is not the Stage 11 qualifying revision.
+- `37230175365` on `9581748` — the Stage 11 qualifying run, all 14 jobs green.
+
+| Job | Result |
+|---|---|
+| `verify (ubuntu-latest, stable)` | success |
+| `verify (ubuntu-latest, 1.89.0)` — MSRV | success |
+| `verify (macos-latest, stable)` | success |
+| `verify (windows-latest, stable)` | success |
+| `interception (ubuntu-latest)` | success |
+| `interception (macos-latest)` | success |
+| `interception (windows-latest)` | success |
+| `python-bindings (ubuntu-latest, 3.14, stable)` | success |
+| `python-bindings (ubuntu-latest, 3.11, 1.89.0)` | success |
+| `python-bindings (macos-latest, 3.11, stable)` | success |
+| `python-bindings (windows-latest, 3.11, stable)` | success |
+| `python-abi3-cross-version` | success |
+| `dependency-boundary` | success |
+| `protocol-boundary` | success |
+
+The `dependency-boundary` and `protocol-boundary` lanes matter here beyond their
+usual role: M016 adds a CLI flag and a store-side `DialError` import, and those
+are exactly the lanes that would catch a new edge into a forbidden graph.
+
+
 
 ## Non-goals, held
 

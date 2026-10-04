@@ -78,7 +78,7 @@ boundary, and ADR 0008 owns interception security/transport ownership.
 | M015C | `implementation/protocols/015c-http2-end-to-end-semantic-and-regression-qualification.md` | closed | M015B, M010, M014B | end-to-end H2 semantic/regression qualification |
 | M015D | `implementation/protocols/015d-grpc-over-http2-integration-qualification.md` | closed | M015C (closed), M014D (closed) | real gRPC-over-H2 qualification |
 | M015E | `implementation/protocols/015e-h2-hardening-hosted-qualification-and-closure.md` | closed | M015A–M015D (all closed) | hardening + hosted Stage 11 closure |
-| M016 | `implementation/corrective/m016-post-m015-corrective.md` | **in progress** | M015E (closed), M015D (closed) | bounded outbound timeout, route error attribution, WebSocket shutdown race |
+| M016 | `implementation/corrective/m016-post-m015-corrective.md` | closed | M015E (closed), M015D (closed) | bounded outbound timeout, route error attribution, WebSocket shutdown race |
 
 ### Current execution gate
 
@@ -175,6 +175,21 @@ closure: 477 passed across 25 suites, with 2 pre-existing local
 machine-specific. Hosted run `37230175365` on `9581748` (all 14 jobs green). The M015 umbrella
 authorized the program but was not a parallel implementation unit. See also
 `closure/m013b0-eggserve-0-3-adoption-and-absolute-form-qualification.md`.
+
+M016 is the post-M015 corrective and is closed; see
+`closure/m016-post-m015-corrective.md`. It closed the three items Stage 11 left
+open, and each turned out larger than first recorded: the CLI set **no** request
+timeout at all (now `--timeout-secs`, with `total` populated, unset by default);
+every Eggress route failure was categorised `Other` because `map_fetch_error`
+had no `CustomTransport` arm (so `ErrorCategory::ConnectionRefused` was
+unreachable in the product); and the WebSocket "flake" was a test racing
+documented abort-on-shutdown behaviour, now bounded with the fail-closed
+contract pinned by its own test. A fourth defect surfaced during hosted
+qualification: `drive_with_deadline` could report a deadline as reached ~0.1ms
+early on Windows and hand back a sub-deadline duration. Workspace suite at M016
+closure: 479 passed across 26 suites, with the same 2 pre-existing local
+`curl_interop` failures. Hosted run `37235015972` on `b5be2d1` (all 14 jobs
+green).
 
 ## Canonical planning documents
 
