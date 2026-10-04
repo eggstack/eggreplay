@@ -1,6 +1,6 @@
 # M015E — H2 Hardening, Hosted Qualification, and Closure
 
-Status: blocked
+Status: **ready**
 Depends on: M015A, M015B, M015C, M015D closures
 Parent: M015
 

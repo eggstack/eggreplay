@@ -74,3 +74,12 @@ hyper-util = { workspace = true }
 rcgen.workspace = true
 rustls.workspace = true
 tokio-rustls.workspace = true
+# M015D gRPC-over-HTTP/2 oracle. Dev-only: an independent, maintained gRPC
+# implementation must participate in qualification, and it must do so as a
+# test dependency so no product crate gains a gRPC stack. See the note in the
+# workspace manifest.
+tonic = { workspace = true }
+tonic-prost.workspace = true
+prost-types.workspace = true
+prost.workspace = true
+tower.workspace = true

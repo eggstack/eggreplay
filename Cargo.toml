@@ -80,3 +80,19 @@ eggserve-core = { version = "=0.4.0", default-features = false }
 rustls = { version = "=0.23.45", default-features = false, features = ["ring", "std", "tls12"] }
 tokio-rustls = { version = "=0.26.2", default-features = false, features = ["ring", "tls12"] }
 rcgen = { version = "=0.13.2", default-features = false, features = ["ring", "pem", "x509-parser"] }
+
+# Test-only gRPC oracle (M015D). These are declared here as *version sources*
+# for `crates/eggreplay-http`'s `[dev-dependencies]` and are referenced by no
+# product crate: CI's dependency-boundary lanes resolve `--edges normal`, which
+# excludes dev edges, so a Tonic-qualified server/client can participate in
+# gRPC-over-HTTP/2 qualification without entering any shipped dependency graph.
+# `prost` is pinned to the same major as the `prost-reflect` closure above, so
+# the two share one protobuf runtime rather than forking it.
+tonic = { version = "=0.14.6", default-features = false, features = ["codegen", "router", "tls-connect-info", "transport"] }
+tonic-prost = "=0.14.6"
+prost = "=0.14.4"
+# `prost-types` is already in the graph via `prost-reflect`; the gRPC
+# qualification needs `FileDescriptorSet` so a caller-supplied descriptor can
+# be built declaratively in a test rather than embedded as opaque bytes.
+prost-types = "=0.14.4"
+tower = { version = "=0.5.3", default-features = false, features = ["util"] }
