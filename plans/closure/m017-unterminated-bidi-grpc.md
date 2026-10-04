@@ -1,6 +1,6 @@
 # M017 — Un-Terminated Bidirectional gRPC: Classified Body Errors, and an Observed Replay Contract
 
-Status: closed (local gate green; hosted qualification recorded below)
+Status: closed (qualifying hosted run 37238704257 on 0c48a26, all 14 jobs green)
 
 Research: `plans/research/m017-bidirectional-grpc-deferral-research.md`
 
@@ -186,7 +186,37 @@ failures; neither file is in this milestone's diff, and all four hosted
 
 ## Hosted runs
 
-Recorded in the commit that closes hosted qualification.
+**Qualifying run:** [`37238704257`](https://github.com/eggstack/eggreplay/actions/runs/37238704257)
+on `0c48a26` — **all 14 jobs green**.
+
+| Job | Result |
+|---|---|
+| `verify (ubuntu-latest, stable)` | success |
+| `verify (ubuntu-latest, 1.89.0)` — MSRV | success |
+| `verify (macos-latest, stable)` | success |
+| `verify (windows-latest, stable)` | success |
+| `interception (ubuntu-latest)` | success |
+| `interception (macos-latest)` | success |
+| `interception (windows-latest)` | success |
+| `python-bindings (ubuntu-latest, 3.14, stable)` | success |
+| `python-bindings (ubuntu-latest, 3.11, 1.89.0)` | success |
+| `python-bindings (macos-latest, 3.11, stable)` | success |
+| `python-bindings (windows-latest, 3.11, stable)` | success |
+| `python-abi3-cross-version` | success |
+| `dependency-boundary` | success |
+| `protocol-boundary` | success |
+
+`protocol-boundary` matters more than usual here. M017 adds an
+`eggfetch_core::Error` match arm and a core `as_str()` API, and the gRPC
+replay test exercises a matcher profile — all changes that could plausibly
+reach across a feature boundary. That lane compiles every feature profile of
+`eggreplay-http` individually; all nine were also checked locally
+(`default`, `direct`, `eggserve`, `websocket`, `h2`, `h2-inbound`,
+`h2-inbound-tls`, `grpc`, `eggress`).
+
+Prior runs on this branch, for provenance: `37236089130` (research, docs only)
+green, `37235015972` on `b5be2d1` green (the M016 qualifying run), and
+`37230175365` on `9581748` green (the Stage 11 qualifying run).
 
 ## Evidence quality
 

@@ -79,7 +79,7 @@ boundary, and ADR 0008 owns interception security/transport ownership.
 | M015D | `implementation/protocols/015d-grpc-over-http2-integration-qualification.md` | closed | M015C (closed), M014D (closed) | real gRPC-over-H2 qualification |
 | M015E | `implementation/protocols/015e-h2-hardening-hosted-qualification-and-closure.md` | closed | M015A–M015D (all closed) | hardening + hosted Stage 11 closure |
 | M016 | `implementation/corrective/m016-post-m015-corrective.md` | closed | M015E (closed), M015D (closed) | bounded outbound timeout, route error attribution, WebSocket shutdown race |
-| M017 | `implementation/corrective/m017-unterminated-bidi-grpc.md` | **in progress** | M016 closure, M015D closure | un-terminated bidirectional gRPC: classified body errors, pinned replay contract |
+| M017 | `implementation/corrective/m017-unterminated-bidi-grpc.md` | closed | M016 closure, M015D closure | un-terminated bidirectional gRPC: classified body errors, pinned replay contract |
 
 ### Current execution gate
 
@@ -192,6 +192,28 @@ closure: 479 passed across 26 suites, with the same 2 pre-existing local
 `curl_interop` failures. Hosted run `37235015972` on `b5be2d1` (all 14 jobs
 green).
 
+M017 is the corrective for the one deferral Stage 11 left standing,
+and is closed; see `closure/m017-unterminated-bidi-grpc.md`. M015D had
+deferred un-terminated bidirectional gRPC on the stated ground that closing it
+needed "either a gateway that forwards request DATA while response DATA is
+still arriving, or a canonical model that records cross-direction ordering".
+Investigation found the premise did not hold — the gateway is **already**
+full-duplex (hyper's `ResponseFuture` resolves on headers while the connection
+task pumps the request body), and the cut-off is **already** recorded as a
+terminal stream event that M015D's test never looked at, because it asserted
+only on trailers. The real defect was one layer down: body-stream errors were
+hardcoded to `("other", "body")` with the error discarded, so a deadline
+cut-off, a reset, and a protocol violation recorded identically — the same
+defect M016 had just fixed for dial errors. The support row moves from
+**deferred** to **supported (experimental)**: a gRPC client never observes a
+false success, and the reason the call stopped is in the fixture. Notably the
+milestone's own research *predicted* `Code::Unknown` on replay and was
+**disproved** by a real client, which reports `Internal`; live and replayed
+clients see different codes, and that asymmetry is recorded rather than
+smoothed over. Workspace suite at M017 closure: 483 passed across 26 suites,
+with the same 2 pre-existing local `curl_interop` failures. Hosted run
+`37238704257` on `0c48a26` (all 14 jobs green).
+
 ## Canonical planning documents
 
 | Document | Purpose |
@@ -217,4 +239,6 @@ a parent milestone closes only when all required child tracks have explicit
 closure/support decisions.
 
 Hosted-CI-gated plans remain open until their required remote evidence is
-green. Historical closure records remain immutable audit artifacts.
+green.
+
+ Historical closure records remain immutable audit artifacts.
