@@ -187,3 +187,7 @@ It is not a drop-in VCR.py replacement.
 Rust 1.89 is the minimum supported version. Run the verification command from
 [`AGENTS.md`](AGENTS.md) before submitting changes. See
 [`plans/registry.md`](plans/registry.md) for the current execution gate.
+
+Start with [`architecture/overview.md`](architecture/overview.md) for a
+bird's-eye map of the crates, transport ownership, and capability tiers; it
+indexes a per-component deep dive for each one.
