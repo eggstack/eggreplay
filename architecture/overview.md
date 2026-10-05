@@ -33,12 +33,12 @@ exists; nothing but the CLI and the Python extension touches a network socket.
 
 ```
                         eggreplay-cli            eggreplay-python
-                        (thin, 6.0k)             (leaf, PyO3, 1.6k)
+                        (thin, 3.9k)             (leaf, PyO3, 1.6k)
                               │                          │
                               │  (optional feature)      │
                               ▼                          ▼
                      eggreplay-intercept          eggreplay-http
-                       (opt-in, 13.5k)            (adapters, 21.2k)
+                      (opt-in, 7.1k)             (adapters, 10.5k)
                               │                          │
                               └──────────┬───────────────┘
                                          ▼
@@ -49,18 +49,28 @@ exists; nothing but the CLI and the Python extension touches a network socket.
                        eggreplay-har  (HAR interchange, 2.5k)
 ```
 
-| Crate | Lines | Owns | Deep dive |
-|---|---|---|---|
-| `eggreplay-core` | 5,288 | Semantic models, matcher, scenarios, redaction, stream/WS/report semantics, error taxonomy. No transport, no Tokio, no filesystem. | [02](02-core-semantic-model.md) |
-| `eggreplay-store` | 3,428 | `.eggr` directory fixtures: manifest, JSONL flows, content-addressed blobs, session extensions, crash-safe publication. | [03](03-store-persistence.md) |
-| `eggreplay-har` | 2,479 | Lossy HAR 1.2 import/export with an explicit loss report and session migration helpers. No network I/O. | [11](11-har-and-migration.md) |
-| `eggreplay-http` | 21,234 | Adapters and orchestration: recording gateway, offline replay server, candidate regression, inbound protocol policy, H2/gRPC/WebSocket/Eggress seams. | [04](04-http-recording.md), [05](05-http-replay-and-serving.md), [06](06-regression-and-reporting.md), [07](07-protocol-and-routing-tiers.md) |
-| `eggreplay-intercept` | 13,490 | Optional explicit HTTP/1.1 proxy, CONNECT policy, CA lifecycle, leaf issuance, HTTPS MITM recording. | [08](08-interception.md) |
-| `eggreplay-cli` | 6,012 | Clap surface, exit codes, report emission (human/json/junit), fixture inspection. | [09](09-cli-surface.md) |
-| `eggreplay-python` | 1,623 | PyO3 bindings, asyncio lifecycle, fixture/report views, pytest plugin packaging. | [10](10-python-bindings.md) |
+Sizes in the diagram are **product source** (`src/**/*.rs` only).
 
-Workspace totals: 59 Rust files, ~53.5k lines, edition 2024, MSRV 1.89.
-`unsafe_code = "forbid"`, `missing_docs = "warn"`, Clippy pedantic at `-D warnings`.
+| Crate | src | tests | Owns | Deep dive |
+|---|---|---|---|---|
+| `eggreplay-core` | 5,288 | — | Semantic models, matcher, scenarios, redaction, stream/WS/report semantics, error taxonomy. No transport, no Tokio, no filesystem. | [02](02-core-semantic-model.md) |
+| `eggreplay-store` | 3,428 | — | `.eggr` directory fixtures: manifest, JSONL flows, content-addressed blobs, session extensions, crash-safe publication. | [03](03-store-persistence.md) |
+| `eggreplay-har` | 2,479 | — | Lossy HAR 1.2 import/export with an explicit loss report and session migration helpers. No network I/O. | [11](11-har-and-migration.md) |
+| `eggreplay-http` | 10,527 | 10,707 | Adapters and orchestration: recording gateway, offline replay server, candidate regression, inbound protocol policy, H2/gRPC/WebSocket/Eggress seams. | [04](04-http-recording.md), [05](05-http-replay-and-serving.md), [06](06-regression-and-reporting.md), [07](07-protocol-and-routing-tiers.md) |
+| `eggreplay-intercept` | 7,099 | 6,391 | Optional explicit HTTP/1.1 proxy, CONNECT policy, CA lifecycle, leaf issuance, HTTPS MITM recording. | [08](08-interception.md) |
+| `eggreplay-cli` | 3,914 | 2,098 | Clap surface, exit codes, report emission (human/json/junit), fixture inspection. | [09](09-cli-surface.md) |
+| `eggreplay-python` | 1,623 | — | PyO3 bindings, asyncio lifecycle, fixture/report views, pytest plugin packaging. | [10](10-python-bindings.md) |
+
+Lines are `.rs` under `crates/`, excluding `target/`. 59 Rust files, 53,554
+lines total — but only **34,358 are product source**; the other 19,196 are
+integration tests, and they are concentrated almost entirely in the three
+crates that own a wire. That ratio is itself the signal: `eggreplay-http` and
+`eggreplay-intercept` are as much qualification harness as product, which is
+why their test suites are the load-bearing evidence for every boundary claim
+in section 3.
+
+Edition 2024, MSRV 1.89. `unsafe_code = "forbid"`, `missing_docs = "warn"`,
+Clippy pedantic at `-D warnings`.
 
 Deep dive: [01 — workspace, boundaries, and build policy](01-workspace-and-boundaries.md).
 
@@ -72,14 +82,20 @@ The single most important structural rule: **EggReplay never owns an HTTP or
 TLS stack.** Every wire concern is delegated, and CI asserts the delegation
 rather than trusting a review comment.
 
-| Concern | Owner | How EggReplay consumes it |
-|---|---|---|
-| Outbound HTTP/1.1 + HTTP/2, TLS, framing, 101/CONNECT upgrade IO | `eggfetch-core 0.2.2` | The only client. `Client`, `HttpVersionPolicy`, `UpgradedStream`. |
-| Inbound HTTP/1.1 runtime, framing, lifecycle, tunnel handoff | `eggserve-server 0.4.0` + `eggserve-primitives 0.2.2` | The only server. `OriginOnly` for record/replay gateways. |
-| Inbound HTTP/2 (multiprotocol composition) | `eggserve-core 0.4.0` | **Opt-in only.** `eggserve_core::server::Service` *is* `eggserve_server::service::Service`. |
-| Listener-free outbound routing (SOCKS, chains) | `eggress-outbound 1.0.11` | `pproxy-compat` grammar only, behind the `eggress` feature. |
-| TLS pairing / cert-property checks | `eggnet-tls 0.2.0`, `x509-parser 0.16` | Interception leaf serving and CA inspection. |
-| Certificate generation/signing | `rcgen 0.13.2` | CA and leaf material, inside `eggreplay-intercept` only. |
+| Concern | Owner | Pin | How EggReplay consumes it |
+|---|---|---|---|
+| Outbound HTTP/1.1 + HTTP/2, TLS, framing, 101/CONNECT upgrade IO | `eggfetch-core 0.2.2` | caret | The only client. `Client`, `HttpVersionPolicy`, `UpgradedStream`. |
+| Inbound HTTP/1.1 runtime, framing, lifecycle, tunnel handoff | `eggserve-server 0.4.0` + `eggserve-primitives 0.2.2` | `=` | The only server. `OriginOnly` for record/replay gateways. |
+| Inbound HTTP/2 (multiprotocol composition) | `eggserve-core 0.4.0` | `=` | **Opt-in only.** `eggserve_core::server::Service` *is* `eggserve_server::service::Service`. |
+| Listener-free outbound routing (SOCKS, chains) | `eggress-outbound 1.0.11` | `=` | `pproxy-compat` grammar only, behind the `eggress` feature. |
+| TLS pairing / cert-property checks | `eggnet-tls 0.2.0`, `x509-parser 0.16` | `=` / caret | Interception leaf serving and CA inspection. |
+| Certificate generation/signing | `rcgen 0.13.2` | `=` | CA and leaf material, inside `eggreplay-intercept` only. |
+
+Every Eggstack and TLS artifact is pinned **exactly** (`=`) *except*
+`eggfetch-core`, which is a caret range resolved by `Cargo.lock`. State that
+honestly rather than claiming a blanket exact pin: a transport bump is a plan
+with a closure record, and the lockfile is what actually holds the graph in
+place.
 
 Two consequences worth internalising:
 
@@ -202,20 +218,52 @@ client ──▶ ExplicitProxy (EggServe OriginOrAbsolute)
 ## 6. The `.eggr` fixture
 
 An `.eggr` is a directory, not a file: `manifest.json`, `flows.jsonl`,
-`blobs/<sha256>`, and an optional `extensions/` directory.
+`blobs/<sha256>`, plus any extension payloads as **root-level single
+filenames**. There is no `extensions/` subdirectory — `validate_extension_path`
+rejects any path with more than one component, so a nested layout is
+structurally impossible.
 
-- **Flow schema 1** — semantic request + exactly one response or error outcome.
-  Order and duplicate headers/query pairs/trailers preserved.
-- **Session schema 2** — adds a bounded extension registry. Each extension is
-  `required_for_replay`, confined to a single filename, symlink-rejected, and
-  bounded to 16 MiB each / 32 MiB total. Unknown required extensions and future
-  session schemas are **rejected**; there is no ignore switch.
+```
+demo.eggr/
+├── manifest.json            # written last, then an atomic directory rename
+├── flows.jsonl              # one JSON flow record per line
+├── blobs/<sha256>           # content-addressed, no file extension
+├── stream-events.json       # extension
+├── websockets.jsonl         # extension
+├── rules.json               # extension
+└── interop-provenance.json  # extension
+```
+
+- **Flow schema 1** (`FLOW_SCHEMA_VERSION`) — semantic request + exactly one
+  response or error outcome. Order and duplicate headers/query
+  pairs/trailers preserved.
+- **Session schema 2** (`SESSION_SCHEMA_VERSION`) — adds a bounded extension
+  registry. Each extension is confined to a single filename, symlink-rejected,
+  and bounded to 16 MiB each / 32 MiB total / 64 extensions. Unknown *required*
+  extensions and future session schemas are **rejected**; there is no ignore
+  switch. Schema-1 sessions remain readable; there is no schema-2→3 migration.
 - **Bodies** — `absent`, `empty`, or a blob reference with SHA-256 and length.
-- **Publication** — extension payloads and blobs are written before the
-  manifest marker. The manifest is the final publication marker.
+- **Publication** — blobs, flows, and extension payloads are written and
+  fsynced before `manifest.json` is created, and `manifest.json` is itself the
+  last file created inside the staging directory, immediately followed by an
+  atomic directory rename. The manifest is the final publication marker.
 
-Registered extensions: `rules`, `stream-events`, `websocket-messages`,
-`interop-provenance`.
+Registered extensions — `required_for_replay` is **not** uniform:
+
+| Extension | File | `required_for_replay` | Why |
+|---|---|---|---|
+| `rules` | `rules.json` | `true` | Replay must apply the authored scenario machine. |
+| `stream-events` | `stream-events.json` | `true` | Body event cadence is replay semantics, not decoration. |
+| `websocket-messages` | `websockets.jsonl` | `true` | A recorded 101 must never replay as a static response. Forced, and validated as such. |
+| `interop-provenance` | `interop-provenance.json` | `false` | HAR-import provenance is EggReplay-internal and never affects replay. |
+
+`required_for_replay` means *the reader must understand and apply this
+extension* — not that the user opted into timing. Three separate places enforce
+it: store validation rejects an unknown required extension
+(`eggreplay-store/src/lib.rs:2130-2138`), replay fails closed on a required
+extension the build cannot honour (`eggreplay-http/src/replay.rs:177-201`), and
+migration blocks on a required extension with no registered migrator
+(`eggreplay-har/src/lib.rs:415-432`).
 
 Deep dive: [03 — store persistence](03-store-persistence.md).
 
@@ -223,16 +271,38 @@ Deep dive: [03 — store persistence](03-store-persistence.md).
 
 ## 7. Error and reporting model
 
-`eggreplay-core::error` defines the stable cross-layer taxonomy — an
-`ErrorPhase` (request, connect, tls, protocol, timeout, body, …) paired with an
-`ErrorCategory` (validation, policy, integrity, transport, internal, …). Every
-adapter maps its own failure into that pair, so the CLI can pick an exit code
-and the Python binding can pick an exception type without re-deriving meaning.
+`eggreplay-core::error` defines the stable cross-layer taxonomy: an
+`ErrorPhase` paired with an `ErrorCategory`. Every adapter maps its own failure
+into that pair, so the CLI can pick an exit code and the Python binding can pick
+an exception type without re-deriving meaning. Both enums serialize
+`snake_case`, and the wire strings are pinned by unit test.
 
-Regression reporting is a separate, versioned authority (`REPORT_SCHEMA_VERSION`)
-producing a `RegressionReport` with `DiffFinding`s across declared comparison
-dimensions plus optional timing assertions. The scheduler used is recorded in
-the report so a diff is reproducible.
+| `ErrorPhase` (9) | `ErrorCategory` (9) |
+|---|---|
+| `request` | `dns` |
+| `connect` | `connection_refused` |
+| `tls` | `unreachable` |
+| `headers` | `tls` |
+| `body` | `protocol` |
+| `timeout` | `policy` |
+| `cancelled` | `timeout` |
+| `policy` | `cancelled` |
+| `other` | `other` |
+
+Note the axes are deliberately different: `phase` is *where* it broke
+(`headers` and `body` are phases; `dns` and `protocol` are not), while
+`category` is *what* broke. `ErrorCategory::ConnectionRefused` is only reachable
+because M016 added the `FetchError::CustomTransport` arm that classifies a
+typed `DialError`; before that every Eggress route failure collapsed to
+`Other`. A `FlowError` message is truncated to 512 bytes, and category strings
+are held under the stream-event 64-byte bound.
+
+Regression reporting is a separate, versioned authority
+(`REPORT_SCHEMA_VERSION = 2`) producing a `RegressionReport` with
+`DiffFinding`s across declared comparison dimensions plus optional timing
+assertions. The scheduler used is recorded in the report so a diff is
+reproducible. The CLI's JSON envelope carries its own `schema_version: 1`,
+which is a different counter and must not be conflated with either.
 
 ---
 

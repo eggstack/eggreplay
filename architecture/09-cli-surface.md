@@ -439,11 +439,16 @@ Can any command fail open? Checked, and no:
 - `migrate` with a future schema or unknown required extension → `fixture`
   refusal, source untouched.
 
-Two documented-but-not-quite-enforced items to keep in mind. First,
-`docs/cli.md:56` documents `--outbound-version h1|h2|auto`, but the clap
-`ValueEnum` accepts `http1`/`http2` (`main.rs:362-371`); only `auto` matches.
-Second, `docs/cli.md:93` says serve's JSON reports the effective record,
-matcher, upstream, timing, *and* redaction policies, but the sealed payload
-(`main.rs:995`) omits `redaction_profile` and `outbound_timeout` even though
-`serve` accepts both flags; the other three modes report them
-(`main.rs:1068`, `main.rs:1177`, `main.rs:1259`).
+One documented-but-not-quite-enforced item to keep in mind: `docs/cli.md:93`
+says serve's JSON reports the effective record, matcher, upstream, timing,
+*and* redaction policies, but the sealed payload (`main.rs:995`) omits
+`redaction_profile` and `outbound_timeout` even though `serve` accepts both
+flags; the other three modes report them (`main.rs:1068`, `main.rs:1177`,
+`main.rs:1259`). A sealed server opens no socket, so the omission is defensible
+as behaviour but the flags are still accepted. `docs/cli.md` now states the
+sealed/network-capable split explicitly; aligning the payload is a product
+change, not a doc change.
+
+The `--outbound-version` drift that used to sit here is resolved:
+`docs/cli.md` and `docs/http2-support.md` now document the clap value names
+(`auto|http1|http2`) and the rejected `--inbound h2-tls` spelling.

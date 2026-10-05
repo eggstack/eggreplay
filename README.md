@@ -104,11 +104,14 @@ renderer serve both protocols, so the protocol is a listener property rather
 than a second code path. H1 remains the default and the only
 multiprotocol-free profile.
 
-`serve` and `record` take an explicit `--inbound` policy. `h1` is the default;
-`h2c` is an explicit, supported, opt-in prior-knowledge policy — a client
-selects HTTP/2 by speaking the 24-byte preface, so it is never an accidental
-downgrade. `h2-tls` negotiates by ALPN and requires an operator identity. See
-`plans/adrs/0010-inbound-http2-serving-boundary.md`.
+`serve` and `record` take an explicit `--inbound` policy. `http1` (alias `h1`) is
+the default; `http2` (aliases `h2`, `h2c`) is an explicit, supported,
+opt-in prior-knowledge policy — a client selects HTTP/2 by speaking the 24-byte
+preface, so it is never an accidental downgrade. TLS is enabled by supplying
+`--inbound-tls-cert` and `--inbound-tls-key`, not by naming a protocol:
+`--inbound h2-tls` is a recognised name that is deliberately rejected. See
+`plans/adrs/0010-inbound-http2-serving-boundary.md` and
+[`docs/cli.md`](docs/cli.md) for the exact accepted values.
 
 The following remain outside the support claim:
 
@@ -124,8 +127,8 @@ The following remain outside the support claim:
 ### gRPC over HTTP/2
 
 gRPC-over-HTTP/2 is a qualified, **experimental** tier: unary, server
-streaming, client streaming, and *terminated* bidirectional calls are recorded,
-replayed, and regressed as ordinary HTTP/2 traffic. There is no gRPC branch in
+streaming, client streaming, and bidirectional calls are recorded, replayed,
+and regressed as ordinary HTTP/2 traffic. There is no gRPC branch in
 the matcher, the store, or the renderer — a gRPC call is an HTTP/2 request with
 a `content-type` and a body. The gRPC view is a caller-side **derived
 projection** over the recorded raw body and trailers, which stay authoritative.
@@ -135,12 +138,13 @@ resolves one, and there is no reflection or network descriptor lookup. A
 supplied descriptor is bounded, and a malformed one fails as a derived-view
 error without touching the fixture.
 
-A **bidirectional call whose client half never closes** is deferred: the call
-never produces a terminal `grpc-status`, so the recording is valid but its
-*missing* status is the signal that the call did not complete. Replaying such a
-fixture would be misleading, so the shape is recorded and reported rather than
-silently served. A bidirectional call that *does* terminate is qualified
-normally.
+A bidirectional call whose client half never closes is also qualified (M017).
+The gateway is full-duplex, so replies do reach the client, but such a call
+never produces a terminal `grpc-status` — and that *missing* status is the
+signal, recorded alongside the classified reason the stream stopped. Replay
+never presents such a call as successful; a client observes a failure, and the
+specific code it sees differs between live and replayed paths, which is
+documented rather than smoothed over.
 
 See `plans/closure/m015b-inbound-http2-gateway-and-replay.md` for the inbound
 seam, `plans/closure/m015c-http2-end-to-end-semantic-and-regression-qualification.md`

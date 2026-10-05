@@ -79,22 +79,39 @@ not acquire new WebSocket conversations.
 
 ## Dependency state
 
-EggFetch 0.2.0 is consumed from crates.io and exposes the owned
-`UpgradedStream` API needed for 101/CONNECT handoff.
+Current declared state (root `Cargo.toml`). Every Eggstack and TLS artifact is
+pinned **exactly** except `eggfetch-core`, which is a caret range held by
+`Cargo.lock`:
 
-EggServe uses the published `eggserve-server 0.3.0` and
-`eggserve-primitives 0.2.1` artifacts, pinned exactly while their APIs remain
-pre-1.0. M013B0 qualifies the direct runtime without `eggserve-core`,
-`eggserve-static`, or an EggServe Tower feature. Ordinary record/replay
-gateways remain `OriginOnly` with EggServe-owned policy and admission; the
-M013B interception helper opts into `OriginOrAbsolute` while retaining
-EggServe-owned bounds and one tunnel-admission authority.
+| Dependency | Pin | Role |
+|---|---|---|
+| `eggfetch-core` | `0.2.2` (caret) | The only outbound client; exposes the owned `UpgradedStream` API needed for 101/CONNECT handoff. |
+| `eggserve-primitives` | `=0.2.2` | Inbound request/response primitives. |
+| `eggserve-server` | `=0.4.0` | The only server runtime; the default H1 path. |
+| `eggserve-core` | `=0.4.0` | **Optional.** The multiprotocol composition layer, admitted only by `h2-inbound`/`h2-inbound-tls` (ADR 0010). |
+| `eggress-outbound` | `=1.0.11` | `pproxy-compat` only; listener-free outbound routing. |
+| `eggnet-tls` | `=0.2.0` | TLS pairing / cert-property checks. |
+| `rcgen` | `=0.13.2` | CA and leaf generation, inside `eggreplay-intercept` only. |
 
-Eggress remains intentionally narrow. EggReplay enables only
-`eggress-outbound/pproxy-compat`. Eggress 1.0.8 is pinned exactly as the
-published qualified baseline. Eggress 1.0.9 and 1.0.10 remain
-upstream-pinned and are not adopted for M013 closure; M014 may revisit the
-adoption in a separate decision once any new release is requalified.
+The exact pins hold while those APIs remain pre-1.0. A transport version bump
+is a plan with a closure record, not a `cargo update`.
 
-No default library feature enables Eggress, WebSocket codec, or TLS
+Ordinary record/replay gateways remain `OriginOnly` with EggServe-owned policy
+and admission; the M013B interception helper opts into `OriginOrAbsolute` while
+retaining EggServe-owned bounds and one tunnel-admission authority. The
+`protocol-boundary` CI lane asserts that no ordinary profile — default, direct,
+H1, `h2` outbound, interception, or Python — acquires `eggserve-core`,
+`eggserve-static`, or the H2 protocol graph, and that interception never adopts
+it at all.
+
+Eggress remains intentionally narrow: only `eggress-outbound/pproxy-compat` is
+enabled. No default library feature enables Eggress, the WebSocket codec, or TLS
 interception. Direct HTTP remains the default acquisition route.
+
+Tonic is a **dev-dependency** of `eggreplay-http` only. It qualifies gRPC
+against an independent implementation and must never enter a product graph; the
+`protocol-boundary` lane asserts this across every supported profile.
+
+For the per-crate feature matrix, the boundary rules, and the CI lanes that
+enforce all of the above, see
+[`../architecture/01-workspace-and-boundaries.md`](../architecture/01-workspace-and-boundaries.md).

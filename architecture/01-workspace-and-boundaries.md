@@ -14,18 +14,23 @@ every one of them has a `cargo tree` or `grep` assertion in
 
 `Cargo.toml:1-11` declares seven members, resolver `3`:
 
-| Crate | Lines | Files | Owns (one line) |
-|---|---|---|---|
-| `eggreplay-core` | 5,288 | 11 | Semantic flow/conversation models, matcher, scenarios, redaction, error taxonomy; no transport, Tokio, or filesystem. |
-| `eggreplay-store` | 3,428 | 1 | `.eggr` directory fixtures: manifest, JSONL flows, content-addressed blobs, extensions. |
-| `eggreplay-har` | 2,479 | 1 | Lossy HAR 1.2 import/export with a loss report and session migration helpers. |
-| `eggreplay-http` | 21,234 | 16 | Every adapter and orchestration: recording gateway, replay server, regression, protocol policy. |
-| `eggreplay-intercept` | 13,490 | 18 | Opt-in explicit H1 proxy, CONNECT policy, CA lifecycle, leaf issuance, HTTPS MITM. |
-| `eggreplay-cli` | 6,012 | 6 | Clap surface, exit codes, report emission, fixture inspection. |
-| `eggreplay-python` | 1,623 | 6 | PyO3 bindings, asyncio lifecycle, pytest plugin packaging. |
-| **Total** | **53,554** | **59** | |
+| Crate | src | tests | Files | Owns (one line) |
+|---|---|---|---|---|
+| `eggreplay-core` | 5,288 | — | 11 | Semantic flow/conversation models, matcher, scenarios, redaction, error taxonomy; no transport, Tokio, or filesystem. |
+| `eggreplay-store` | 3,428 | — | 1 | `.eggr` directory fixtures: manifest, JSONL flows, content-addressed blobs, extensions. |
+| `eggreplay-har` | 2,479 | — | 1 | Lossy HAR 1.2 import/export with a loss report and session migration helpers. |
+| `eggreplay-http` | 10,527 | 10,707 | 16 | Every adapter and orchestration: recording gateway, replay server, regression, protocol policy. |
+| `eggreplay-intercept` | 7,099 | 6,391 | 18 | Opt-in explicit H1 proxy, CONNECT policy, CA lifecycle, leaf issuance, HTTPS MITM. |
+| `eggreplay-cli` | 3,914 | 2,098 | 6 | Clap surface, exit codes, report emission, fixture inspection. |
+| `eggreplay-python` | 1,623 | — | 6 | PyO3 bindings, asyncio lifecycle, pytest plugin packaging. |
+| **Total** | **34,358** | **19,196** | **59** | |
 
-Line counts are all `.rs` files under `crates/`, excluding `target/`.
+Line counts are all `.rs` files under `crates/`, excluding `target/`. `src` is
+product source; `tests` is the integration harness. `core`, `store`, `har`, and
+`python` have no standalone test targets (their unit tests are inline `#[cfg(test)]`
+modules), so all 19,196 test lines live in the three crates that touch a wire.
+That concentration is deliberate: the boundary claims in the next section are
+enforced by tests that must use a real loopback peer.
 
 ### Dependency graph
 
@@ -248,12 +253,14 @@ leaf workspace crate and Rust product crates must not depend on PyO3."
 
 ## CI enforcement lanes
 
-`.github/workflows/ci.yml` defines five jobs. `verify` runs a 4-cell matrix
+`.github/workflows/ci.yml` defines **six** jobs. `verify` runs a 4-cell matrix
 (three OSes on stable, plus Linux on 1.89.0 — the MSRV lane is Linux-only by
-design, `.github/workflows/ci.yml:14-18`), giving 14 total hosted jobs, which
-matches the "all 14 jobs green" phrasing in the M016/M017 closure records.
-The three boundary jobs are the interesting part: they assert architecture, not
-behavior.
+design, `.github/workflows/ci.yml:14-18`) and `interception` runs a 3-cell OS
+matrix, giving 14 total hosted jobs, which matches the "all 14 jobs green"
+phrasing in the M016/M017 closure records. The remaining four
+(`python-bindings`, `python-abi3-cross-version`, `dependency-boundary`,
+`protocol-boundary`) are single-runner jobs. The boundary jobs are the
+interesting part: they assert architecture, not behavior.
 
 ### `verify` — the compile/test baseline
 
@@ -512,9 +519,11 @@ gateway "is **already** full-duplex" and cites the upstream source line.
    inline.
 4. Does it add PyO3, `rcgen`, or `eggreplay-intercept` to a product crate? CI
    fails at `ci.yml:63-75` and `ci.yml:146-152`.
-5. Does it change a dependency version? `Cargo.toml` pins every Eggstack
-   artifact exactly (`=0.2.2`, `=0.4.0`, `=1.0.11`, `=0.2.0`) and states why
-   in comments; a bump is a plan with a closure record, not a `cargo update`.
+5. Does it change a dependency version? `Cargo.toml` pins every Eggstack and
+   TLS artifact exactly (`=0.2.2` EggServe primitives, `=0.4.0` EggServe
+   server/core, `=1.0.11` Eggress, `=0.2.0` eggnet-tls, `=0.13.2` rcgen) and
+   states why in comments; `eggfetch-core` is a caret range held by
+   `Cargo.lock`. A bump is a plan with a closure record, not a `cargo update`.
 6. Then: registry row, plan under `plans/implementation/`, closure record under
    `plans/closure/`, and a green run of the canonical command.
 

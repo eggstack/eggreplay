@@ -96,8 +96,9 @@ re-exported `HttpVersionPolicy` is `eggfetch_core`'s own type
 matters: the policy must originate from the pinned engine so H2 opt-in can never
 desync from it (`crates/eggreplay-http/src/h2.rs:138-144`).
 
-The CLI exposes this as `--outbound-version h1|h2|auto`
-(`../docs/http2-support.md`, § What is supported → Outbound), and one detail is
+The CLI exposes this as `--outbound-version auto|http1|http2` (the clap
+`ValueEnum` spellings, `crates/eggreplay-cli/src/main.rs:362-371`), documented in
+`../docs/http2-support.md` § What is supported → Outbound, and one detail is
 load-bearing: **`auto` maps to HTTP/1.1, not to EggFetch's `Auto`**. That is a
 deliberate stability choice — an upstream release that changed what `Auto`
 means could not silently change the protocol of an existing invocation.

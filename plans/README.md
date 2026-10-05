@@ -60,8 +60,24 @@ Stage 11 executed as M015 — bidirectional HTTP/2 and transport baseline — an
 is closed. M015A (published dependency refresh + H2 serving-boundary preflight),
 M015B (inbound H2 gateway and replay), M015C (end-to-end H2 semantic and
 regression qualification), M015D (gRPC over HTTP/2), and M015E (hardening and
-hosted qualification) are all closed. See `registry.md` for the exact closure
-state.
+hosted qualification) are all closed.
+
+Two post-Stage-11 correctives are also closed. **M016** closed the three items
+Stage 11 left open, each of which proved larger than first recorded: the CLI set
+no request timeout at all (now `--timeout-secs`, with `total` populated and the
+flag unset by default), every Eggress route failure was categorised `Other`
+because `map_fetch_error` had no `CustomTransport` arm, and the WebSocket
+"flake" was a test racing documented abort-on-shutdown behaviour. A fourth
+defect surfaced during hosted qualification: `drive_with_deadline` could report
+a deadline as reached ~0.1 ms early on Windows. **M017** closed the one
+deferral Stage 11 left standing — un-terminated bidirectional gRPC. The
+investigation disproved the stated blocker (the gateway is already full-duplex
+and the cut-off is already recorded); the real defect was one layer down, where
+body-stream errors were hardcoded and the underlying error discarded. That
+support row moved from deferred to supported (experimental), and the live-vs-
+replay status-code asymmetry is recorded rather than smoothed over. See
+`registry.md` for exact closure state, qualifying revisions, and hosted run
+IDs.
 
 Do not start a blocked milestone by duplicating a dependency-owned subsystem.
 If repository evidence invalidates a plan assumption, update the plan and

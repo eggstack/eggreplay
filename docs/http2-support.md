@@ -19,10 +19,10 @@ capability is enabled in any default build.
   `eggreplay-http/h2` cargo feature and an explicit `HttpVersionPolicy`
   (`Http2Only` or `Auto`) on the caller-constructed client. Default builds
   exclude the feature; default clients stay H1.
-- The CLI exposes this as `--outbound-version h1|h2|auto` on `serve`, `replay`,
-  `record`, and `test`. **`auto` maps to HTTP/1.1**, not to EggFetch's
-  `Auto`, so an upstream release cannot silently change the protocol of an
-  existing invocation.
+- The CLI exposes this as `--outbound-version auto|http1|http2` on `serve`,
+  `replay`, `record`, and `test` (note the `http1`/`http2` spellings).
+  **`auto` maps to HTTP/1.1**, not to EggFetch's `Auto`, so an upstream release
+  cannot silently change the protocol of an existing invocation.
 - Concurrent streams on one connection, request/response trailers (stored as
   flow trailers plus `StreamEventKind::Trailers`), large streaming bodies with
   backpressure, per-stream cancellation without corrupting siblings, target
@@ -43,13 +43,15 @@ capability is enabled in any default build.
   scenario engine, and renderer are shared. The protocol is a listener
   property, not a second code path. The only protocol-aware rendering rule is
   `content-length`, dropped on H2 only.
-- `--inbound h1` (default), `--inbound h2c` (cleartext prior knowledge), or
-  `--inbound h2-tls` (ALPN). `h2c` is an explicit, supported policy rather
-  than an accident: a client selects HTTP/2 by speaking the 24-byte preface, so
-  a request can never silently fall back.
-- `--inbound-tls-cert` / `--inbound-tls-key` supply an **operator identity**.
-  No CA is minted and no insecure mode exists. `--h2-max-concurrent-streams`
-  bounds concurrency.
+- `--inbound http1` (default; `h1` is an alias) or `--inbound http2` / `h2c`
+  (cleartext prior knowledge). Cleartext HTTP/2 is an explicit, supported policy
+  rather than an accident: a client selects HTTP/2 by speaking the 24-byte
+  preface, so a request can never silently fall back.
+- `--inbound-tls-cert` / `--inbound-tls-key` supply an **operator identity** and
+  are what enable ALPN-negotiated HTTP/2. No CA is minted and no insecure mode
+  exists. `--inbound h2-tls` is a recognised name that is deliberately
+  **rejected**, so TLS is selected by supplying identity material rather than by
+  naming the protocol. `--h2-max-concurrent-streams` bounds concurrency.
 - An H1-recorded fixture replays over H2 and an H2-recorded fixture replays
   over H1. Both directions are qualified.
 - The machine-readable status payloads of `serve` and `record` report the
@@ -57,25 +59,36 @@ capability is enabled in any default build.
 
 ### gRPC over H2
 
-- Unary, server streaming, client streaming, and *terminated* bidirectional
-  calls are recorded, replayed, and regressed.
+- Unary, server streaming, client streaming, and **both** terminated and
+  un-terminated bidirectional calls are recorded, replayed, and regressed.
 - The gRPC view is a caller-side **derived projection** over the recorded raw
   body and trailers, which stay authoritative. There is no gRPC branch in the
-  matcher, the store, or the renderer.
+  matcher, the store, or the renderer, and no product path calls the view
+  automatically.
 - Descriptor sets are **caller supplied**, bounded, and never fetched or
   resolved. A malformed or oversized one fails as a derived-view error without
   touching the fixture.
 - The compressed flag is reported; nothing is implicitly decompressed.
 
+### Un-terminated bidirectional gRPC
+
+Qualified under M017, with an honest scope. The gateway is already
+full-duplex, so server replies do reach the client; but a client that never
+half-closes produces no terminal `grpc-status`. The recorded flow is valid and
+its envelope is whole — the **missing status is the signal** that the call never
+completed, and the fixture also records *why* it stopped, as a terminal `Error`
+stream event with the classified category.
+
+Replaying such a fixture is safe: a gRPC client never observes a successful
+call. Live and replayed clients do report different failure codes (`Unknown`
+live, `Internal` on replay), and that asymmetry is recorded rather than smoothed
+over. See `docs/grpc-and-faults.md` and
+`plans/closure/m017-unterminated-bidi-grpc.md`.
+
 ## What is not supported
 
 - **H2 interception (MITM).** `eggreplay-intercept` never adopts the
   multiprotocol serving layer; it stays on `eggserve-server` and H1.
-- **An un-terminated bidirectional gRPC call.** The gateway forwards a
-  streaming request body, so replies arrive, but a client that never half-closes
-  produces no terminal `grpc-status`. The recorded flow is valid and its
-  *missing* status is the signal that the call never completed; replaying it as
-  if it were complete would be misleading.
 - **HTTP/3 / QUIC** on every path — deferred per ADR 0009. No Eggress QUIC
   route connector, no H3 serving seam, and EggFetch's `http3` safety unreviewed.
 - **WSS** and **extended-CONNECT WebSockets**. The replay handshake path still
@@ -121,9 +134,15 @@ EggServe runtime or of the canonical model, not of a test.
 - `eggfetch_core::Timeout::from_secs` sets `pool`, `connect`, `write`, and
   `read` but **not** `total`. The `read` budget is "time between response body
   chunks", so an upstream that accepts a request and then sends nothing is
-  unbounded by `from_secs` alone; a `total` cap is what bounds it.
-- A dead Eggress route fails closed but is categorised `Other`, so the failure
-  is not diagnostic in the session.
+  unbounded by `from_secs` alone. EggReplay therefore populates `total`
+  explicitly: the CLI's `--timeout-secs` bounds the whole transaction and is
+  **unset by default**, so no existing invocation's behaviour changed. A
+  timed-out transaction is recorded as an `ErrorCategory::Timeout` flow outcome
+  rather than a command-level error, so the command still exits `0`.
+- Route failures are attributed. A typed `DialError` is classified into the
+  taxonomy (`ConnectionRefused`, `Unreachable`, …) instead of collapsing to
+  `Other`; this was the M016 fix, and it is why
+  `ErrorCategory::ConnectionRefused` is reachable in the product at all.
 - A TLS peer that claims `:scheme: http` is refused with **400** before the
   matcher runs. That is the right place to catch it, but it is worth knowing.
 - The regression authority compares `date`, which is origin-generated and

@@ -2,11 +2,20 @@
 
 Every result-producing command accepts `--output human|json|junit` (JUnit is
 meaningful for `replay`/`test`/`diff`; other commands project a single
-assertion). JSON is a versioned envelope (`command`, `schema_version`,
-`success`, `failure_class`, `warnings`, `payload`); stdout carries JSON/JUnit,
-stderr carries `{failure_class}: {message}` diagnostics that agree with the
-envelope. Human rendering is terminal text (`ok`/`failed (...)`), never machine
-JSON, and is not a parsing contract.
+assertion). The flag is **per-subcommand, not global** — it must follow the
+command name (`eggreplay validate --output json`). JSON is a versioned envelope
+(`command`, `schema_version`, `success`, `failure_class`, `warnings`,
+`payload`); stdout carries JSON/JUnit, stderr carries `{failure_class}:
+{message}` diagnostics that agree with the envelope. Human rendering is
+terminal text (`ok`/`failed (...)`), never machine JSON, and is not a parsing
+contract. `schema_version` on the envelope is `1` and is a separate counter from
+the report schema and the session/flow schemas.
+
+Commands: `record`, `serve`, `replay`, `test`, `diff`, `inspect`, `validate`,
+`har import`, `har export`, `migrate`, plus the `--features intercept`-gated
+`proxy record`, `proxy validate`, and `ca init|import|inspect|export|rotate`.
+`validate` checks a fixture without reading bodies — it is not the same as
+`inspect --bodies`.
 
 Stable exit codes (compatibility contract):
 
@@ -35,7 +44,9 @@ whole message payloads before publication; configured JSON Pointer redaction
 also applies to valid JSON text messages. `serve --record-mode append-new`
 rejects `--websockets`. Offline `replay`/sealed `serve` and candidate `test`
 automatically use recorded WebSocket transcripts. The optional
-`--websocket-cadence-tolerance-ms` adds message cadence findings.
+`--websocket-cadence-tolerance-ms` adds message cadence findings — note it is a
+**comparison** flag, so it exists on `replay`, `test`, and `diff`, not on
+`record` or `serve`.
 
 `inspect --websockets` reports conversation IDs, flow links, message kind,
 direction, timing, payload digest/length, close metadata, and redaction markers;
@@ -43,18 +54,27 @@ it never prints message bytes.
 
 ## Transport protocol flags
 
-`serve` and `record` take `--inbound`, which selects the **serving** protocol:
-`h1` (default), `h2c` (cleartext HTTP/2 prior knowledge), or `h2-tls` (HTTP/2
-negotiated by ALPN). The last two require a build with the `h2-inbound` or
-`h2-inbound-tls` cargo feature; without them the flag fails closed with exit
-code `2` rather than silently serving HTTP/1.1. TLS additionally requires
-`--inbound-tls-cert` and `--inbound-tls-key` — an operator identity, never a
-minted CA. `--h2-max-concurrent-streams` bounds concurrent streams per
-connection. The JSON result of both commands reports the effective `serving`
-policy.
+`serve` and `record` take `--inbound`, which selects the **serving** protocol.
+Accepted values are `http1` (aliases: `h1`, the default) and `http2` (aliases:
+`h2`, `h2c`, `http2-cleartext` — cleartext HTTP/2 prior knowledge).
 
-`serve`, `replay`, `record`, and `test` take `--outbound-version h1|h2|auto`,
-which selects the **outbound** client policy. `h2` requires the CLI's `h2`
+`--inbound h2-tls` / `http2-tls` is a **recognised name that is deliberately
+rejected**: TLS serving requires operator certificate and key material, so the
+policy is built from `--inbound-tls-cert` and `--inbound-tls-key` rather than by
+naming the protocol. Passing it exits `2` with a diagnostic. ALPN negotiation
+therefore happens when the identity is supplied, not when the name is chosen.
+
+`http2` requires a build with the `h2-inbound` (or `h2-inbound-tls`) cargo
+feature; without it the flag fails closed with exit code `2` rather than
+silently serving HTTP/1.1. TLS additionally requires `--inbound-tls-cert` and
+`--inbound-tls-key` — an operator identity, never a minted CA.
+`--h2-max-concurrent-streams` bounds concurrent streams per connection. The JSON
+result of both commands reports the effective `serving` policy.
+
+`serve`, `replay`, `record`, and `test` take `--outbound-version`, which selects
+the **outbound** client policy. Accepted values are `auto` (the default),
+`http1`, and `http2` — note the spellings are `http1`/`http2`, not `h1`/`h2`,
+which are rejected at parse time. Selecting `http2` requires the CLI's `h2`
 feature. **`auto` means HTTP/1.1**, not EggFetch's `Auto`: an upstream release
 must not be able to change the protocol of an existing invocation.
 
@@ -90,7 +110,11 @@ publishes the merged fixture when the server stops, while re-record stages a
 replacement and preserves the old fixture until the new recording validates.
 `--route` is only accepted with a network-capable mode. `--matcher-profile`
 selects `strict` or `practical`, and serve's JSON result reports the effective
-record, matcher, upstream, timing, and redaction policies. `serve --timing-mode`
+record, matcher, upstream, and timing policies, plus the redaction profile and
+outbound timeout in the network-capable modes (`once`, `append-new`,
+`re-record`). The **sealed** mode reports record, matcher, upstream, and timing
+but omits `redaction_profile` and `outbound_timeout` even though it accepts both
+flags; a sealed server opens no socket, so nothing is timed. `serve --timing-mode`
 accepts `immediate` (default), `recorded`, or `scaled:<factor>` with factors
 from `0.01` to `100`. Timed replay needs a validated `stream-events`
 extension; recorded data delays are capped at 60 seconds each and five minutes
