@@ -1,7 +1,8 @@
 # M018 — Candidate-Path Error Attribution and H2 Body Diagnostics Closure
 
-Status: **implemented** — local gate green. Hosted qualification has not run,
-so this milestone is **not closed**. See "Why this is not closed" below.
+Status: **closed** — local gate green and hosted qualification complete on
+qualifying revision `17f40229f76d383a019eae34b312e5c7f1dca595`, hosted run
+`37644212037` (all 14 jobs green).
 
 Plan: `plans/implementation/corrective/m018-candidate-error-attribution-and-h2-body-diagnostics.md`
 
@@ -41,7 +42,7 @@ owner, and no plan claimed it.
 | `crates/eggreplay-http/src/recording.rs` | **fix**: delete the local table, import the shared one (−106 lines) |
 | `crates/eggreplay-http/src/regression.rs` | **fix**: `map_error` delegates to the shared table; the mid-body frame site classifies instead of discarding; 2 tests |
 | `crates/eggreplay-http/src/replay.rs` | **fix**: `declared_body_length` + 413 for a declared oversized body |
-| `crates/eggreplay-http/tests/h2_hardening.rs` | **add**: advertised-SETTINGS evidence; declared-oversized 413 (15 → 17) |
+| `crates/eggreplay-http/tests/h2_hardening.rs` | **add/correct**: the header-list bound is advertised as the operator's own; declared-oversized 413 (15 → 17) |
 | `docs/http2-support.md`, plan, registry | support-matrix and limitation corrections |
 
 ### Two candidate body sites stay `other`/`body` on purpose
@@ -173,18 +174,35 @@ rather than assumed.
 
 Not reproduced locally: `python-bindings` and `python-abi3-cross-version`. No
 Rust change here touches `eggreplay-python`, and its edge is unchanged, but those
-lanes have **not** been verified locally and hosted CI is the gate.
+lanes were **not** verified locally. Hosted CI is the gate, and it has now run —
+see below.
 
-## Why this is not closed
+## Hosted qualification
 
-`plans/registry.md` requires a closure record to name a qualifying revision and
-a hosted run ID. No hosted run exists for this work, and a milestone closes on
-evidence, never on the presence of source.
+Qualifying revision `17f40229f76d383a019eae34b312e5c7f1dca595`, hosted run
+`37644212037`, **all 14 jobs green**:
 
-To close M018: commit, push, and record the green Actions run here — all
-fourteen jobs, including `interception` on Ubuntu/macOS/Windows,
-`dependency-boundary`, `protocol-boundary`, and the four `python-bindings`
-lanes. Until then the registry row stays **implemented**.
+| Job | Conclusion |
+|---|---|
+| `verify (ubuntu-latest, stable)` | success |
+| `verify (ubuntu-latest, 1.89.0)` | success |
+| `verify (macos-latest, stable)` | success |
+| `verify (windows-latest, stable)` | success |
+| `interception (ubuntu-latest)` | success |
+| `interception (macos-latest)` | success |
+| `interception (windows-latest)` | success |
+| `python-bindings (ubuntu-latest, 3.11, 1.89.0)` | success |
+| `python-bindings (ubuntu-latest, 3.14, stable)` | success |
+| `python-bindings (macos-latest, 3.11, stable)` | success |
+| `python-bindings (windows-latest, 3.11, stable)` | success |
+| `python-abi3-cross-version` | success |
+| `dependency-boundary` | success |
+| `protocol-boundary` | success |
+
+This supplies the evidence the local gate could not: the two Python lanes, all
+three Windows and macOS platforms, the MSRV lane, and both boundary lanes as CI
+executes them rather than as they were reproduced here. The milestone closes on
+this run, not on the presence of source.
 
 ## Known limitations
 

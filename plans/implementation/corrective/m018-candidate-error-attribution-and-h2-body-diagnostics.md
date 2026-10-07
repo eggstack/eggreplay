@@ -1,6 +1,7 @@
 # M018 — Post-M017 Corrective: Candidate-Path Error Attribution and H2 Body Diagnostics
 
-Status: **implemented** (local gate green; hosted qualification outstanding)
+Status: **closed** (local gate green; hosted qualification complete on `17f4022`,
+run `37644212037` — all 14 jobs green)
 
 ## Why this milestone exists
 

@@ -80,7 +80,7 @@ boundary, and ADR 0008 owns interception security/transport ownership.
 | M015E | `implementation/protocols/015e-h2-hardening-hosted-qualification-and-closure.md` | closed | M015A–M015D (all closed) | hardening + hosted Stage 11 closure |
 | M016 | `implementation/corrective/m016-post-m015-corrective.md` | closed | M015E (closed), M015D (closed) | bounded outbound timeout, route error attribution, WebSocket shutdown race |
 | M017 | `implementation/corrective/m017-unterminated-bidi-grpc.md` | closed | M016 closure, M015D closure | un-terminated bidirectional gRPC: classified body errors, pinned replay contract |
-| M018 | `implementation/corrective/m018-candidate-error-attribution-and-h2-body-diagnostics.md` | **implemented** (hosted CI outstanding) | M017 closure | shared error table; 413 for a declared oversized body; retired the mis-measured H2 header-list limitation |
+| M018 | `implementation/corrective/m018-candidate-error-attribution-and-h2-body-diagnostics.md` | closed | M017 closure | shared error table; 413 for a declared oversized body; retired the mis-measured H2 header-list limitation |
 
 ### Current execution gate
 
@@ -215,9 +215,10 @@ smoothed over. Workspace suite at M017 closure: 483 passed across 26 suites,
 with the same 2 pre-existing local `curl_interop` failures. Hosted run
 `37238704257` on `0c48a26` (all 14 jobs green).
 
-M018 is the post-M017 corrective and is **implemented, not closed**: the local
-gate is green, but hosted qualification has not run, and a milestone closes on
-evidence rather than on the presence of source. It takes the two audited
+M018 is the post-M017 corrective and is **closed** on qualifying revision
+`17f4022` with hosted run `37644212037` (all 14 jobs green), including the two
+Python lanes, all three Windows/macOS platforms, the MSRV lane, and both
+boundary lanes. It takes the two audited
 residual tracks that are dependency-free and inside EggReplay's ownership.
 **Track A** found a third, independent copy of the transport-error table — in
 the candidate/regression path — with no `CustomTransport` arm at all, so a dead
