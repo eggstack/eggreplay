@@ -123,11 +123,23 @@ over. See `docs/grpc-and-faults.md` and
 These are recorded rather than hidden. They are properties of the adopted
 EggServe runtime or of the canonical model, not of a test.
 
-- `H2Limits::max_header_list_size` is enforced inbound but **not advertised**:
-  the SETTINGS frame still carries EggServe's own 16384, so a client sizes its
-  header block by a number the operator did not choose.
-- An oversized request body surfaces as **500**, not 413. Bounded and safe, but
-  not the most informative status.
+- ~~`H2Limits::max_header_list_size` is enforced inbound but not advertised.~~
+  **Retired by M018.** This was never a limitation: the operator's bound is both
+  enforced and advertised, and a client sizing its header block is told the
+  number the operator chose. M015E recorded the claim by reading SETTINGS id
+  `0x5`, which is `SETTINGS_MAX_FRAME_SIZE`; `SETTINGS_MAX_HEADER_LIST_SIZE` is
+  `0x6` (RFC 9113 §6.5.2). The stubborn 16384 was hyper's default max *frame*
+  size, a limit EggReplay never configures. Reading the correct id shows the
+  operator's exact value on the wire, tracked across settings — pinned by
+  `the_advertised_header_list_bound_is_the_operators_own`, with the enforced
+  half proven by `an_oversized_header_list_is_refused_and_the_listener_survives`.
+- An oversized request body of **undeclared** length surfaces as **500**, not
+  413: the overrun is only discoverable mid-stream, so the runtime's bounded
+  refusal is all that is available. A body whose `content-length` *declares*
+  more than the operator's ceiling is now refused with **413** from the headers
+  alone, before a byte is consumed. A malformed or absent `content-length` is
+  deliberately left to the runtime rather than guessed at, so there is only one
+  body-limit path.
 - An **incomplete** request still consumes a single-use candidate, so a later
   request for the same recorded path finds nothing left. The failure is
   stream-local; it is not a connection failure.
@@ -143,6 +155,12 @@ EggServe runtime or of the canonical model, not of a test.
   taxonomy (`ConnectionRefused`, `Unreachable`, …) instead of collapsing to
   `Other`; this was the M016 fix, and it is why
   `ErrorCategory::ConnectionRefused` is reachable in the product at all.
+  Classification is shared, not per-layer: the recording path and the
+  **candidate** path resolve the same table in `error_classify`, so a recorded
+  run and a candidate run of one request against one dead route report the same
+  category. M018 fixed the candidate path, which had its own copy missing the
+  route arm entirely. A candidate body cut off by a deadline now records as
+  `timeout` rather than as an uninformative `other`.
 - A TLS peer that claims `:scheme: http` is refused with **400** before the
   matcher runs. That is the right place to catch it, but it is worth knowing.
 - The regression authority compares `date`, which is origin-generated and

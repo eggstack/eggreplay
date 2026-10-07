@@ -3,14 +3,12 @@
 #[cfg(all(feature = "eggserve", feature = "websocket"))]
 use base64::Engine;
 use bytes::Bytes;
-use eggfetch_core::transport::dialer::DialErrorKind;
 use eggfetch_core::{Client, Error as FetchError};
 use eggreplay_core::{
-    BodyRef, ErrorCategory, ErrorPhase, Flow, FlowError, FlowOutcome, HeaderEntry, HttpRequest,
-    HttpResponse, QueryPair, RedactionConfig, WebSocketConversation, WebSocketDirection,
-    WebSocketMessage, WebSocketMessageKind, WebSocketRedaction, WebSocketTerminal,
-    apply_form_redaction, apply_json_redaction, push_body_markers,
-    reconcile_headers_after_body_redaction,
+    BodyRef, ErrorCategory, ErrorPhase, Flow, FlowOutcome, HeaderEntry, HttpRequest, HttpResponse,
+    QueryPair, RedactionConfig, WebSocketConversation, WebSocketDirection, WebSocketMessage,
+    WebSocketMessageKind, WebSocketRedaction, WebSocketTerminal, apply_form_redaction,
+    apply_json_redaction, push_body_markers, reconcile_headers_after_body_redaction,
 };
 use eggreplay_store::{RecordingSession, SessionWriter, StoreError};
 use futures_util::Stream;
@@ -24,6 +22,7 @@ use std::task::{Context, Poll};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 
+use crate::error_classify::{classify_body_error, map_fetch_error};
 #[cfg(feature = "eggserve")]
 use crate::inbound::{InboundProtocol, InboundServerHandle};
 #[cfg(feature = "eggserve")]
@@ -2354,113 +2353,6 @@ fn header_entries(headers: &http::HeaderMap) -> (Vec<HeaderEntry>, bool) {
     (entries, lossy)
 }
 
-fn map_fetch_error(error: &FetchError) -> FlowError {
-    let (category, phase) = match error {
-        FetchError::Tls(_)
-        | FetchError::CertificateVerification(_)
-        | FetchError::HostnameVerification(_)
-        | FetchError::TlsConfig(_)
-        | FetchError::CaBundle(_) => (ErrorCategory::Tls, ErrorPhase::Tls),
-        FetchError::Timeout { .. } | FetchError::TransportIoTimeout { .. } => {
-            (ErrorCategory::Timeout, ErrorPhase::Timeout)
-        }
-        FetchError::Body(_)
-        | FetchError::DecodedBodyTooLarge
-        | FetchError::Decompression(_)
-        | FetchError::DecompressionRatioExceeded => (ErrorCategory::Other, ErrorPhase::Body),
-        FetchError::Protocol(_) | FetchError::Hyper(_) | FetchError::HyperClient(_) => {
-            (ErrorCategory::Protocol, ErrorPhase::Headers)
-        }
-        FetchError::Connect(_) | FetchError::Io(_) | FetchError::Pool(_) => {
-            (ErrorCategory::Unreachable, ErrorPhase::Connect)
-        }
-        // A caller-supplied transport is how every Eggress route reports a
-        // failure. Without this arm a dead route, a route timeout, and a
-        // policy-rejected route all recorded as `Other`, and
-        // `ErrorCategory::ConnectionRefused` was unreachable anywhere in the
-        // product.
-        //
-        // `Unreachable` rather than `ConnectionRefused`: EggFetch's typed
-        // evidence collapses every connection-establishment failure to one
-        // kind, so inferring "refused" from it would be a guess. An honest
-        // general category beats a specific wrong one.
-        FetchError::CustomTransport(_) => match classify_dial_error(error) {
-            Some(class) => class,
-            None => (ErrorCategory::Other, ErrorPhase::Other),
-        },
-        _ => (ErrorCategory::Other, ErrorPhase::Other),
-    };
-    FlowError::new(category, phase, error.to_string())
-}
-
-/// Map a caller-supplied transport's `DialErrorKind` onto the stable
-/// vocabulary.
-///
-/// Shared by [`map_fetch_error`] and [`classify_body_error`] so a route
-/// failure reads the same whichever layer observed it. Before M017 only the
-/// request-level site consulted this, which is why a dead route was
-/// attributable there but invisible from a body error.
-fn classify_dial_error(error: &FetchError) -> Option<(ErrorCategory, ErrorPhase)> {
-    let kind = error.custom_transport_error()?.kind();
-    Some(match kind {
-        DialErrorKind::Connection => (ErrorCategory::Unreachable, ErrorPhase::Connect),
-        DialErrorKind::Timeout => (ErrorCategory::Timeout, ErrorPhase::Timeout),
-        DialErrorKind::Authentication => (ErrorCategory::Policy, ErrorPhase::Connect),
-        DialErrorKind::Rejected => (ErrorCategory::Policy, ErrorPhase::Policy),
-        DialErrorKind::Other => (ErrorCategory::Other, ErrorPhase::Other),
-    })
-}
-
-/// Classify a response-body streaming failure.
-///
-/// The body-phase counterpart of [`map_fetch_error`]. Same `FetchError` type
-/// and the same category decisions, but the phase is `Body` because that is
-/// where the failure happened — except for a deadline, which is reported as
-/// `Timeout` rather than as a generic body failure so that a call cut off by
-/// the outbound timeout is distinguishable from one killed by a reset.
-///
-/// Before M017 this site discarded the error and hardcoded
-/// `("other", "body")`, so a deadline cut-off, a connection reset, and a
-/// protocol violation all recorded identically. That is the same defect M016
-/// fixed one layer up, where every `DialErrorKind` collapsed to `Other`; it
-/// survived here because nobody looked at the body path.
-fn classify_body_error(error: &FetchError) -> (ErrorCategory, ErrorPhase) {
-    match error {
-        // An expired deadline is the actionable fact, and it is what makes an
-        // un-terminated gRPC call legible: the fixture then says the call was
-        // cut off by a deadline rather than merely "failed".
-        FetchError::Timeout { .. } | FetchError::TransportIoTimeout { .. } => {
-            (ErrorCategory::Timeout, ErrorPhase::Timeout)
-        }
-        FetchError::Tls(_)
-        | FetchError::CertificateVerification(_)
-        | FetchError::HostnameVerification(_)
-        | FetchError::TlsConfig(_)
-        | FetchError::CaBundle(_) => (ErrorCategory::Tls, ErrorPhase::Body),
-        // A route that fails mid-body is the same route failure as at
-        // request level; only the phase differs.
-        FetchError::CustomTransport(_) => {
-            let (category, _) =
-                classify_dial_error(error).unwrap_or((ErrorCategory::Other, ErrorPhase::Other));
-            (category, ErrorPhase::Body)
-        }
-        FetchError::Body(_)
-        | FetchError::DecodedBodyTooLarge
-        | FetchError::Decompression(_)
-        | FetchError::DecompressionRatioExceeded => (ErrorCategory::Other, ErrorPhase::Body),
-        // Protocol-shaped failures are `Body` here, where `map_fetch_error`
-        // uses `Headers`: this site is past the headers by construction.
-        FetchError::Protocol(_) | FetchError::Hyper(_) | FetchError::HyperClient(_) => {
-            (ErrorCategory::Protocol, ErrorPhase::Body)
-        }
-        // The stream died underneath us, so the connection is gone.
-        FetchError::Connect(_) | FetchError::Io(_) | FetchError::Pool(_) => {
-            (ErrorCategory::Unreachable, ErrorPhase::Body)
-        }
-        _ => (ErrorCategory::Other, ErrorPhase::Body),
-    }
-}
-
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -2580,7 +2472,7 @@ fn _size_hint<B: Body>(body: &B) -> SizeHint {
 #[cfg(all(test, feature = "eggserve"))]
 mod tests {
     use super::*;
-    use eggfetch_core::transport::dialer::DialError;
+    use eggfetch_core::transport::dialer::{DialError, DialErrorKind};
     use eggreplay_core::SessionMetadata;
     use eggreplay_store::{RecordingSession, StoreLimits};
     use http_body_util::Full;

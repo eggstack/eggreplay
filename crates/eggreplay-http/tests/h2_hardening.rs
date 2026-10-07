@@ -638,9 +638,18 @@ async fn advertised_settings(address: SocketAddr) -> std::collections::BTreeMap<
     settings
 }
 
-/// 0x3 = SETTINGS_MAX_CONCURRENT_STREAMS, 0x5 = SETTINGS_MAX_HEADER_LIST_SIZE.
+/// RFC 9113 §6.5.2 setting identifiers, as h2 encodes them
+/// (`h2::frame::settings::Setting::encode`).
+///
+/// `0x5` is `SETTINGS_MAX_FRAME_SIZE`, **not** `SETTINGS_MAX_HEADER_LIST_SIZE`;
+/// the header-list bound is `0x6`. Reading `0x5` here is what made two
+/// successive milestones believe the operator's bound was not advertised.
 const SETTINGS_MAX_CONCURRENT_STREAMS: u16 = 0x3;
-const SETTINGS_MAX_HEADER_LIST_SIZE: u16 = 0x5;
+const SETTINGS_MAX_HEADER_LIST_SIZE: u16 = 0x6;
+
+/// hyper's `DEFAULT_MAX_FRAME_SIZE` — deliberately *not* the header-list
+/// bound, and a value EggReplay does not configure.
+const HYPER_DEFAULT_MAX_FRAME_SIZE: u32 = 16_384;
 
 async fn collect(response: h2::client::ResponseFuture) -> (StatusCode, http::HeaderMap, Vec<u8>) {
     let response = response.await.expect("response");
@@ -661,13 +670,10 @@ async fn collect(response: h2::client::ResponseFuture) -> (StatusCode, http::Hea
 /// A peer that overshoots the operator's `max_header_list_size` is refused,
 /// and the refusal does not take the listener down.
 ///
-/// **Finding: the bound is enforced but not advertised.** `H2Limits` sets
-/// EggServe's inbound decode bound; the SETTINGS frame the server sends still
-/// carries EggServe's own 16384. A client therefore sizes its header block by
-/// a number the operator did not choose. That is a property of the adopted
-/// runtime, not something EggReplay should paper over by rewriting the
-/// advertised value, so the test records what is on the wire and then proves
-/// the *enforced* bound is what actually protects the listener.
+/// The bound is both enforced and advertised. The advertised half is proven
+/// separately by `the_advertised_header_list_bound_is_the_operators_own`; this
+/// test covers the half that actually protects the listener, which is that the
+/// overrun is refused rather than decoded.
 #[tokio::test]
 async fn an_oversized_header_list_is_refused_and_the_listener_survives() {
     let limits = H2Limits {
@@ -678,15 +684,16 @@ async fn an_oversized_header_list_is_refused_and_the_listener_survives() {
     // it matched, so the liveness check after it needs its own.
     let replay = start_replay_many("harden-headers", 8, limits).await;
 
-    let advertised = advertised_settings(replay.address)
-        .await
-        .get(&SETTINGS_MAX_HEADER_LIST_SIZE)
-        .copied()
-        .unwrap_or_default();
-    assert!(
-        advertised > 1024,
-        "EggServe advertises its own header-list default ({advertised}), not the operator's \
-         1024; the operator bound is enforced inbound, not advertised"
+    // The advertised bound is the operator's, not a runtime default — this was
+    // long asserted the other way round on the strength of setting id 0x5,
+    // which is SETTINGS_MAX_FRAME_SIZE (RFC 9113 §6.5.2).
+    assert_eq!(
+        advertised_settings(replay.address)
+            .await
+            .get(&SETTINGS_MAX_HEADER_LIST_SIZE)
+            .copied(),
+        Some(1024),
+        "the advertised header-list bound must be the operator's own value"
     );
 
     // A request within the bound is served.
@@ -719,6 +726,131 @@ async fn an_oversized_header_list_is_refused_and_the_listener_survives() {
     assert_eq!(status, 200, "a refusal must not take the listener down");
 
     replay.close().await;
+}
+
+/// What the server actually advertises for `SETTINGS_MAX_HEADER_LIST_SIZE`,
+/// measured on the wire.
+///
+/// M015E recorded a limitation here: a tightened `max_header_list_size` is
+/// "enforced inbound but not advertised: the SETTINGS frame still carries
+/// EggServe's own 16384". **That claim was wrong, and so was the first
+/// correction M018 made to it.** Both read setting id `0x5` as
+/// `SETTINGS_MAX_HEADER_LIST_SIZE`; per RFC 9113 §6.5.2 and h2's own codec
+/// (`h2::frame::settings`), `0x5` is `SETTINGS_MAX_FRAME_SIZE` and
+/// `SETTINGS_MAX_HEADER_LIST_SIZE` is `0x6`. The constant 16384 that looked
+/// like a stubborn default is hyper's default *max frame size*, which
+/// EggReplay never configures and was never the subject of the claim.
+///
+/// Read at the correct id, the operator's value is advertised exactly. This
+/// test is the evidence that retires the limitation, and it pins the correct
+/// property in both directions: a client sizing its header block is told the
+/// number the operator chose, and the value tracks `H2Limits` rather than
+/// sitting at a runtime default. Enforcement is proven separately by
+/// `an_oversized_header_list_is_refused_and_the_listener_survives`.
+#[tokio::test]
+async fn the_advertised_header_list_bound_is_the_operators_own() {
+    let directory = temp_path("harden-advertised-header-list");
+    let mut writer = eggreplay_store::SessionWriter::create(
+        &directory,
+        SessionMetadata::default(),
+        StoreLimits::default(),
+    )
+    .expect("writer");
+    writer
+        .append_flow(&plain_flow("flow-0000", "/echo", 200))
+        .expect("append");
+    let session = writer.finish().expect("finish");
+    let fixture =
+        ReplayFixture::load_with_matcher(&session, Matcher::strict(8)).expect("replay fixture");
+
+    // Two values far apart, and both far from hyper's defaults, so a constant
+    // or a clamped number cannot pass for the operator's.
+    for configured in [48 * 1024u32, 200 * 1024] {
+        let handle = fixture
+            .clone()
+            .start_with_protocol(
+                "127.0.0.1:0".parse().expect("addr"),
+                64 * 1024,
+                InboundProtocol::Http2Cleartext,
+                H2Limits {
+                    max_header_list_size: Some(configured),
+                    ..H2Limits::default()
+                },
+            )
+            .await
+            .expect("replay server");
+        let address = handle.local_addr();
+
+        let settings = advertised_settings(address).await;
+        assert_eq!(
+            settings.get(&SETTINGS_MAX_HEADER_LIST_SIZE).copied(),
+            Some(configured),
+            "the advertised header-list bound must be the operator's own value \
+             (advertised SETTINGS: {settings:?})"
+        );
+        assert_ne!(
+            settings.get(&SETTINGS_MAX_HEADER_LIST_SIZE).copied(),
+            Some(HYPER_DEFAULT_MAX_FRAME_SIZE),
+            "the advertised bound regressed to hyper's default \
+             (advertised SETTINGS: {settings:?})"
+        );
+
+        handle.shutdown();
+    }
+}
+
+/// A body whose **declared** `content-length` exceeds the operator's ceiling is
+/// refused with 413, from the headers alone.
+///
+/// M015E recorded that an oversized body surfaces as 500. That is still true of
+/// a body of undeclared length, which the runtime can only discover mid-stream.
+/// A peer that states its own size, however, is decidable before any byte is
+/// consumed, and reporting a server fault for a client fault is the part worth
+/// fixing.
+#[tokio::test]
+async fn a_declared_oversized_body_is_refused_with_413() {
+    let directory = temp_path("harden-declared-body");
+    let mut writer = eggreplay_store::SessionWriter::create(
+        &directory,
+        SessionMetadata::default(),
+        StoreLimits::default(),
+    )
+    .expect("writer");
+    writer
+        .append_flow(&plain_flow("flow-0000", "/echo", 200))
+        .expect("append");
+    let session = writer.finish().expect("finish");
+    let fixture =
+        ReplayFixture::load_with_matcher(&session, Matcher::strict(8)).expect("replay fixture");
+    let handle = fixture
+        .start_with_protocol(
+            "127.0.0.1:0".parse().expect("addr"),
+            // Small ceiling, and deliberately nothing like the declared length.
+            64 * 1024,
+            InboundProtocol::Http2Cleartext,
+            H2Limits::default(),
+        )
+        .await
+        .expect("replay server");
+    let address = handle.local_addr();
+
+    let mut headers = text_headers();
+    headers.insert("content-length", HeaderValue::from_static("1000000"));
+    let mut peer = Peer::open(address).await;
+    let (response, _stream) = peer.open_stream("/echo", headers);
+    let (status, _, _) = collect(response).await;
+    assert_eq!(
+        status,
+        StatusCode::PAYLOAD_TOO_LARGE,
+        "a declared oversized body is a client fault and must say so"
+    );
+
+    // And the listener still serves a small request.
+    let mut peer = Peer::open(address).await;
+    let (status, _, _) = collect(peer.get("/echo")).await;
+    assert_eq!(status, 200, "a refusal must not take the listener down");
+
+    handle.shutdown();
 }
 
 /// A body larger than the configured maximum is refused, and the listener keeps

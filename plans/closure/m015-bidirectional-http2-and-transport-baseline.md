@@ -181,8 +181,11 @@ opt-in behind a feature boundary, and re-qualifiable on any upstream change —
 All seven are in `docs/http2-support.md` as well as here, because they are
 operator-facing.
 
-1. `H2Limits::max_header_list_size` is enforced inbound but **not advertised**;
-   the server still sends EggServe's own 16384.
+1. ~~`H2Limits::max_header_list_size` is enforced inbound but **not advertised**;
+   the server still sends EggServe's own 16384.~~ **Retired by M018**: the
+   advertised value was read at the wrong SETTINGS id (`0x5` is
+   `SETTINGS_MAX_FRAME_SIZE`, not `SETTINGS_MAX_HEADER_LIST_SIZE`), so the bound
+   was in fact advertised correctly.
 2. An oversized request body surfaces as **500**, not 413.
 3. An **incomplete** request still consumes a single-use candidate. Stream-local,
    not a connection failure.

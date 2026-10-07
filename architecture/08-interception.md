@@ -723,8 +723,10 @@ substrate.
 
 ## Support matrix
 
-From `README.md:53-74`. No row may expand without corresponding tests
-(`README.md:57`).
+Interception-scoped rows restating `docs/testing.md` § Supported matrix and
+`docs/non-goals.md` § Out of the support claim; the README no longer carries a
+per-milestone matrix. No row may expand without corresponding tests
+(`plans/003:57`).
 
 | Capability | M013 |
 |---|---|
@@ -736,7 +738,7 @@ From `README.md:53-74`. No row may expand without corresponding tests
 | Manual CA initialize/import/export/rotate | supported |
 | Automatic OS/browser trust installation | unsupported |
 | HTTP/2 MITM | unsupported/not qualified |
-| HTTP/3/QUIC interception | unsupported/deferred (ADR 0009) |
+| HTTP/3/QUIC interception | unsupported (deferred by ADR 0009) |
 | WSS WebSocket interception | unsupported |
 | client mTLS interception | unsupported |
 | certificate-pinned clients | expected to fail unless configured passthrough |

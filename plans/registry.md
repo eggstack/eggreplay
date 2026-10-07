@@ -80,6 +80,7 @@ boundary, and ADR 0008 owns interception security/transport ownership.
 | M015E | `implementation/protocols/015e-h2-hardening-hosted-qualification-and-closure.md` | closed | M015A–M015D (all closed) | hardening + hosted Stage 11 closure |
 | M016 | `implementation/corrective/m016-post-m015-corrective.md` | closed | M015E (closed), M015D (closed) | bounded outbound timeout, route error attribution, WebSocket shutdown race |
 | M017 | `implementation/corrective/m017-unterminated-bidi-grpc.md` | closed | M016 closure, M015D closure | un-terminated bidirectional gRPC: classified body errors, pinned replay contract |
+| M018 | `implementation/corrective/m018-candidate-error-attribution-and-h2-body-diagnostics.md` | **implemented** (hosted CI outstanding) | M017 closure | shared error table; 413 for a declared oversized body; retired the mis-measured H2 header-list limitation |
 
 ### Current execution gate
 
@@ -213,6 +214,45 @@ clients see different codes, and that asymmetry is recorded rather than
 smoothed over. Workspace suite at M017 closure: 483 passed across 26 suites,
 with the same 2 pre-existing local `curl_interop` failures. Hosted run
 `37238704257` on `0c48a26` (all 14 jobs green).
+
+M018 is the post-M017 corrective and is **implemented, not closed**: the local
+gate is green, but hosted qualification has not run, and a milestone closes on
+evidence rather than on the presence of source. It takes the two audited
+residual tracks that are dependency-free and inside EggReplay's ownership.
+**Track A** found a third, independent copy of the transport-error table — in
+the candidate/regression path — with no `CustomTransport` arm at all, so a dead
+Eggress route seen by a candidate collapsed to `(Other, Other)` while the
+recording path attributed it correctly, and a candidate body cut off by a
+deadline recorded as `other` rather than `timeout`. That is the M016 defect and
+then the M017 defect, both surviving one layer down in the file whose job is to
+compare a recorded run against a candidate. The fix is a shared
+`eggreplay-http::error_classify` module so a fourth copy cannot appear. An
+existing test had asserted `category == "other"` — the assertion was the defect,
+pinning the uninformative value; it now asserts `protocol`. **Track C** returns
+413 for a body whose *declared* `content-length` exceeds the operator's ceiling,
+decided from the headers alone; an undeclared oversized body still ends with the
+runtime's bounded refusal, and a malformed length is deliberately left alone so
+there is only one body-limit path. C2 is a **correction of a correction, and
+the second correction was also wrong.** M015E recorded the header-list bound as
+enforced-but-not-advertised, citing a SETTINGS frame carrying 16384. Source
+reading suggested that was a documentation bug; a wire-level test was written to
+check it, and its first run "confirmed" the claim. Both had read SETTINGS id
+`0x5` as `SETTINGS_MAX_HEADER_LIST_SIZE`, but per RFC 9113 §6.5.2 and h2's own
+codec `0x5` is `SETTINGS_MAX_FRAME_SIZE`; the header-list bound is `0x6`. The
+16384 is hyper's default max *frame* size, which EggReplay never configures.
+Re-probed at the correct id — through EggServe directly and through
+`H2Limits::apply` — the operator's exact value is advertised and tracks the
+setting (49152 → 49152, 204800 → 204800). So there is no upstream seam and no
+wiring fault: `H2Limits::apply` was always correct, the limitation was a
+measurement error, and it is **retired** in `docs/http2-support.md`. The test
+that encoded it also asserted the wrong direction (`advertised > 1024`) and is
+corrected. Deliberately **not**
+taken: comparison-level `date` normalization, the unwired `TimingAssertion`
+authority, and request-direction stream comparison (the comparison authority's
+gaps, and for the last a schema-v2 canonical change M017 ruled out of bundling),
+plus the open maintainer question of whether replay should reproduce the
+downstream experience of an un-terminated gRPC call. See
+`closure/m018-candidate-error-attribution-and-h2-body-diagnostics.md`.
 
 ## Canonical planning documents
 

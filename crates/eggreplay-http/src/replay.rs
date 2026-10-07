@@ -482,7 +482,7 @@ impl ReplayFixture {
         let handler = move |request, tunnel| {
             let state = state.clone();
             let append = append.clone();
-            async move { handle_request(state, request, append, tunnel).await }
+            async move { handle_request(state, request, append, tunnel, max_body_bytes).await }
         };
         let service = ReplayTunnelService {
             handler,
@@ -509,14 +509,54 @@ impl ReplayFixture {
 }
 
 #[cfg(feature = "eggserve")]
+/// The request body's declared length, when the peer stated one.
+///
+/// Returns `None` for an absent or unparseable `content-length` so the caller
+/// defers to the runtime's bounded policy rather than guessing. A `None` here
+/// is never treated as zero and never as oversized.
+fn declared_body_length(head: &eggserve_primitives::RequestHead) -> Option<u64> {
+    head.headers().iter().find_map(|field| {
+        if !field.name.as_str().eq_ignore_ascii_case("content-length") {
+            return None;
+        }
+        let raw = std::str::from_utf8(field.value.as_bytes()).ok()?;
+        raw.trim().parse::<u64>().ok()
+    })
+}
+
+#[cfg(feature = "eggserve")]
 async fn handle_request(
     state: Arc<Mutex<ReplayState>>,
     request: eggserve_primitives::Request,
     append: Option<AppendContext>,
     tunnel: Option<eggserve_server::tunnel::TunnelCapability>,
+    max_body_bytes: u64,
 ) -> Result<Response, ServiceError> {
     use eggserve_primitives::{ResponseStream, ResponseStreamError};
     use sha2::{Digest, Sha256};
+
+    // A body that *declares* more than the ceiling is refused here, before a
+    // single byte is consumed or replayed, with the status that actually
+    // describes it.
+    //
+    // M015E recorded that EggServe surfaces an oversized body as 500 rather
+    // than 413. That remains true for a body of undeclared length, where the
+    // runtime can only discover the overrun while streaming — and there is
+    // nothing this handler can know in advance. But a request that states its
+    // own size and that size exceeds the operator's bound is decidable from
+    // the headers alone, and answering 500 for it reports a server fault for
+    // what is a client fault.
+    //
+    // Deliberately narrow: only a parseable, oversized `content-length` is
+    // refused here. An absent, unparseable, or zero length is left to the
+    // runtime's own bounded policy, so this adds no second body-limit path and
+    // no way for the two to disagree about what was accepted.
+    if declared_body_length(request.head()).is_some_and(|declared| declared > max_body_bytes) {
+        return Response::builder()
+            .status(StatusCode::PAYLOAD_TOO_LARGE)
+            .body(ResponseBody::Empty)
+            .map_err(|error| ServiceError::internal(error.to_string()));
+    }
 
     let lifecycle = request.lifecycle_clone();
     let websocket_intent = request.head().headers().iter().any(|field| {

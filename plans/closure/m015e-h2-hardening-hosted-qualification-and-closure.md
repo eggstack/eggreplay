@@ -112,13 +112,14 @@ each case, not an afterthought.
 Seven findings. Each is a property of the product or the adopted runtime, and
 each is now asserted as it actually behaves rather than as it ideally would.
 
-1. **`H2Limits::max_header_list_size` is enforced inbound but not advertised.**
-   With the operator asking for 1024, the server's SETTINGS frame still carries
-   EggServe's own 16384. A client therefore sizes its header block by a number
-   the operator did not choose. The enforced bound is what protects the
-   listener, and an oversized header list is refused at the stream. Recorded
-   rather than papered over: rewriting the advertised value would be a
-   product-side claim about a runtime the product does not own.
+1. ~~**`H2Limits::max_header_list_size` is enforced inbound but not
+   advertised.** With the operator asking for 1024, the server's SETTINGS frame
+   still carries EggServe's own 16384. A client therefore sizes its header block
+   by a number the operator did not choose.~~ **Retired by M018: this finding was
+   wrong.** It read SETTINGS id `0x5`, which is `SETTINGS_MAX_FRAME_SIZE`;
+   `SETTINGS_MAX_HEADER_LIST_SIZE` is `0x6` (RFC 9113 §6.5.2). At the correct id
+   the server advertises the operator's own value. The enforced bound remains
+   real and is still proven.
 
 2. **An oversized request body surfaces as 500, not 413.** Bounded, safe, and
    the call ends — which is what matters — but not the most informative status.

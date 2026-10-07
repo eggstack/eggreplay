@@ -100,11 +100,14 @@ EggFetch error before it is flattened (see below).
 
 ### Mapping into `ErrorPhase` / `ErrorCategory`
 
-`eggreplay_core` owns the stable vocabulary; this module only chooses
-(category, phase) pairs, and it does so in two different places because the
-phase is the only thing that legitimately differs.
+`eggreplay_core` owns the stable vocabulary; `error_classify.rs` chooses
+(category, phase) pairs in three places, because the phase is the only thing that
+legitimately differs. The module is shared with the candidate path
+(`regression.rs:5`, `:710-718`), so a route failure reads the same from a
+recorded run and a candidate run of one request; see
+[06](06-regression-and-reporting.md) § Error classification.
 
-`map_fetch_error` (`recording.rs:2357`) classifies a *request-level* failure:
+`map_fetch_error` (`error_classify.rs:37`) classifies a *request-level* failure:
 
 | EggFetch error | Category | Phase |
 |---|---|---|
@@ -116,19 +119,19 @@ phase is the only thing that legitimately differs.
 | `CustomTransport` | delegated to `classify_dial_error` | delegated |
 | anything else | `Other` | `Other` |
 
-`classify_body_error` (`recording.rs:2427`) is the body-phase counterpart over
+`classify_body_error` (`error_classify.rs:107`) is the body-phase counterpart over
 the *same* `FetchError` type. The phase becomes `Body` because that is where the
 failure happened, with three deliberate exceptions: an expired deadline stays
-`Timeout`/`Timeout` (`:2432-2434`), and `CustomTransport` reuses
-`classify_dial_error`'s category with the phase forced to `Body` (`:2442-2446`).
-`classify_dial_error` (`recording.rs:2403`) is the shared dial vocabulary -
+`Timeout`/`Timeout` (`:112-114`), and `CustomTransport` reuses
+`classify_dial_error`'s category with the phase forced to `Body` (`:122-126`).
+`classify_dial_error` (`error_classify.rs:82`) is the shared dial vocabulary -
 `Connection -> Unreachable/Connect`, `Timeout -> Timeout/Timeout`,
 `Authentication -> Policy/Connect`, `Rejected -> Policy/Policy`,
 `Other -> Other/Other` - and its doc comment records why one specific mapping
 was refused: EggFetch's typed evidence collapses all connection-establishment
 failures to one kind, so inferring `ConnectionRefused` "would be a guess. An
 honest general category beats a specific wrong one"
-(`recording.rs:2383-2386`).
+(`error_classify.rs:62-66`).
 
 Inbound body errors are *not* classified, on purpose. When the EggServe-side
 request body fails, the event records `Other`/`Body` with a comment explaining

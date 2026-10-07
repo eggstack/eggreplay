@@ -143,8 +143,9 @@ Certificates are test-owned and generated in-process by `rcgen`
 (`crates/eggreplay-har/tests` aside, it is a dev-dependency of both
 `eggreplay-http` and `eggreplay-intercept`), and no test installs trust into
 an OS or browser store — `m013e_operator.rs::source_contains_no_automatic_trust_mutation`
-asserts the source contains no such mutation, and README lists "Automatic
-OS/browser trust installation" as unsupported.
+asserts the source contains no such mutation, and `docs/non-goals.md` § Out of
+the support claim lists "Automatic OS/browser CA trust installation" as a
+deliberate boundary: CA lifecycle is manual and operator-driven.
 
 ---
 
@@ -342,22 +343,41 @@ record says M017 does not open that question; it records it.
 ## Non-goals and negative claims
 
 The project asserts what it does **not** support as carefully as what it does.
-`docs/non-goals.md` is the v0.1 statement: TLS interception, MITM certificate
-management, WSS and WebSocket extensions, authored scenarios,
-record-on-miss/pass-through, streaming timing profiles, Python bindings, HAR
-interchange, and broad H2/H3 qualification were all outside v0.1; "opaque binary
-payloads cannot be semantically redacted; fixtures remain sensitive"; support
-claims are limited to the tested HTTP/1.1 direct path and the optional Eggress
-TCP dialer. Several of those have since moved to supported — which is the point:
-the document is versioned to a milestone, not aspirational.
+`docs/non-goals.md` is the current statement, organised by kind rather than by
+milestone: *Deferred by decision* (HTTP/3/QUIC on every path per ADR 0009, and a
+generic reverse proxy), *Out of the support claim* (H2 interception/MITM, WSS
+and extended-CONNECT WebSockets, negotiated WebSocket extensions, wire-frame
+fidelity, automatic OS/browser CA trust installation, client mTLS interception,
+transparent/TUN interception, and default-profile inbound H2), *Redaction limits*
+("opaque binary payloads cannot be semantically redacted. ... Fixtures remain
+sensitive data"; entropy scanning, DLP, encryption at rest, and arbitrary JSONPath
+are named as not implemented and not planned), and *Determinism and scope limits*
+(reactivity is authored, `append-new` acquires no new WebSocket conversation,
+segmented packet behaviour is out of scope, HAR is lossy in both directions).
+The document carries its own history rather than a v0.1 horizon: it "previously
+described the v0.1 horizon, listing Python bindings, HAR interchange, scenarios,
+streaming timing, and TLS interception as unavailable. All of those have since
+been implemented and qualified through M017" (`docs/non-goals.md`, § Milestone
+history). The rule it states is the rule worth keeping: no item may be removed
+without tests that qualify it, and none added without an ADR or a closure record.
 
-The README carries three support matrices with a tier column and an opt-in
-feature column: M013 interception (`README.md:60-75`), HTTP/2 / HTTP/3
-(`:78-91`), and the gRPC notes. The convention is stated plainly at `README.md:93-95`:
+The README carries no support matrices. It has one two-column table,
+*What it does* (`README.md:107-117`), whose Status values are `default`,
+`opt-in --features intercept`, `opt-in cargo features, experimental`, and
+`opt-in cargo feature`; the word *experimental* appears there once, on the H2 /
+gRPC row. The non-default rule is stated immediately after it
+(`README.md:119-123`): "**No HTTP/2 capability is default in any profile.** A
+protocol you did not ask for is a protocol you cannot silently get", and the
+README defers the full matrices, "including what is explicitly *not* supported",
+to `docs/http2-support.md` and `docs/non-goals.md`. So the per-capability tier
+matrices live in the docs, not in the README, and
+`architecture/07-protocol-and-routing-tiers.md` § The tier model is the tree's
+own restatement of them. The convention is stated plainly in
+`architecture/overview.md` § Explicitly out of scope:
 
-> "Experimental" means qualified against independent peers on local loopback and
-> opt-in behind a feature boundary — not "unverified". No HTTP/2 capability is a
-> default in any profile.
+> "Experimental" means qualified against independent peers on loopback behind a
+> feature boundary — not "unverified". No HTTP/2 capability is default in any
+> profile.
 
 "Experimental" is therefore a *tested* tier. It is not a hedge. What it does
 assert: independent peers, loopback, opt-in, non-default.
@@ -377,9 +397,12 @@ Three rules keep negative claims honest:
   for `h2-inbound` is the mechanical form of "interception never adopts
   multiprotocol serving."
 - **Deferred is a recorded decision, not a silence.** HTTP/3 is deferred per
-  ADR 0009 with documented missing seams (`plans/004:114-116`), and the README
-  matrix says "deferred (ADR 0009)" in the tier column so a reader can tell
-  the difference between "not attempted" and "attempted and declined".
+  ADR 0009 with documented missing seams (`plans/004:114-116`), and the supported
+  matrix in `docs/testing.md` § Supported matrix carries "HTTP/3 / QUIC |
+  deferred (ADR 0009)" so a reader can tell the difference between "not
+  attempted" and "attempted and declined". The *tier* is **unsupported** in this
+  tree's vocabulary — deferral is the reason, not a fourth tier
+  ([07](07-protocol-and-routing-tiers.md) § The tier model).
 
 ---
 

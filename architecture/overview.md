@@ -138,7 +138,10 @@ Two consequences worth internalising:
 
 ### Explicitly out of scope
 
-HTTP/3 / QUIC (deferred, ADR 0009), H2 interception/MITM, WSS and
+Every item is **unsupported** in the tier vocabulary
+([07](07-protocol-and-routing-tiers.md) § The tier model); where a deferral is
+also recorded, it is named as the reason, not as a fourth tier. HTTP/3 / QUIC
+(unsupported; deferred per ADR 0009), H2 interception/MITM, WSS and
 extended-CONNECT WebSockets, negotiated WebSocket extensions, wire-frame
 fidelity, automatic OS/browser CA trust installation, client mTLS
 interception, transparent/TUN interception, and a generic reverse proxy.

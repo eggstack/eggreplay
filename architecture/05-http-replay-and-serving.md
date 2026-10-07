@@ -521,11 +521,11 @@ successful.
 | A second matcher | One `Matcher` and one `MatcherSession` in `ReplayState`; H2 reuses the same code object (`replay.rs:624-663`, ADR 0010 §Decision). |
 | A second renderer | `render_recorded_headers` is the single protocol-aware step, applied once at `replay.rs:725`. M015D's gRPC work is explicitly barred from adding another (M015B closure §282-284). |
 | A second service or service wrapper | `start_inbound_server` "never wraps, rewrites, or substitutes it" (`inbound.rs:287-289`). |
-| H2 interception (MITM) | `eggreplay-intercept` stays on `eggserve-server`; the boundary lane asserts it never gained `eggserve-core` (ADR 0010 §Decision, `docs/http2-support.md:72-73`). |
-| HTTP/3 / QUIC | Deferred by ADR 0009; `eggserve-core/http3`, `eggress-outbound/quic`, `eggfetch-core/http3` all remain disabled (ADR 0010 §Decision D). |
+| H2 interception (MITM) | `eggreplay-intercept` stays on `eggserve-server`; the boundary lane asserts it never gained `eggserve-core` (ADR 0010 §Decision, `docs/http2-support.md` § What is not supported). |
+| HTTP/3 / QUIC | Unsupported, deferred by ADR 0009; `eggserve-core/http3`, `eggress-outbound/quic`, `eggfetch-core/http3` all remain disabled (ADR 0010 §Decision D). |
 | WSS and extended-CONNECT WebSockets | The replay handshake requires `HttpVersion::Http11` and `TunnelKind::Http1Upgrade` (`replay.rs:1062-1064`); inbound H2 with a WebSocket upgrade is rejected 400 (`replay.rs:528-533`, `:555`). Stays correct (`docs/architecture.md` M011, M015B closure §285-287). |
 | Treating protocol as a matching dimension | Protocol selection is a listener property, never a match dimension (M015B closure §279-281). |
-| A generic reverse proxy | Out of scope (`docs/http2-support.md:83`). |
+| A generic reverse proxy | Out of scope (`docs/http2-support.md` § What is not supported; `docs/non-goals.md` § Deferred by decision). |
 
 ---
 

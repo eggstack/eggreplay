@@ -20,7 +20,11 @@ Companions: [04 — HTTP recording](04-http-recording.md),
 ## The tier model
 
 Three words carry the support policy, and they are used consistently across
-`README.md`, `docs/http2-support.md`, ADR 0010, and the closure records.
+`docs/http2-support.md`, `docs/testing.md`, `docs/non-goals.md`, ADR 0010, and
+the closure records. `*deferred*` is not a fourth tier: it names the *reason* an
+unsupported row is unsupported, and the two are always written together
+("deferred per ADR 0009"). The README does not carry a tier column at all — it
+defers the matrices to the docs (`README.md:119-123`).
 
 | Tier | Meaning | Example |
 |---|---|---|
@@ -29,9 +33,13 @@ Three words carry the support policy, and they are used consistently across
 | **unsupported** | Either not implemented, or implemented but deliberately not claimed. Never degrades into a quiet weaker path. | H2 MITM; HTTP/3 / QUIC; outbound `h2c`; WSS. |
 
 The definition that matters for review is the middle one, and both
-`README.md:91-93` and `architecture/overview.md:130-132` state it the same
-way: *experimental means qualified against independent peers on local loopback
-and opt-in behind a feature boundary — not "unverified."* For outbound H2 the
+`architecture/overview.md` § Explicitly out of scope and the `docs/testing.md`
+§ Supported matrix ("qualified experimental, opt-in" on the three H2/gRPC rows)
+state it the same way: *experimental means qualified against independent peers
+on local loopback
+and opt-in behind a feature boundary — not "unverified."* The README carries
+one "opt-in cargo features, experimental" status cell
+(`README.md:107-117`) and defers the matrices to the docs. For outbound H2 the
 independent peers are concrete: a hyper client doing manual-TLS H2 and a raw
 `h2`-crate client, both against the same ALPN-`h2` listener
 (`crates/eggreplay-http/tests/h2_qualification.rs:353`,
@@ -65,7 +73,7 @@ from the multiprotocol serving closure.
 | gRPC-over-H2 derived views | both | experimental | `grpc` | caller-side projection; raw body authoritative |
 | WebSocket semantic record/replay/regression | both | supported | `websocket` | cleartext RFC 6455; see [04](04-http-recording.md) |
 | Eggress listener-free routing | outbound | supported | `eggress` | `pproxy-compat` grammar only |
-| HTTP/3 / QUIC | all four | unsupported (deferred) | — | ADR 0009 |
+| HTTP/3 / QUIC | all four | unsupported | — | deferred per ADR 0009 |
 
 Two rows deserve emphasis because they are the ones most often misread. First,
 **inbound `h2c` is supported and outbound `h2c` is not** — that asymmetry is
@@ -211,10 +219,13 @@ boundary is an enum with separately gated variants rather than a boolean
 (`crates/eggreplay-http/src/inbound.rs:9-24`, `:38-74`).
 
 The known limitations of the inbound H2 surface are recorded rather than hidden
-— `max_header_list_size` enforced but not advertised, an oversized body surfacing
-as 500 rather than 413, an incomplete request still consuming its single-use
-candidate, and `Timeout::from_secs` not setting `total`
-(`../docs/http2-support.md`, § Known limitations found during hardening).
+— an oversized body surfacing as 500 rather than 413, an incomplete request still
+consuming its single-use candidate, and `Timeout::from_secs` not setting `total`
+(`../docs/http2-support.md`, § Known limitations found during hardening). The
+`max_header_list_size` limitation once listed there is retired: the operator's
+bound is enforced *and* advertised, and M015E's evidence for the other half
+misfelt read SETTINGS id `0x5` (`SETTINGS_MAX_FRAME_SIZE`) as the header-list
+bound, which is `0x6` (RFC 9113 §6.5.2).
 
 ---
 
@@ -431,12 +442,15 @@ Error mapping is a translation table from Eggress's typed kinds into EggFetch's
 preserved, the connection-shaped kinds collapse to `Connection`, and a
 wildcard arm maps anything unlisted to `Other` (`eggress.rs:49-64`). Typed
 facts are used rather than parsing display strings
-(`../docs/eggress-routing.md`). Worth knowing when reading a failure:
-`../docs/http2-support.md` § Known limitations records that a dead Eggress
-route fails closed but is categorised `Other` and so is not diagnostic in the
-session; M016 separately added a `CustomTransport` arm to `map_fetch_error` so
-that a route failure reads the same from either layer
-(`plans/closure/m017-unterminated-bidi-grpc.md`, § The real defect).
+(`../docs/eggress-routing.md`). Worth knowing when reading a failure: a dead
+Eggress route fails closed, and it is *attributed* rather than collapsed.
+`../docs/http2-support.md` § Known limitations records that a typed `DialError`
+is classified into the taxonomy (`ConnectionRefused`, `Unreachable`, …) "instead
+of collapsing to `Other`; this was the M016 fix, and it is why
+`ErrorCategory::ConnectionRefused` is reachable in the product at all". That fix
+was the `CustomTransport` arm in `map_fetch_error`, now shared by the recording
+and candidate paths (`error_classify.rs`; see
+[06](06-regression-and-reporting.md) § Error classification).
 
 The TCP adapter makes **no H3 support claim**, and QUIC is never tunneled
 through it — see the next section.
@@ -493,10 +507,11 @@ product crate and every feature graph.
 
 ADR 0009 (`plans/adrs/0009-http3-integration-boundary.md`) decided to **defer
 HTTP/3 on all paths** — direct, routed, replay, and intercept — and classifies
-it unsupported. The reason is a seam, not a schedule: QUIC runs over UDP and
-negotiates transport parameters, 0-RTT, and connection migration inside the QUIC
-handshake, none of which a TCP byte stream can carry, so **tunneling QUIC
-through a TCP `Dialer` abstraction is forbidden**.
+it **unsupported**, which is the tier the matrix above records; *deferred* names
+the reason, not a separate tier. The reason is a seam, not a schedule: QUIC runs
+over UDP and negotiates transport parameters, 0-RTT, and connection migration
+inside the QUIC handshake, none of which a TCP byte stream can carry, so
+**tunneling QUIC through a TCP `Dialer` abstraction is forbidden**.
 
 Four options were considered and all four were rejected — direct EggFetch H3
 endpoint ownership, an Eggress QUIC route connector, direct-only H3 with routed

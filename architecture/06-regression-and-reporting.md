@@ -13,7 +13,7 @@ that executes candidates, and a core module that decides what "different" means
 | Concern | Owner | Module |
 | --- | --- | --- |
 | Execute one baseline request against a live target | `eggreplay-http` | `crates/eggreplay-http/src/regression.rs` |
-| Classify a candidate transport failure | `eggreplay-http` | `regression.rs` (`map_error`, `regression.rs:693`) |
+| Classify a candidate transport failure | `eggreplay-http` | `error_classify.rs` (`map_fetch_error`, `classify_body_error`); `regression.rs` `map_error` delegates (`regression.rs:710-718`) |
 | Compare two flows into a versioned report | `eggreplay-core` | `crates/eggreplay-core/src/report.rs` |
 | Produce machine-readable findings | `eggreplay-core` | `report.rs` (`DiffFinding`, `report.rs:48`) |
 | Schedule candidates and render output | `eggreplay-cli` | `crates/eggreplay-cli/src/main.rs` |
@@ -106,14 +106,20 @@ event. This is the M010 decision that an observable mid-body condition is a
 plumbing failures of the harness; none of them is a comparison result.
 
 A candidate transport failure is mapped into the shared taxonomy rather than
-flattened, by `map_error` (`regression.rs:693-715`):
+flattened. `regression.rs` has no table of its own: `map_error`
+(`regression.rs:710-718`) delegates to `map_fetch_error`
+(`error_classify.rs:37-74`), the one module that turns an
+`eggfetch_core::Error` into an `ErrorPhase` × `ErrorCategory` pair for every
+layer that observes a fetch failure:
 
 | `eggfetch_core::Error` | `ErrorCategory` | `ErrorPhase` |
 | --- | --- | --- |
-| `Timeout` | `Timeout` | `Timeout` |
-| `Tls`, `CertificateVerification`, `HostnameVerification` | `Tls` | `Tls` |
-| `Connect`, `Io` | `Unreachable` | `Connect` |
-| `Body` | `Other` | `Body` |
+| `Timeout`, `TransportIoTimeout` | `Timeout` | `Timeout` |
+| `Tls`, `CertificateVerification`, `HostnameVerification`, `TlsConfig`, `CaBundle` | `Tls` | `Tls` |
+| `Connect`, `Io`, `Pool` | `Unreachable` | `Connect` |
+| `Body`, `DecodedBodyTooLarge`, `Decompression`, `DecompressionRatioExceeded` | `Other` | `Body` |
+| `Protocol`, `Hyper`, `HyperClient` | `Protocol` | `Headers` |
+| `CustomTransport` | delegated to `classify_dial_error` | delegated |
 | anything else | `Other` | `Other` |
 
 `ErrorCategory` and `ErrorPhase` are defined in
@@ -122,21 +128,21 @@ truncates the diagnostic message to 512 bytes (`error.rs:110-112`) so a
 transport string can never carry a body into the report.
 
 The taxonomy only earns its keep if a deadline cut-off, a connection reset, and
-a protocol violation are *distinguishable*. Two closed milestones established
-that they were not, and the registry records it plainly
-(`plans/registry.md:180-215`):
+a protocol violation are *distinguishable*. Three milestones established that
+they were not — the same defect one layer down each time — and the registry
+records it plainly (`plans/registry.md:180-215`):
 
 - **M016**: every Eggress route failure was categorised `Other`, because
   `map_fetch_error` had no `CustomTransport` arm. `ErrorCategory::ConnectionRefused`
-  was unreachable in the whole product. Fixed by the arm at
-  `crates/eggreplay-http/src/recording.rs:2387-2390`, which delegates to
-  `classify_dial_error` (`recording.rs:2403-2412`): `Connection` →
+  was unreachable in the whole product. Fixed by that arm
+  (`error_classify.rs:67-70`), which delegates to `classify_dial_error`
+  (`error_classify.rs:82-91`): `Connection` →
   `(Unreachable, Connect)`, `Timeout` → `(Timeout, Timeout)`, `Authentication` →
   `(Policy, Connect)`, `Rejected` → `(Policy, Policy)`. M016 also found the CLI
   never called `ClientBuilder::timeout` at all — every network-capable command
   was unbounded — and added `--timeout-secs` populating `pool`, `connect`,
   `write`, `read`, and `total` (`plans/closure/m016-post-m015-corrective.md:18-30`).
-  The comment at `recording.rs:2383-2386` explains why the arm says `Unreachable`
+  The comment at `error_classify.rs:62-66` explains why the arm says `Unreachable`
   and not `ConnectionRefused`: EggFetch's typed evidence collapses every
   connection-establishment failure into one kind, so naming "refused" would be a
   guess, and an honest general category beats a specific wrong one.
@@ -144,13 +150,33 @@ that they were not, and the registry records it plainly
   `("other", "body")` with the error discarded, so a deadline cut-off, a reset,
   and a protocol violation all recorded identically
   (`plans/closure/m017-unterminated-bidi-grpc.md:39-68`). Fixed by
-  `classify_body_error` (`recording.rs:2427-2456`), which forces phase `Body`
+  `classify_body_error` (`error_classify.rs:107-142`), which forces phase `Body`
   because that is where the failure happened, *except* a deadline, which reports
   `Timeout`/`Timeout` "so that a call cut off by the outbound timeout is
-  distinguishable from one killed by a reset" (`recording.rs:2418-2420`).
+  distinguishable from one killed by a reset" (`error_classify.rs:112-114`).
   Protocol-shaped failures map to `Protocol`/`Body` here where
   `map_fetch_error` uses `Protocol`/`Headers`, because this site is past the
-  headers by construction (`recording.rs:2451-2454`).
+  headers by construction (`error_classify.rs:133-135`).
+- **M018**: the same defect again, one layer down from M017 — and the one that
+  forced the table out of `recording.rs`. `regression.rs` had its own `map_error`
+  with no `CustomTransport` arm, and three mid-body sites hardcoding
+  `("other", "body")`, so a candidate classified a failure differently from a
+  recorded run of the *same* request. Both defects are gone: `error_classify.rs`
+  (`mod error_classify`, `lib.rs:22`) now owns the single table, and
+  `recording.rs:25` and `regression.rs:3` both import from it. The invariant the
+  module exists to protect is stated in its own header: "if two code paths can
+  observe the same failure, they must classify it through the same function"
+  (`error_classify.rs:24-25`). M018 is **implemented**, not closed: the local gate
+  is green and hosted qualification has not run
+  (`plans/registry.md`, § Current execution gate).
+
+The two candidate-side mid-body sites that still write `other`/`body` are
+*not* the M017 defect again. They handle `frame.into_data()` and
+`frame.into_trailers()`, which hand back the frame rather than an error value
+(`regression.rs:564-588`, `:605-623`). There is no transport evidence to
+classify, and the comment says so: `other`/`body` is "an honest reading rather
+than a discarded cause", mirroring the recording path's deliberate `Other` at the
+inbound tee (`regression.rs:568-573`).
 
 `ErrorCategory::as_str` / `ErrorPhase::as_str` (`error.rs:73`, `error.rs:91`)
 exist so a surface that records a category as a bounded *string* uses the same
@@ -158,20 +184,21 @@ spelling the serialiser emits, and they are pinned against serde in a unit test
 (`error.rs:129-165`) so a wire-name drift fails the build rather than producing
 a stream event the JSON decoder would not read back.
 
-**The candidate path does not yet share the recording path's table.** The
-`("other", "body")` pair M017 removed from recording is still hardcoded at three
-mid-body sites in `regression.rs:542-546`, `regression.rs:561-565`, and
-`regression.rs:596-600`, and the comment there says so as a convention
-("Category/phase use the same stable `other`/`body` convention as recording",
-`regression.rs:533-537`). Likewise `regression.rs`'s `map_error`
-(`regression.rs:693`) has no `CustomTransport` arm, so a dead Eggress route
-observed *by a candidate* collapses to `(Other, Other)` even though recording
-attributes it correctly. `classify_dial_error` and `classify_body_error` are
-module-private `fn`s in `recording.rs` (not `pub(crate)`), so sharing them would
-be a deliberate refactor, not a visibility tweak. Effect: a candidate body cut
-off by `--timeout-secs` and one killed by a connection reset produce byte-identical
-terminal events, and a candidate that differs from its baseline only in *how* it
-failed mid-body can pass silently.
+**The candidate path now shares the recording path's table.** The single
+mid-body site that observes a real transport error derives its category and phase
+from `body_error_event_fields` (`regression.rs:548`, delegating to
+`error_classify.rs:151-156`), the same `pub(crate)` module the recording path
+uses, so a candidate cut off by a deadline records `timeout` where it used to
+record `other` — matching the recorded run of the same request instead of
+differing from it. The prior state is recorded, not deleted: `regression.rs`
+documents at the site (`:539-547`), in `map_error` (`:711-716`), and in the tests
+`a_candidate_route_failure_is_attributed_not_collapsed` (`:1100-1121`) and
+`the_candidate_and_recording_paths_agree_on_a_route_failure` (`:1128-1142`) that
+the defect was the M016 pattern one layer down. `error_classify.rs` pins the same
+invariant from the other side, across all five `DialErrorKind`s and both layers
+(`error_classify.rs:172-192`), and the recording path keeps a recording-side
+equivalent, `caller_supplied_transport_failures_are_attributed`
+(`recording.rs:2987-3029`).
 
 ## Comparison engine
 
@@ -432,13 +459,17 @@ originally required exit 4 here and was corrected before closure
 
 ## Review checklist
 
-- **Error classification fidelity.** Does every candidate failure site consult
-  a category table, or does one still hardcode a pair? `regression.rs:542-546`,
-  `regression.rs:561-565`, and `regression.rs:596-600` still hardcode
-  `("other", "body")`; `map_error` (`regression.rs:693`) still lacks the
-  `CustomTransport` arm that M016 added to recording. Ask whether a candidate
-  failure is distinguishable from every other candidate failure, not merely
-  recorded.
+- **Error classification fidelity.** Does every candidate failure site that has
+  transport evidence consult the shared table in `error_classify.rs`, or has one
+  re-inlined a pair? The mid-body error site goes through
+  `body_error_event_fields` (`regression.rs:548`) and `map_error`
+  (`regression.rs:710-718`) delegates to `map_fetch_error`; the two remaining
+  `other`/`body` literals (`regression.rs:564-588`, `:605-623`) are the
+  `into_data`/`into_trailers` arms, which have no error value and are honest
+  rather than a discarded cause. A new `match` over `FetchError` anywhere in
+  `regression.rs` is a regression of the invariant the module header states
+  (`error_classify.rs:24-25`). Ask whether a candidate failure is distinguishable
+  from every other candidate failure, not merely recorded.
 - **Comparison-dimension completeness.** Is every semantic field a dimension?
   Status, headers, trailers, body digest+length, and outcome class are all
   covered; SSE, stream shape, cadence, and WebSocket are conditional on policy
@@ -458,12 +489,16 @@ originally required exit 4 here and was corrected before closure
   not be routed to the catch-all 5, which is deliberately untestable in
   subprocess terms (`plans/closure/c004-cli-eggress-contracts.md:17`).
 - **Can a regression silently pass?** The specific ways this happens here:
-  1. A candidate body cut off by `--timeout-secs` and one killed by a reset
-     record the same terminal event (`regression.rs:542`), so a baseline with the
-     same hardcoded pair matches both.
-  2. A candidate behind a dead Eggress route collapses to `(Other, Other)`
-     (`regression.rs:713`) — if the baseline also failed, the categories match
-     and the run passes even though neither failure was attributed.
+  1. A candidate body cut off by `--timeout-secs` records `timeout`/`timeout`
+     and one killed by a reset records `unreachable`/`body`
+     (`regression.rs:548`, `error_classify.rs:107-142`), so the two differ in
+     both `category` and `phase` and a comparison sees it. This was the M017
+     hardcoded-`("other", "body")` shape on the candidate path; it is fixed, and
+     the fix is pinned from both sides
+     (`regression.rs:1100-1142`, `error_classify.rs:172-192`).
+  2. A candidate behind a dead Eggress route is attributed, not collapsed to
+     `(Other, Other)` (`regression.rs:710-718` delegating to
+     `error_classify.rs:37-74`). Also fixed; likewise pinned.
   3. A 101 baseline skips `compare_flows` entirely (`main.rs:1599`), so no
      HTTP dimension is evaluated for a WebSocket flow.
   4. Header findings record `<present>` on both sides
@@ -471,7 +506,10 @@ originally required exit 4 here and was corrected before closure
      though the run correctly fails.
   5. Stream and SSE comparison are opt-in and silent when off
      (`report.rs:66-71`), and request-direction stream comparison does not exist
-     for candidates (`regression.rs:472-477`) — a chunking change on the request
+     for candidates (`regression.rs:473-478`) — a chunking change on the request
      side is unobservable by construction.
-  Each of these is a deliberate, documented boundary except (1) and (2), which
-  are the M016/M017 defect pattern still present in the candidate path.
+  Each of these is a deliberate, documented boundary. (1) and (2) *were* the
+  M016/M017 defect pattern in the candidate path; they are recorded here as
+  repaired, because the review question they raise — can a candidate failure be
+  told apart from every other candidate failure — is the one the shared table
+  exists to answer.

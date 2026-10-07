@@ -1,10 +1,11 @@
 //! Candidate replay through the same EggFetch native execution path.
 
+use crate::error_classify::{body_error_event_fields, map_fetch_error};
 use bytes::Bytes;
 use eggfetch_core::{Client, Error as FetchError};
 use eggreplay_core::{
-    BodyRef, ErrorCategory, ErrorPhase, Flow, FlowError, FlowOutcome, HeaderEntry, HttpRequest,
-    HttpResponse, QueryPair, StreamEvent, StreamEventKind,
+    BodyRef, Flow, FlowError, FlowOutcome, HeaderEntry, HttpRequest, HttpResponse, QueryPair,
+    StreamEvent, StreamEventKind,
 };
 use http::{HeaderMap, HeaderValue, Method, Request, Uri};
 use http_body_util::{BodyExt, Full};
@@ -528,21 +529,31 @@ pub async fn execute_candidate(
             while let Some(frame) = body.frame().await {
                 let frame = match frame {
                     Ok(frame) => frame,
-                    Err(_) => {
+                    Err(error) => {
                         // Mid-body transport failure: retain status/headers and
                         // partial bytes, append a terminal Error event, and
                         // return an observation suitable for regression. This
                         // observable condition must not become a generic CLI
-                        // runtime failure. Category/phase use the same stable
-                        // `other`/`body` convention as recording.
+                        // runtime failure.
+                        //
+                        // The category/phase pair comes from the shared table,
+                        // not from a literal. Before M018 this site discarded
+                        // the error and hardcoded `("other", "body")`, so a
+                        // candidate cut off by a deadline recorded identically
+                        // to one killed by a reset — while the *recorded* run of
+                        // the same request said `timeout`. A candidate
+                        // observation is a semantic artifact, so a regression
+                        // report could assert a difference that was an artifact
+                        // of which side of the recorder observed it.
+                        let (category, phase) = body_error_event_fields(&error);
                         push_candidate_event(
                             &mut response_events,
                             StreamEvent {
                                 delta_ns: elapsed_ns(response_started),
                                 event: StreamEventKind::Error {
                                     offset,
-                                    category: "other".into(),
-                                    phase: "body".into(),
+                                    category: category.into(),
+                                    phase: phase.into(),
                                 },
                             },
                         )?;
@@ -554,6 +565,12 @@ pub async fn execute_candidate(
                     let data = match frame.into_data() {
                         Ok(data) => data,
                         Err(_) => {
+                            // `into_data` hands back the frame itself, not an
+                            // error value, so there is no transport evidence to
+                            // classify and `other`/`body` is an honest reading
+                            // rather than a discarded cause. This mirrors the
+                            // recording path's deliberate decision to keep
+                            // `Other` at the request tee.
                             push_candidate_event(
                                 &mut response_events,
                                 StreamEvent {
@@ -691,27 +708,13 @@ fn target_uri(base: &Uri, request: &HttpRequest) -> Result<Uri, RegressionError>
 }
 
 fn map_error(error: &FetchError) -> FlowError {
-    match error {
-        FetchError::Timeout { .. } => FlowError::new(
-            ErrorCategory::Timeout,
-            ErrorPhase::Timeout,
-            error.to_string(),
-        ),
-        FetchError::Tls(_)
-        | FetchError::CertificateVerification(_)
-        | FetchError::HostnameVerification(_) => {
-            FlowError::new(ErrorCategory::Tls, ErrorPhase::Tls, error.to_string())
-        }
-        FetchError::Connect(_) | FetchError::Io(_) => FlowError::new(
-            ErrorCategory::Unreachable,
-            ErrorPhase::Connect,
-            error.to_string(),
-        ),
-        FetchError::Body(_) => {
-            FlowError::new(ErrorCategory::Other, ErrorPhase::Body, error.to_string())
-        }
-        _ => FlowError::new(ErrorCategory::Other, ErrorPhase::Other, error.to_string()),
-    }
+    // Before M018 this was a third, independent copy of the fetch-error table,
+    // with no `CustomTransport` arm at all. A dead Eggress route observed *by a
+    // candidate* therefore collapsed to `(Other, Other)` even though the
+    // recording path attributed it correctly — the M016 defect, surviving one
+    // layer down, in a file whose whole job is to compare a recorded run
+    // against a candidate run.
+    map_fetch_error(error)
 }
 fn now_ms() -> u64 {
     SystemTime::now()
@@ -1039,7 +1042,18 @@ mod tests {
             }) = observation.response_events.last().map(|event| &event.event)
             {
                 assert_eq!(*offset, 5);
-                assert_eq!(category, "other");
+                // This used to assert `other`, and the assertion *was* the
+                // defect: the site discarded the transport error and wrote
+                // `("other", "body")` as a literal, so this test pinned the
+                // uninformative value and made it look intentional. The
+                // truncated body here is a protocol failure, and that is what
+                // the fixture now says — the same thing the recording path
+                // would have said for the identical failure.
+                assert_eq!(category, "protocol");
+                assert_ne!(
+                    category, "other",
+                    "a candidate body failure must not collapse to `other`"
+                );
                 assert_eq!(phase, "body");
             } else {
                 unreachable!();
@@ -1072,5 +1086,58 @@ mod tests {
             RegressionError::BodyLimit(10),
             RegressionError::BodyLimit(_)
         ));
+    }
+
+    /// The candidate path must classify a route failure exactly as the
+    /// recording path does.
+    ///
+    /// Before M018 `map_error` here had no `CustomTransport` arm, so every
+    /// Eggress route failure observed by a candidate collapsed to
+    /// `(Other, Other)` — meaning a regression report could show a dead-route
+    /// candidate as an unclassified failure while the recorded baseline for the
+    /// same route said `unreachable`. This is the M016 defect, one layer down,
+    /// and the reason the fix is a shared table rather than a new arm here.
+    #[test]
+    fn a_candidate_route_failure_is_attributed_not_collapsed() {
+        use eggfetch_core::transport::dialer::{DialError, DialErrorKind};
+        use eggreplay_core::ErrorCategory;
+        use std::sync::Arc;
+
+        let cases = [
+            (DialErrorKind::Connection, ErrorCategory::Unreachable),
+            (DialErrorKind::Timeout, ErrorCategory::Timeout),
+            (DialErrorKind::Authentication, ErrorCategory::Policy),
+            (DialErrorKind::Rejected, ErrorCategory::Policy),
+        ];
+        for (kind, expected) in cases {
+            let error = FetchError::CustomTransport(Arc::new(DialError::new(kind, "route down")));
+            let mapped = map_error(&error);
+            assert_eq!(
+                mapped.category, expected,
+                "a candidate route failure must be attributed, not collapsed to Other: {kind:?}"
+            );
+            assert_ne!(mapped.category, ErrorCategory::Other);
+        }
+    }
+
+    /// The recording path and the candidate path must agree for the same
+    /// failure. Stated as a property rather than as a call-graph assertion so
+    /// it keeps holding if the shared table is later split again — which is
+    /// exactly the regression this milestone exists to prevent.
+    #[test]
+    fn the_candidate_and_recording_paths_agree_on_a_route_failure() {
+        use eggfetch_core::transport::dialer::{DialError, DialErrorKind};
+        use std::sync::Arc;
+
+        let error = FetchError::CustomTransport(Arc::new(DialError::new(
+            DialErrorKind::Rejected,
+            "route down",
+        )));
+        assert_eq!(
+            map_error(&error).category,
+            crate::error_classify::map_fetch_error(&error).category,
+            "a recorded run and a candidate run of one request must classify \
+             the same failure identically"
+        );
     }
 }

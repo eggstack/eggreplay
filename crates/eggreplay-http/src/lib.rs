@@ -19,6 +19,7 @@ pub mod h2;
 // the `direct` profile pulls no EggServe at all and stopped compiling. The
 // `direct`, `eggress`, `websocket`, `h2`, `grpc`, and `eggress`-only profiles
 // must all keep building without it.
+mod error_classify;
 #[cfg(feature = "eggserve")]
 pub mod inbound;
 pub mod recording;
