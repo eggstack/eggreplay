@@ -5,7 +5,7 @@
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use eggreplay_core::{
     ComparisonPolicy, FlowOutcome, Matcher, PhysicalRoute, ReportScheduler, SessionMetadata,
-    compare_flows_with_policy,
+    TimingAssertion, compare_flows_with_timing_and_policy,
 };
 use eggreplay_http::{EggressDialer, ReplayFixture, execute_candidate};
 use eggreplay_http::{H2Limits, InboundProtocol, InboundProtocolDescription};
@@ -319,6 +319,14 @@ struct ComparisonArgs {
     /// WebSocket message cadence tolerance in milliseconds.
     #[arg(long)]
     websocket_cadence_tolerance_ms: Option<u64>,
+    /// Assert candidate flow elapsed time stays at or below this many
+    /// milliseconds.
+    ///
+    /// This is a *comparison* bound asserted against a finished candidate run.
+    /// It is independent of `--timing-mode`, which controls playback pacing:
+    /// replaying a fixture immediately can still produce a slow candidate.
+    #[arg(long)]
+    max_elapsed_ms: Option<u64>,
 }
 
 fn comparison_policy(args: &ComparisonArgs) -> Result<ComparisonPolicy, (String, String)> {
@@ -346,11 +354,23 @@ fn comparison_policy(args: &ComparisonArgs) -> Result<ComparisonPolicy, (String,
         compare_sse: args.compare_sse,
         sse_ignored: args.sse_ignore.clone(),
         websocket_cadence_tolerance_ns,
+        ..ComparisonPolicy::default()
     };
     policy
         .validate()
         .map_err(|message| ("configuration".to_owned(), message))?;
     Ok(policy)
+}
+
+/// The optional timing bound asserted against each candidate flow.
+///
+/// This is deliberately a comparison bound, not playback configuration: it is
+/// evaluated after a candidate finishes and never influences how the fixture is
+/// replayed. Keeping it out of [`comparison_policy`] stops it from being
+/// confused with `--timing-mode`.
+fn timing_assertion(args: &ComparisonArgs) -> Option<TimingAssertion> {
+    args.max_elapsed_ms
+        .map(|max_elapsed_ms| TimingAssertion { max_elapsed_ms })
 }
 
 /// Outbound protocol policy (M014B outbound, M015C end-to-end).
@@ -686,6 +706,7 @@ async fn run(cli: Cli) -> Result<(), (String, String)> {
         Command::Serve(args) => serve(args).await,
         Command::Replay(args) => {
             let policy = comparison_policy(&args.comparison)?;
+            let timing = timing_assertion(&args.comparison);
             regression(
                 args.fixture,
                 args.target,
@@ -700,11 +721,13 @@ async fn run(cli: Cli) -> Result<(), (String, String)> {
                     max_concurrency: args.max_concurrency,
                 },
                 policy,
+                timing,
             )
             .await
         }
         Command::Test(args) => {
             let policy = comparison_policy(&args.comparison)?;
+            let timing = timing_assertion(&args.comparison);
             regression(
                 args.fixture,
                 args.target,
@@ -719,6 +742,7 @@ async fn run(cli: Cli) -> Result<(), (String, String)> {
                     max_concurrency: args.max_concurrency,
                 },
                 policy,
+                timing,
             )
             .await
         }
@@ -1341,6 +1365,7 @@ async fn regression(
     enforce: bool,
     scheduler: SchedulerOptions,
     policy: ComparisonPolicy,
+    timing: Option<TimingAssertion>,
 ) -> Result<(), (String, String)> {
     let timeout = timeout_args.resolve();
     // Resolved once, reported verbatim: the operator's status output says
@@ -1443,6 +1468,7 @@ async fn regression(
                         baseline.clone(),
                         ReportScheduler::Sequential,
                         &policy,
+                        timing,
                         baseline_streams.as_ref(),
                     )
                     .await
@@ -1523,6 +1549,7 @@ async fn regression(
                             baseline,
                             ReportScheduler::Timeline,
                             &policy,
+                            timing,
                             baseline_streams.as_ref(),
                         )
                         .await?;
@@ -1594,6 +1621,7 @@ async fn compare_candidate_flow(
     baseline: eggreplay_core::Flow,
     scheduler: ReportScheduler,
     policy: &ComparisonPolicy,
+    timing: Option<TimingAssertion>,
     baseline_streams: Option<&std::collections::HashMap<String, eggreplay_core::FlowStreamEvents>>,
 ) -> Result<eggreplay_core::RegressionReport, String> {
     if matches!(&baseline.outcome, FlowOutcome::Response(response) if response.status == 101) {
@@ -1630,6 +1658,7 @@ async fn compare_candidate_flow(
             scheduler,
             baseline_flow_ids: vec![baseline.id],
             findings,
+            suppressed: Vec::new(),
         });
     }
     let request_body = body(session, &baseline.request.body).map_err(|error| error.to_string())?;
@@ -1649,12 +1678,13 @@ async fn compare_candidate_flow(
         }
         FlowOutcome::Error(_) => Vec::new(),
     };
-    let mut report = compare_flows_with_policy(
+    let mut report = compare_flows_with_timing_and_policy(
         &baseline,
         &candidate.flow,
         &baseline_response,
         &candidate.response_body,
         scheduler,
+        timing,
         policy,
     );
     // Live candidate regression, response-direction authoritative:
@@ -1703,6 +1733,7 @@ async fn compare_candidate_flow(
 #[allow(clippy::too_many_lines)]
 fn diff(args: &DiffArgs) -> Result<(), (String, String)> {
     let policy = comparison_policy(&args.comparison)?;
+    let timing = timing_assertion(&args.comparison);
     let baseline = Session::open(&args.baseline, StoreLimits::default())
         .map_err(|error| ("fixture".into(), error.to_string()))?;
     let candidate = Session::open(&args.candidate, StoreLimits::default())
@@ -1793,12 +1824,13 @@ fn diff(args: &DiffArgs) -> Result<(), (String, String)> {
             FlowOutcome::Response(response) => body(&candidate, &response.body).unwrap_or_default(),
             FlowOutcome::Error(_) => Vec::new(),
         };
-        let mut report = compare_flows_with_policy(
+        let mut report = compare_flows_with_timing_and_policy(
             left_flow,
             right_flow,
             &left_body,
             &right_body,
             ReportScheduler::Sequential,
+            timing,
             &policy,
         );
         if policy.is_stream_enabled() {

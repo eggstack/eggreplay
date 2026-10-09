@@ -42,15 +42,44 @@ worth knowing:
   Tonic reports `Internal`.
 
 Both are failures. Whether replay should instead reproduce the *downstream*
-client experience differs from the recorded upstream truncation is an open
-question, tracked separately; the safety property this milestone pins is that
-the call never replays as success.
+client experience differs from the recorded upstream truncation was an open
+question; it is now decided. See "Un-terminated bidi replay semantics" below.
 
 > M015D deferred this class on the belief that replaying a status-less response
 > "would be worse than not replaying it". M017 investigated, found the stated
 > blocker did not exist (the gateway is already full-duplex), and replaced the
 > prediction with an observed client outcome. See
 > `plans/closure/m017-unterminated-bidi-grpc.md`.
+
+## Un-terminated bidi replay semantics
+
+**Decision (M019): replay reproduces the recorded upstream truncation, and the
+`Unknown` / `Internal` asymmetry is documented rather than smoothed over.**
+
+The alternative — reproduce the downstream client experience, so a replayed
+client sees `Unknown` exactly as a live one did — was considered and rejected
+for this milestone. The reasoning:
+
+- **A replay that lies about the recorded cause is a worse failure than a
+  differing error code.** The fixture records *why* the call stopped: a terminal
+  `Error` stream event with category `timeout`, which suppresses the clean
+  `End`. Replaying the termination preserves that fact. Terminating cleanly
+  downstream would produce a client experience matching the live run while
+  erasing the only durable evidence of the deadline cut-off, so a later reader
+  of the fixture could not tell a truncated call from a completed one.
+- **Error-code parity is a convenience, not a contract.** `Unknown` and
+  `Internal` are both non-success. No gRPC client branches on the specific
+  value to decide whether the call worked; they branch on success. Making them
+  agree would buy nothing a retry-aware client could use.
+- **Reproducing the live symptom would require knowing the live symptom.** The
+  live path's `Unknown` is an artifact of where the gateway happened to end the
+  downstream response relative to the outbound deadline — a race, not a
+  recorded property. Encoding it would pin a race into a deterministic replay.
+
+This closes the question, not the asymmetry: the differing codes remain real and
+remain recorded. The safety property is unchanged and still pinned — the call
+never replays as success. Changing this is a replay-semantics change, not a
+corrective, and needs its own milestone.
 
 One more property worth stating plainly, because it surprises people: the gate
 recognises a gRPC **response framing**, not a gRPC request. A server may answer

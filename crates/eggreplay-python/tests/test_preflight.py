@@ -353,6 +353,13 @@ def test_rust_backed_configuration_enums_and_validation():
     assert "authorization" in eggreplay.RedactionConfig().to_dict()["headers"]
     with pytest.raises(eggreplay.ConfigurationError):
         eggreplay.ComparisonPolicy(sse_ignored=["unknown"])
+    # M019 Track A: the volatile seed is visible and deliberately narrow. It is
+    # a read-only projection with no setter, so it cannot quietly grow into a
+    # general "ignore volatile headers" escape hatch.
+    policy = eggreplay.ComparisonPolicy()
+    assert policy.volatile_headers == ["date"]
+    assert policy.to_dict()["volatile_headers"] == ["date"]
+    assert not hasattr(policy, "set_volatile_headers")
     assert eggreplay.RouteSpecification("direct").target is None
     with pytest.raises(eggreplay.ConfigurationError):
         eggreplay.RouteSpecification("direct", "http://proxy")
@@ -370,7 +377,7 @@ def test_rust_backed_configuration_enums_and_validation():
 
 def test_regression_report_uses_rust_json_shape():
     payload = {
-        "schema_version": 2,
+        "schema_version": 3,
         "scheduler": "sequential",
         "baseline_flow_ids": ["flow-1"],
         "findings": [
@@ -379,6 +386,12 @@ def test_regression_report_uses_rust_json_shape():
                 "field": "response.body",
                 "baseline": "sha256:abc",
                 "candidate": "sha256:def",
+            }
+        ],
+        "suppressed": [
+            {
+                "field": "response.headers.date",
+                "reason": "volatile_header",
             }
         ],
     }
@@ -390,6 +403,25 @@ def test_regression_report_uses_rust_json_shape():
     assert report.to_dict() == payload
     with pytest.raises(eggreplay.RegressionError):
         eggreplay.RegressionReport.from_json("not a report")
+
+
+def test_regression_report_still_reads_a_schema_2_payload():
+    # M019 Track A: `suppressed` is `#[serde(default)]`, so a report written
+    # before the field existed still loads. This is the compatibility story the
+    # schema bump buys; it is asserted, not assumed.
+    legacy = {
+        "schema_version": 2,
+        "scheduler": "sequential",
+        "baseline_flow_ids": ["flow-1"],
+        "findings": [],
+    }
+    report = eggreplay.RegressionReport.from_json(json.dumps(legacy))
+    assert report.success
+    assert report.finding_count == 0
+    # The version is preserved verbatim: a consumer checks it to know that
+    # `suppressed` was defaulted rather than produced by a real comparison.
+    assert report.to_dict()["schema_version"] == 2
+    assert report.to_dict()["suppressed"] == []
 
 
 def test_pytest_report_failure_is_bounded_and_retains_structured_report():

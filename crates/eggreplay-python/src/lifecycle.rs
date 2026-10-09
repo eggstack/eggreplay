@@ -9,7 +9,7 @@ use std::{
 
 use eggreplay_core::{
     ComparisonPolicy, FlowStreamEvents, Matcher, PhysicalRoute, RedactionConfig, ReportScheduler,
-    SessionMetadata, StreamTimingMode,
+    SessionMetadata, StreamTimingMode, TimingAssertion,
 };
 use eggreplay_http::{EggressDialer, ReplayFixture, execute_candidate};
 use eggreplay_store::{RecordingSession, Session, StoreLimits};
@@ -366,7 +366,7 @@ fn recording_gateway<'py>(
 /// Execute one stored baseline request against a candidate and return the
 /// Rust-authored regression report.
 #[pyfunction]
-#[pyo3(signature = (fixture, flow_id, target, route="direct", max_body_bytes=16_777_216, compare_sse=false, compare_stream_events=false, cadence_tolerance_ns=None))]
+#[pyo3(signature = (fixture, flow_id, target, route="direct", max_body_bytes=16_777_216, compare_sse=false, compare_stream_events=false, cadence_tolerance_ns=None, max_elapsed_ms=None))]
 #[allow(
     clippy::needless_pass_by_value,
     clippy::too_many_arguments,
@@ -382,6 +382,7 @@ fn regress_flow<'py>(
     compare_sse: bool,
     compare_stream_events: bool,
     cadence_tolerance_ns: Option<u64>,
+    max_elapsed_ms: Option<u64>,
 ) -> PyResult<Bound<'py, PyAny>> {
     let session = Arc::clone(&fixture.session);
     let flow_id = flow_id.to_owned();
@@ -389,6 +390,10 @@ fn regress_flow<'py>(
         .parse()
         .map_err(|_| ConfigurationError::new_err("invalid candidate target URI"))?;
     let (client, physical) = route_client(route)?;
+    // Same units and meaning as the CLI's `--max-elapsed-ms`: a comparison
+    // bound asserted against a finished candidate run, independent of any
+    // playback pacing.
+    let timing = max_elapsed_ms.map(|max_elapsed_ms| TimingAssertion { max_elapsed_ms });
     let policy = ComparisonPolicy {
         compare_stream_events,
         cadence_tolerance_ns,
@@ -495,6 +500,7 @@ fn regress_flow<'py>(
                 scheduler: ReportScheduler::Sequential,
                 baseline_flow_ids: vec![baseline.id.clone()],
                 findings,
+                suppressed: Vec::new(),
             };
             return Ok(crate::report::ReportView::from_report(report));
         }
@@ -508,12 +514,13 @@ fn regress_flow<'py>(
         )
         .await
         .map_err(|_| crate::errors::RegressionError::new_err("candidate execution failed"))?;
-        let mut report = eggreplay_core::compare_flows_with_policy(
+        let mut report = eggreplay_core::compare_flows_with_timing_and_policy(
             &baseline,
             &observation.flow,
             &baseline_body,
             &observation.response_body,
             ReportScheduler::Sequential,
+            timing,
             &policy,
         );
         if policy.is_stream_enabled() {

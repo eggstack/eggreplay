@@ -219,12 +219,12 @@ Findings are produced per dimension, dispatched on the outcome pair
 | Body | `Body` | `response.body` | SHA-256 *or* length inequality; reports `sha256:<hex> length:<n>` only (`report.rs:241-258`) |
 | Outcome class | `Outcome` | `outcome.kind` | response-vs-error mismatch (`report.rs:302`) |
 | Error class | `Outcome` | `outcome.error` | `category` or `phase` inequality, reported as `Category/Phase` (`report.rs:292-301`) |
-| Elapsed time | `Timing` | `timing.elapsed_ms` | only when an assertion is supplied (`report.rs:309-321`) |
+| Elapsed time | `Timing` | `timing.elapsed_ms` | only when an assertion is supplied (`report.rs:391-403`) |
 | SSE semantics | `Sse` | `response.sse` | opt-in, derived (`report.rs:263-290`) |
-| Ordered events | `StreamEvent` / `Timing` | `stream.<dir>.events`, `stream.<dir>.cadence[i]` | opt-in (`report.rs:335-383`) |
+| Ordered events | `StreamEvent` / `Timing` | `stream.response.events`, `stream.response.cadence[i]` | opt-in, response direction only (`report.rs:440-528`) |
 | WebSocket | `WebSocket` | handshake/message/cadence fields | `websocket` feature (`regression.rs:318`) |
 
-`TimingAssertion` (`report.rs:61-64`) holds only `max_elapsed_ms`, and its doc
+`TimingAssertion` (`report.rs:87-90`) holds only `max_elapsed_ms`, and its doc
 comment states the rule: "no implicit timing comparisons are made". A timing
 finding fires only when an assertion exists *and* the candidate has
 `completed_at_ms` (`report.rs:310`). No caller in the workspace currently
@@ -253,20 +253,33 @@ appears in a report.
 
 ### Versioned authority
 
-`REPORT_SCHEMA_VERSION` is `2` (`crates/eggreplay-core/src/lib.rs:69`) and is
-stamped into every `RegressionReport` (`report.rs:326`). A stored report is only
+`REPORT_SCHEMA_VERSION` is `3` (`crates/eggreplay-core/src/lib.rs:75`) and is
+stamped into every `RegressionReport`. A stored report is only
 meaningful against the version that produced it: the version says which
 vocabularies were in play — whether `DiffKind` had an SSE variant, whether the
 header summary was `<present>` or a value, whether cadence findings were
 `Timing`-kind or their own kind. A consumer must check the version before
 interpreting findings, and a bump is a compatibility event, not a cosmetic one.
 
+Version `3` was M019. It added `suppressed` (`report.rs`), the record of a
+volatile header present on both sides that was deliberately not compared. The
+field is `#[serde(default)]`, so a version-2 report still deserializes and
+`RegressionReport::from_json` keeps working; a consumer distinguishes the eras
+by checking the counter before reading `suppressed`. `findings` and
+`is_success()` are unchanged, so the JUnit and human projections — which read
+`findings` only — are unaffected. The exact key set is pinned by
+`regression_report_contracts_are_stable`
+(`crates/eggreplay-http/tests/h2_end_to_end.rs`).
+
 ## Report and reproducibility
 
-`RegressionReport` (`report.rs:122-131`) is four fields: `schema_version`,
-`scheduler`, `baseline_flow_ids`, `findings`. `is_success` is exactly
-`findings.is_empty()` (`report.rs:135-137`) — there is no partial-credit state,
-and a run either produced findings or it did not.
+`RegressionReport` (`report.rs`) is five fields: `schema_version`,
+`scheduler`, `baseline_flow_ids`, `findings`, and `suppressed` (M019).
+`is_success` is exactly
+`findings.is_empty()` — there is no partial-credit state,
+and a run either produced findings or it did not. A suppression does not
+participate in that decision: it is a note that a dimension was deliberately
+left unchecked, not a partial pass.
 
 `ReportScheduler` (`report.rs:13-20`) has three variants: `Sequential`,
 `RecordedStartOrder`, and `Timeline`. It is recorded in the report because the
@@ -314,33 +327,49 @@ a typo becomes exit 2 rather than a silently ignored flag. The CLI converts
 milliseconds to nanoseconds with a checked multiply and classifies an overflow as
 `configuration` (`main.rs:325-333`).
 
-`compare_stream_events` (`report.rs:335-383`) works per direction. It first asks
-whether the ordered event lists are the same *shape* — same length and each
-pair equal under `same_stream_event` (`report.rs:385-426`, which compares
+`compare_stream_events` (`report.rs`) compares the **response** direction only.
+It first asks whether the ordered event lists are the same *shape* — same
+length and each pair equal under `same_stream_event` (which compares
 `offset`/`length` for `Data`, field *names* only for `Trailers`, and `offset`
-plus `category` plus `phase` for `Error`) — and emits one `stream.<dir>.events`
-finding if not. Cadence is then compared per index, but only when a tolerance is
-supplied: the gap between consecutive events is derived by subtracting the
-previous `delta_ns` (`report.rs:359-369`), so it measures *inter-event* spacing
-rather than absolute capture time. The doc comment is explicit: "Absolute
-capture timestamps are never compared" (`report.rs:333-334`).
+plus `category` plus `phase` for `Error`) — and emits one
+`stream.response.events` finding if not. Cadence is then compared per index,
+but only when a tolerance is supplied: the gap between consecutive events is
+derived by subtracting the previous `delta_ns`, so it measures *inter-event*
+spacing rather than absolute capture time. The doc comment is explicit:
+"Absolute capture timestamps are never compared".
+
+**Request direction is deliberately out of scope, and the exclusion is
+structural rather than incidental.** Recorded request events are inbound
+*transport-frame* boundaries — `TeeSessionStream` polls one hyper `Frame<Bytes>`
+per HTTP/2 DATA frame or HTTP/1.1 chunk
+(`crates/eggreplay-http/src/recording.rs:2160`), so the list describes how the
+*original client* framed its upload. The candidate side has no equivalent
+observation: replay synthesizes the outbound request as a single `Full<Bytes>`
+body (`crates/eggreplay-http/src/replay.rs:1591`), so its framing is a function
+of body length alone and says nothing about the candidate server. Comparing
+them would compare a foreign client's framing against EggReplay's single write,
+firing on every streamed request regardless of candidate behaviour — a
+systematic false positive with no actionable cause. M019 removed the `request`
+arm rather than leaving it reading as though it worked; the exclusion is pinned
+by `request_direction_stream_events_are_not_compared`. Both product callers
+previously *constructed* empty request vectors to achieve the same result;
+that silent narrowing is gone, because the function itself now has no request
+arm to reach.
 
 On the candidate side, `CandidateObservation::response_events` is the only
 stream input. The baseline comes from the `stream-events` extension, loaded and
 validated once per run, and the CLI refuses to continue if stream comparison was
-requested but the extension is absent or invalid — `main.rs:1401-1432` returns a
-`fixture` error, never a silent fallback to shape-only comparison. Per flow,
-`compare_candidate_flow` narrows both sides to the response direction
-(`main.rs:1677-1688`) because request events do not exist for a candidate, and
-missing per-flow metadata is again an error (`main.rs:1668-1676`).
+requested but the extension is absent or invalid — `main.rs:1428-1437` returns a
+`fixture` error, never a silent fallback to shape-only comparison. Missing
+per-flow metadata is again an error (`main.rs:1698-1706`).
 
 SSE comparison is derived, not authoritative. When enabled and both sides are
-`text/event-stream` (`is_sse`, `report.rs:475-484`), both bodies are parsed with
+`text/event-stream` (`is_sse`, `report.rs:590-599`), both bodies are parsed with
 comments included and compared through `crate::compare_sse`
 (`crates/eggreplay-core/src/stream.rs:395`); a parse error on either side
 yields a bounded `Sse` finding naming which side was malformed
-(`report.rs:268-281`). The raw-body finding is *not* suppressed by an SSE
-finding — they are independent, and the code says so at `report.rs:259-262`.
+(`report.rs:350-363`). The raw-body finding is *not* suppressed by an SSE
+finding — they are independent, and the code says so at `report.rs:341-344`.
 
 `push_candidate_event` (`regression.rs:728-761`) is the bound enforcer for
 candidate events. Zero-length `Data` is dropped, a delay above
@@ -476,14 +505,29 @@ originally required exit 4 here and was corrected before closure
   or feature. If a dimension is missing, is it missing deliberately and
   documented, or silently?
 - **Timing assertion determinism.** Timing fires only from an explicit
-  `TimingAssertion` (`report.rs:61`, `report.rs:309`) and only when the
-  candidate has `completed_at_ms`. If someone adds an assertion, it must come
-  from configuration, never from an implicit default; and note that no caller
-  supplies one today.
+  `TimingAssertion` (`report.rs`) and only when the candidate has
+  `completed_at_ms`. It must come from configuration, never from an implicit
+  default. M019 gave it its first product callers — the CLI's
+  `--max-elapsed-ms` and Python's `regress_flow(max_elapsed_ms=...)` — which
+  share one meaning: a comparison bound asserted against a finished candidate
+  run, in milliseconds, independent of `--timing-mode`. That independence is
+  load-bearing; conflating the two would let a playback setting silently become
+  a pass/fail criterion.
+- **Volatile headers are suppressed, never passed.** A header name seeded as
+  volatile (`DEFAULT_VOLATILE_HEADERS`) whose values differ is recorded in
+  `RegressionReport::suppressed`, not in `findings`. A suppression is not a
+  pass, and it is not an absence: silently dropping it would trade a false
+  positive for a false negative, hiding a real regression and making the
+  suppression undetectable in review. The seed is deliberately narrow and
+  separate from the matcher's ignore list — matching decides whether a request
+  *is* the recorded request, comparison reports on flows that already matched,
+  and those two sets legitimately differ.
 - **Report schema stability.** Any change to `DiffKind`, to the header summary
   vocabulary, or to the `RegressionReport` shape is a
-  `REPORT_SCHEMA_VERSION` bump (`lib.rs:69`) with a consumer-compatibility
-  story. New findings are additive; changed meanings are not.
+  `REPORT_SCHEMA_VERSION` bump (`lib.rs:75`) with a consumer-compatibility
+  story. New findings are additive; changed meanings are not. M019 took this
+  bump for `suppressed` (version 3); see "Versioned authority" above for the
+  compatibility story.
 - **Exit-code mapping.** A new failure class needs an `exit_code_for_class` arm
   (`main.rs:662`) and a `docs/cli.md:11-20` row together. A new condition must
   not be routed to the catch-all 5, which is deliberately untestable in

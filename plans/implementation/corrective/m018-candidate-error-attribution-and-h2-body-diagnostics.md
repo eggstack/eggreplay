@@ -139,13 +139,15 @@ Two audited items are **not** taken here, on purpose:
    would put a semantic change to the diff authority inside a corrective whose
    subject is error attribution — the same thing M017's closure warned against
    when it deferred cross-direction ordering as "a genuine canonical milestone
-   — schema v2, additive field, cross-cutting consumers". They warrant their
-   own milestone.
+   — schema v2, additive field, cross-cutting consumers". They are registered as
+   **M019** (`m019-comparison-authority.md`, status `ready`), which is that
+   milestone.
 2. **Whether replay should reproduce the downstream client experience** for an
    un-terminated bidirectional gRPC call, rather than applying the recorded
    upstream truncation. `docs/grpc-and-faults.md` records this as "an open
    question, tracked separately". It is a maintainer decision about correct
-   replay semantics, not a defect, and M018 does not decide it.
+   replay semantics, not a defect, and M018 does not decide it. It is owned by
+   M019 Track D, whose acceptance requires the decision to be recorded.
 
 ## Definition of done
 

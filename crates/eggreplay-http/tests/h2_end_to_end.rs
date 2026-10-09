@@ -2427,9 +2427,24 @@ async fn regression_report_contracts_are_stable() {
             "baseline_flow_ids",
             "findings",
             "scheduler",
-            "schema_version"
+            "schema_version",
+            // M019 Track A: the volatile-header disposition. Its presence here
+            // is what makes a suppression distinguishable from an absent
+            // finding, so it is part of the published shape.
+            "suppressed"
         ],
         "the report's JSON keys are a published contract"
+    );
+    // M019 Track A: adding `suppressed` is a report shape change, so the
+    // version that names the vocabulary moves with it. A consumer checks this
+    // before reading `suppressed`.
+    assert_eq!(
+        object["schema_version"], 3,
+        "a report carrying `suppressed` must say so in its schema version"
+    );
+    assert!(
+        object["suppressed"].is_array(),
+        "suppressed is always present, even when empty, so consumers need no fallback"
     );
     assert_eq!(object["scheduler"], serde_json::json!("sequential"));
     for finding in object["findings"].as_array().expect("findings array") {

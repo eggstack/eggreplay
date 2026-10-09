@@ -59,10 +59,28 @@ qualifying SHA — they reference the ledger.
 
 ## Known local failures
 
-Two pre-existing `curl_interop` tests fail on some local machines and are
-proven machine-specific by four green hosted `verify` jobs. They gate on the
-locally installed `curl`. Report them as pre-existing rather than claiming a
-clean suite.
+Two `curl_interop` tests (`curl_plain_http_proxies_and_records`,
+`curl_https_connect_mitm_records`) fail on some local machines and are proven
+machine-specific by four green hosted `verify` jobs. They gate on the locally
+installed `curl`. Report them as pre-existing rather than claiming a clean
+suite.
+
+The determination is reproducible rather than assumed. Re-verified at M019 on
+macOS with the stock system `curl` 8.7.1 (SecureTransport, no
+`--proxy-cacert`), with no M019 changes present — both tests failed identically
+at `c32aa6b` and under the M019 working tree, so neither is a regression:
+
+- `curl_plain_http_proxies_and_records` — `proxy.session.flow_count()` is `0`,
+  expected `1`. Deterministic across three consecutive runs.
+- `curl_https_connect_mitm_records` — `curl: (60) SSL certificate problem: self
+  signed certificate`, because that `curl` build does not accept the minted
+  test CA through `--cacert`. The test already probes `--proxy-cacert` and
+  schannel before using them, but SecureTransport needs a different trust
+  anchor than the test supplies.
+
+Both are properties of the installed `curl` build, not of the gateway. If the
+note is ever wrong, re-prove it the way the original claim was proven: hosted,
+on all qualifying platforms.
 
 ## Redaction and fixture testing
 

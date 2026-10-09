@@ -79,6 +79,22 @@ replay status-code asymmetry is recorded rather than smoothed over. See
 `registry.md` for exact closure state, qualifying revisions, and hosted run
 IDs.
 
+Three post-Stage-11 correctives are closed or owned. **M018** closed the
+candidate/regression path's independent copy of the transport-error table, added
+413 for a declared oversized request body, and retired a header-list limitation
+that M015E had recorded from a misread SETTINGS identifier — there was no
+upstream seam, and the operator's bound was always advertised correctly. It is
+closed on `17f4022` (hosted run `37644212037`, all 14 jobs green). **M019** is
+implemented and owns what M018 left behind: comparison-level `date` normalization
+with a visible suppression, the `TimingAssertion` authority that no product
+caller reached (now `--max-elapsed-ms` on the CLI and `max_elapsed_ms` in
+Python), request-direction stream comparison — resolved by deleting the dead
+loop arm once the candidate side was shown to be a synthesized single write — the
+M017 gRPC replay-semantics decision, and the `curl_interop` record. It bumped
+`REPORT_SCHEMA_VERSION` to 3 to carry the suppression as a machine-readable
+disposition. See
+`implementation/corrective/m019-comparison-authority.md`.
+
 Do not start a blocked milestone by duplicating a dependency-owned subsystem.
 If repository evidence invalidates a plan assumption, update the plan and
 registry before implementation.

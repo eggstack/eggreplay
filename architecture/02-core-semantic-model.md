@@ -64,7 +64,7 @@ things are deliberately *not* re-exported and are reached by module path:
 | `FLOW_SCHEMA_VERSION` (`:60`) | `1` | Flow record schema; deliberately frozen at 1 while session metadata evolves |
 | `SESSION_SCHEMA_V1` (`:63`) | `1` | Original manifest schema |
 | `SESSION_SCHEMA_VERSION` (`:66`) | `2` | Latest manifest schema understood here; readers accept the inclusive range |
-| `REPORT_SCHEMA_VERSION` (`:69`) | `2` | JSON report schema |
+| `REPORT_SCHEMA_VERSION` (`:69`) | `3` | JSON report schema |
 | `TOOL_VERSION` (`:72`) | `env!("CARGO_PKG_VERSION")` | Stamped into fixtures and reports at compile time |
 | `RULES_SCHEMA_VERSION` | `1` | `scenario.rs:17`, in the scenario re-export block |
 | `STREAM_EVENTS_SCHEMA_VERSION` | `1` | `stream.rs:8` |

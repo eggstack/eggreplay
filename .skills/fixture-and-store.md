@@ -29,7 +29,7 @@ write a doc that shows an `extensions/` directory, it is wrong.
 |---|---|
 | `FLOW_SCHEMA_VERSION` | 1 |
 | `SESSION_SCHEMA_VERSION` | 2 (reader accepts 1..=2) |
-| `REPORT_SCHEMA_VERSION` | 2 |
+| `REPORT_SCHEMA_VERSION` | 3 |
 | extension schemas | all currently 1 |
 
 Flow records stay at schema 1 forever; only the session schema moves. There is

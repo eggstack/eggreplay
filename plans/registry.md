@@ -81,6 +81,7 @@ boundary, and ADR 0008 owns interception security/transport ownership.
 | M016 | `implementation/corrective/m016-post-m015-corrective.md` | closed | M015E (closed), M015D (closed) | bounded outbound timeout, route error attribution, WebSocket shutdown race |
 | M017 | `implementation/corrective/m017-unterminated-bidi-grpc.md` | closed | M016 closure, M015D closure | un-terminated bidirectional gRPC: classified body errors, pinned replay contract |
 | M018 | `implementation/corrective/m018-candidate-error-attribution-and-h2-body-diagnostics.md` | closed | M017 closure | shared error table; 413 for a declared oversized body; retired the mis-measured H2 header-list limitation |
+| M019 | `implementation/corrective/m019-comparison-authority.md` | **implemented** | M018 (closed) | comparison authority: `date` normalization with a visible suppression, `TimingAssertion` wired to CLI and Python, request-direction stream comparison resolved by removal, gRPC decision, `curl_interop` record |
 
 ### Current execution gate
 
@@ -247,13 +248,41 @@ setting (49152 → 49152, 204800 → 204800). So there is no upstream seam and n
 wiring fault: `H2Limits::apply` was always correct, the limitation was a
 measurement error, and it is **retired** in `docs/http2-support.md`. The test
 that encoded it also asserted the wrong direction (`advertised > 1024`) and is
-corrected. Deliberately **not**
-taken: comparison-level `date` normalization, the unwired `TimingAssertion`
-authority, and request-direction stream comparison (the comparison authority's
-gaps, and for the last a schema-v2 canonical change M017 ruled out of bundling),
-plus the open maintainer question of whether replay should reproduce the
-downstream experience of an un-terminated gRPC call. See
-`closure/m018-candidate-error-attribution-and-h2-body-diagnostics.md`.
+corrected.
+
+M019 is **implemented** — local gate green, hosted CI outstanding — and closes
+all five items it owned. Its unifying claim was that `eggreplay-core` exposed a
+comparison surface partly unreachable from any product, and all three code items
+were the same disease: public API that reads as supported and is not. Track A
+gave the comparison authority a volatile-header concept, seeded narrowly to
+`date` and kept deliberately separate from the matcher's ignore list. Track B
+gave `TimingAssertion` its first product callers, `--max-elapsed-ms` on the CLI
+and `regress_flow(max_elapsed_ms=...)` in Python, with one shared meaning: a
+comparison bound on a finished candidate run, independent of `--timing-mode`.
+Track C resolved the design fork by removal rather than deferral — recorded
+request events are inbound transport-frame boundaries and the candidate side is
+synthesized as a single `Full<Bytes>` body, so comparing them compares a foreign
+client's framing against EggReplay's one write. The `request` loop arm was
+deleted instead of left reading as working.
+
+Two consequences of that work are worth naming. First, Track A's non-negotiable
+(a suppression that is a distinct machine-readable disposition, never an absent
+finding) cannot be met without changing the `RegressionReport` shape, and
+`architecture/06` requires a schema bump for exactly that. The plan had listed a
+bump as a non-goal; that non-goal was wrong and was not honoured.
+`REPORT_SCHEMA_VERSION` is now **3**, with `suppressed` as `#[serde(default)]` so
+a version-2 report still deserializes — asserted by
+`a_schema_2_report_still_deserializes` and
+`test_regression_report_still_reads_a_schema_2_payload`. Second, the M017
+gRPC replay-semantics question is decided: replay reproduces the recorded
+upstream truncation, because a clean downstream termination would match the live
+client experience while erasing the only durable evidence of the deadline
+cut-off. The `Unknown`/`Internal` asymmetry stays recorded, not smoothed over.
+The `curl_interop` record was re-verified at `c32aa6b` with these changes
+stashed — both tests fail identically there — so the note stays and was made
+reproducible rather than deleted. Local gate: 495 passed, 2 failed (both the
+known machine-specific `curl_interop` pair). See
+`closure/m019-comparison-authority.md`.
 
 ## Canonical planning documents
 

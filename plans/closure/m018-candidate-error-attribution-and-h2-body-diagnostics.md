@@ -229,12 +229,17 @@ this run, not on the presence of source.
   a regression report *asserts*, which is a different subject from the
   transport-adapter error attribution fixed here. Request-direction ordering is
   additionally schema-v2 canonical work that M017's closure explicitly ruled
-  out of bundling into a corrective. They need their own milestone.
+  out of bundling into a corrective. They are registered as **M019**
+  (`implementation/corrective/m019-comparison-authority.md`, status `ready`),
+  which also carries the gRPC question below and the stale `curl_interop`
+  record.
 - **Whether replay should reproduce the downstream client experience** of an
   un-terminated bidirectional gRPC call instead of applying the recorded
   upstream truncation. `docs/grpc-and-faults.md` records this as "an open
   question, tracked separately". It is a maintainer decision about correct
-  replay semantics, not a defect.
+  replay semantics, not a defect. It is now owned by M019 Track D, which
+  requires the decision to be recorded — choosing either answer is valid,
+  leaving it undecided is not.
 
 ## Invariants this milestone pins
 

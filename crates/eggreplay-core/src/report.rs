@@ -56,6 +56,32 @@ pub struct DiffFinding {
     pub candidate: String,
 }
 
+/// Why a header difference was not evaluated.
+///
+/// A suppression is **not** a pass. It is the machine-readable record that a
+/// dimension was present on both sides and deliberately left uncompared, so a
+/// reader can distinguish "nothing differed" from "nothing was checked".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SuppressionReason {
+    /// The header name is configured as volatile; its values are not compared.
+    VolatileHeader,
+}
+
+/// A header that was present on both sides and deliberately not compared.
+///
+/// This exists so a volatile-header suppression is never indistinguishable from
+/// a passing header. Emitting a bare absence would trade a false positive for a
+/// false negative, which is strictly worse: a real `Date`-shaped regression
+/// would become invisible and the suppression would be undetectable in review.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SuppressedHeader {
+    /// Stable field path, for example `response.headers.date`.
+    pub field: String,
+    /// Why the comparison was suppressed.
+    pub reason: SuppressionReason,
+}
+
 /// An explicit timing assertion; no implicit timing comparisons are made.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TimingAssertion {
@@ -63,13 +89,31 @@ pub struct TimingAssertion {
     pub max_elapsed_ms: u64,
 }
 
+/// Header names whose *values* are not compared, seeded by default.
+///
+/// This is deliberately **not** the matcher's ignore list
+/// (`matching.rs`, seeded with `date`, `user-agent`, `x-request-id`). Matching
+/// decides whether a request *is* the recorded request; comparison reports on
+/// the flows that already matched. Those are two different decisions that
+/// legitimately differ — `user-agent` and `x-request-id` are match tolerances,
+/// not response-side volatility — so the two sets are kept separate rather than
+/// sharing a constant. Coupling them would let a change to one silently change
+/// the other.
+pub const DEFAULT_VOLATILE_HEADERS: &[&str] = &["date"];
+
 /// Shared typed policy for opt-in stream/SSE regression.
 ///
 /// Default preserves the old contract: ordinary status/header/trailer/raw-body
 /// regression with no stream/SSE-only findings. Stream findings require
 /// explicit opt-in; cadence tolerance implies stream comparison; SSE ignore
 /// fields imply SSE comparison.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+///
+/// The default `volatile_headers` seed is [`DEFAULT_VOLATILE_HEADERS`] — a
+/// `Date` that differs between two otherwise identical runs is an artifact of
+/// when the runs executed, and reporting it trains operators to ignore the
+/// report. The seed is narrow on purpose and is not a general "ignore volatile
+/// headers" escape hatch.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ComparisonPolicy {
     /// Enable ordered response event comparison.
     pub compare_stream_events: bool,
@@ -83,6 +127,25 @@ pub struct ComparisonPolicy {
     pub sse_ignored: Vec<String>,
     /// Optional WebSocket message cadence tolerance in nanoseconds.
     pub websocket_cadence_tolerance_ns: Option<u64>,
+    /// Header names whose values are not compared when present on both sides.
+    /// Seeded with [`DEFAULT_VOLATILE_HEADERS`].
+    pub volatile_headers: Vec<String>,
+}
+
+impl Default for ComparisonPolicy {
+    fn default() -> Self {
+        Self {
+            compare_stream_events: false,
+            cadence_tolerance_ns: None,
+            compare_sse: false,
+            sse_ignored: Vec::new(),
+            websocket_cadence_tolerance_ns: None,
+            volatile_headers: DEFAULT_VOLATILE_HEADERS
+                .iter()
+                .map(|name| (*name).to_owned())
+                .collect(),
+        }
+    }
 }
 
 impl ComparisonPolicy {
@@ -101,6 +164,13 @@ impl ComparisonPolicy {
     /// ignored fields.
     pub fn is_sse_enabled(&self) -> bool {
         self.compare_sse || !self.sse_ignored.is_empty()
+    }
+
+    /// Return whether a header name is configured as volatile.
+    fn is_volatile(&self, name: &str) -> bool {
+        self.volatile_headers
+            .iter()
+            .any(|header| header.eq_ignore_ascii_case(name))
     }
 
     /// Validate ignored-field vocabulary.
@@ -128,6 +198,13 @@ pub struct RegressionReport {
     pub baseline_flow_ids: Vec<String>,
     /// Findings in stable field/category order.
     pub findings: Vec<DiffFinding>,
+    /// Headers present on both sides that were deliberately not compared.
+    ///
+    /// `#[serde(default)]` is the schema-2 compatibility story: a report
+    /// written before this field existed still deserializes, and a consumer
+    /// distinguishes the two eras by checking `schema_version`.
+    #[serde(default)]
+    pub suppressed: Vec<SuppressedHeader>,
 }
 
 impl RegressionReport {
@@ -214,6 +291,7 @@ pub fn compare_flows_with_timing_and_policy(
     policy: &ComparisonPolicy,
 ) -> RegressionReport {
     let mut findings = Vec::new();
+    let mut suppressed = Vec::new();
     match (&baseline.outcome, &candidate.outcome) {
         (FlowOutcome::Response(expected), FlowOutcome::Response(actual)) => {
             if expected.status != actual.status {
@@ -226,17 +304,21 @@ pub fn compare_flows_with_timing_and_policy(
             }
             compare_headers(
                 &mut findings,
+                &mut suppressed,
                 "response.headers",
                 &expected.headers,
                 &actual.headers,
                 DiffKind::Header,
+                policy,
             );
             compare_headers(
                 &mut findings,
+                &mut suppressed,
                 "response.trailers",
                 &expected.trailers,
                 &actual.trailers,
                 DiffKind::Trailer,
+                policy,
             );
             if sha256(baseline_body) != sha256(candidate_body)
                 || baseline_body.len() != candidate_body.len()
@@ -322,59 +404,79 @@ pub fn compare_flows_with_timing_and_policy(
     findings.sort_by(|left, right| {
         (format!("{:?}", left.kind), &left.field).cmp(&(format!("{:?}", right.kind), &right.field))
     });
+    suppressed.sort_by(|left, right| left.field.cmp(&right.field));
     RegressionReport {
         schema_version: REPORT_SCHEMA_VERSION,
         scheduler,
         baseline_flow_ids: vec![baseline.id.clone()],
         findings,
+        suppressed,
     }
 }
 
-/// Compare opt-in stream semantics and, optionally, cadence tolerance.
-/// Absolute capture timestamps are never compared.
+/// Compare **response-direction** opt-in stream semantics and, optionally,
+/// cadence tolerance. Absolute capture timestamps are never compared.
+///
+/// # Request direction is deliberately not compared
+///
+/// `FlowStreamEvents::request` is recorded and preserved in the fixture, but no
+/// product compares it, and the exclusion is structural rather than incidental:
+///
+/// - Recorded request events are inbound *transport-frame* boundaries.
+///   `TeeSessionStream` polls one hyper `Frame<Bytes>` per HTTP/2 DATA frame or
+///   HTTP/1.1 chunk (`crates/eggreplay-http/src/recording.rs:2160`), so the
+///   event list describes how the original client framed its upload.
+/// - The candidate side has no equivalent observation. Replay synthesizes the
+///   outbound request as a single `Full<Bytes>` body
+///   (`crates/eggreplay-http/src/replay.rs:1591`) and `execute_candidate` sends
+///   the fixture's own recorded request, so its framing is a function of body
+///   length alone and says nothing about the candidate server.
+///
+/// Comparing the two would compare a foreign client's framing against
+/// EggReplay's single write. That fires on every streamed request regardless of
+/// candidate behaviour — a systematic false positive with no actionable cause.
+/// The `request` arm was therefore removed rather than left in place reading as
+/// though it worked.
 pub fn compare_stream_events(
     baseline: &FlowStreamEvents,
     candidate: &FlowStreamEvents,
     cadence_tolerance_ns: Option<u64>,
 ) -> Vec<DiffFinding> {
     let mut findings = Vec::new();
-    for (direction, left, right) in [
-        ("request", &baseline.request, &candidate.request),
-        ("response", &baseline.response, &candidate.response),
-    ] {
-        let shape_differs = left.len() != right.len()
-            || left
-                .iter()
-                .zip(right)
-                .any(|(a, b)| !same_stream_event(&a.event, &b.event));
-        if shape_differs {
-            findings.push(DiffFinding {
-                kind: DiffKind::StreamEvent,
-                field: format!("stream.{direction}.events"),
-                baseline: format!("{} ordered events", left.len()),
-                candidate: format!("{} ordered events", right.len()),
-            });
-        }
-        if let Some(tolerance) = cadence_tolerance_ns {
-            for (index, (a, b)) in left.iter().zip(right).enumerate() {
-                let baseline_gap = a.delta_ns.saturating_sub(
-                    index
-                        .checked_sub(1)
-                        .map_or(0, |previous| left[previous].delta_ns),
-                );
-                let candidate_gap = b.delta_ns.saturating_sub(
-                    index
-                        .checked_sub(1)
-                        .map_or(0, |previous| right[previous].delta_ns),
-                );
-                if baseline_gap.abs_diff(candidate_gap) > tolerance {
-                    findings.push(DiffFinding {
-                        kind: DiffKind::Timing,
-                        field: format!("stream.{direction}.cadence[{index}]"),
-                        baseline: baseline_gap.to_string(),
-                        candidate: candidate_gap.to_string(),
-                    });
-                }
+    let left = &baseline.response;
+    let right = &candidate.response;
+    if left.len() != right.len()
+        || left
+            .iter()
+            .zip(right)
+            .any(|(a, b)| !same_stream_event(&a.event, &b.event))
+    {
+        findings.push(DiffFinding {
+            kind: DiffKind::StreamEvent,
+            field: "stream.response.events".to_owned(),
+            baseline: format!("{} ordered events", left.len()),
+            candidate: format!("{} ordered events", right.len()),
+        });
+    }
+    if let Some(tolerance) = cadence_tolerance_ns {
+        for (index, (a, b)) in left.iter().zip(right).enumerate() {
+            let baseline_gap = a.delta_ns.saturating_sub(
+                index
+                    .checked_sub(1)
+                    .map_or(0, |previous| left[previous].delta_ns),
+            );
+            let candidate_gap = b.delta_ns.saturating_sub(
+                index
+                    .checked_sub(1)
+                    .map_or(0, |previous| right[previous].delta_ns),
+            );
+            if baseline_gap.abs_diff(candidate_gap) > tolerance {
+                findings.push(DiffFinding {
+                    kind: DiffKind::Timing,
+                    field: format!("stream.response.cadence[{index}]"),
+                    baseline: baseline_gap.to_string(),
+                    candidate: candidate_gap.to_string(),
+                });
             }
         }
     }
@@ -427,10 +529,12 @@ fn same_stream_event(left: &StreamEventKind, right: &StreamEventKind) -> bool {
 
 fn compare_headers(
     findings: &mut Vec<DiffFinding>,
+    suppressed: &mut Vec<SuppressedHeader>,
     prefix: &str,
     baseline: &[HeaderEntry],
     candidate: &[HeaderEntry],
     kind: DiffKind,
+    policy: &ComparisonPolicy,
 ) {
     let left = header_map(baseline);
     let right = header_map(candidate);
@@ -442,6 +546,17 @@ fn compare_headers(
     for name in names {
         let a = left.get(&name).cloned().unwrap_or_default();
         let b = right.get(&name).cloned().unwrap_or_default();
+        // A volatile name is suppressed only when it is present on *both*
+        // sides. Presence is still compared: a header that vanished between
+        // runs is a structural difference, not a clock artifact, and stays a
+        // real finding.
+        if policy.is_volatile(&name) && !a.is_empty() && !b.is_empty() {
+            suppressed.push(SuppressedHeader {
+                field: format!("{prefix}.{name}"),
+                reason: SuppressionReason::VolatileHeader,
+            });
+            continue;
+        }
         if a != b {
             findings.push(DiffFinding {
                 kind: kind.clone(),
@@ -995,5 +1110,259 @@ mod tests {
                 .iter()
                 .any(|finding| finding.kind == DiffKind::Sse)
         );
+    }
+
+    fn header_flow(date: &str, extra: &[(&str, &str)]) -> Flow {
+        let request = HttpRequest {
+            method: "GET".into(),
+            scheme: "http".into(),
+            authority: "example.test".into(),
+            path: "/".into(),
+            query: Vec::new(),
+            headers: Vec::new(),
+            body: BodyRef::Empty,
+            trailers: Vec::new(),
+        };
+        let mut headers = vec![HeaderEntry {
+            name: "date".into(),
+            value: date.into(),
+        }];
+        for (name, value) in extra {
+            headers.push(HeaderEntry {
+                name: (*name).into(),
+                value: (*value).into(),
+            });
+        }
+        let response = HttpResponse {
+            status: 200,
+            headers,
+            body: BodyRef::Empty,
+            trailers: Vec::new(),
+        };
+        Flow::new(request, FlowOutcome::Response(response), 1)
+    }
+
+    #[test]
+    fn a_differing_date_is_suppressed_and_visible_not_silently_dropped() {
+        // M019 Track A: a `Date` that differs only because the runs happened at
+        // different wall-clock times is not a semantic difference. It must not
+        // become a finding...
+        let baseline = header_flow("Mon, 01 Jan 2024 00:00:00 GMT", &[]);
+        let candidate = header_flow("Tue, 02 Jan 2024 00:00:00 GMT", &[]);
+        let report = compare_flows(
+            &baseline,
+            &candidate,
+            b"same",
+            b"same",
+            ReportScheduler::Sequential,
+        );
+        assert!(
+            !report
+                .findings
+                .iter()
+                .any(|finding| finding.field == "response.headers.date"),
+            "a differing Date must not be reported as a header difference"
+        );
+        assert!(report.is_success(), "only the Date differed");
+
+        // ...and it must not be an *absent* finding either. The suppression is
+        // machine-readable, so a reader can tell "nothing differed" from
+        // "nothing was checked".
+        assert_eq!(
+            report.suppressed,
+            vec![SuppressedHeader {
+                field: "response.headers.date".into(),
+                reason: SuppressionReason::VolatileHeader,
+            }]
+        );
+    }
+
+    #[test]
+    fn suppression_does_not_hide_a_genuine_header_regression() {
+        // M019 Track A: the suppression is narrow. A different header, and the
+        // *presence* of a volatile header, must both still report.
+        let baseline = header_flow("Mon, 01 Jan 2024 00:00:00 GMT", &[("x-mode", "fast")]);
+        let candidate = header_flow("Tue, 02 Jan 2024 00:00:00 GMT", &[("x-mode", "slow")]);
+        let report = compare_flows(
+            &baseline,
+            &candidate,
+            b"same",
+            b"same",
+            ReportScheduler::Sequential,
+        );
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|finding| finding.field == "response.headers.x-mode"),
+            "a genuine header regression must still report"
+        );
+
+        // Presence is still compared: a Date that vanished is a structural
+        // difference, not a clock artifact.
+        let no_date = header_flow("", &[]);
+        let no_date = Flow::new(
+            no_date.request.clone(),
+            FlowOutcome::Response(HttpResponse {
+                status: 200,
+                headers: Vec::new(),
+                body: BodyRef::Empty,
+                trailers: Vec::new(),
+            }),
+            1,
+        );
+        let vanished = compare_flows(
+            &header_flow("Mon, 01 Jan 2024 00:00:00 GMT", &[]),
+            &no_date,
+            b"same",
+            b"same",
+            ReportScheduler::Sequential,
+        );
+        assert!(
+            vanished
+                .findings
+                .iter()
+                .any(|finding| finding.field == "response.headers.date"),
+            "a vanished volatile header is a real presence difference"
+        );
+        assert!(vanished.suppressed.is_empty());
+    }
+
+    #[test]
+    fn an_explicit_timing_bound_is_enforced_in_both_directions() {
+        // M019 Track B: `TimingAssertion` was public API with no caller. It now
+        // has one on both product surfaces, so the authority must prove it
+        // fires when exceeded and stays silent when satisfied.
+        let flow_at = |elapsed: u64| {
+            let mut flow = header_flow("Mon, 01 Jan 2024 00:00:00 GMT", &[]);
+            flow.started_at_ms = 1_000;
+            flow.completed_at_ms = Some(1_000 + elapsed);
+            flow
+        };
+        let baseline = flow_at(10);
+        let candidate = flow_at(500);
+
+        let exceeded = compare_flows_with_timing(
+            &baseline,
+            &candidate,
+            b"same",
+            b"same",
+            ReportScheduler::Sequential,
+            Some(TimingAssertion {
+                max_elapsed_ms: 100,
+            }),
+        );
+        assert!(exceeded.findings.iter().any(
+            |finding| finding.kind == DiffKind::Timing && finding.field == "timing.elapsed_ms"
+        ));
+
+        let satisfied = compare_flows_with_timing(
+            &baseline,
+            &candidate,
+            b"same",
+            b"same",
+            ReportScheduler::Sequential,
+            Some(TimingAssertion {
+                max_elapsed_ms: 1_000,
+            }),
+        );
+        assert!(
+            !satisfied
+                .findings
+                .iter()
+                .any(|finding| finding.kind == DiffKind::Timing),
+            "a satisfied bound must not produce a timing finding"
+        );
+
+        // No assertion means no timing comparison at all.
+        let unasserted = compare_flows(
+            &baseline,
+            &candidate,
+            b"same",
+            b"same",
+            ReportScheduler::Sequential,
+        );
+        assert!(unasserted.is_success());
+    }
+
+    #[test]
+    fn request_direction_stream_events_are_not_compared() {
+        // M019 Track C: the `request` arm was removed rather than left reading
+        // as if it worked. Recorded request events are inbound transport-frame
+        // boundaries and the candidate side is synthesized, so comparing them
+        // is a systematic false positive. Pin the exclusion from both sides.
+        let request_events = |length: u64| {
+            vec![
+                crate::StreamEvent {
+                    delta_ns: 0,
+                    event: StreamEventKind::Data { offset: 0, length },
+                },
+                crate::StreamEvent {
+                    delta_ns: 5,
+                    event: StreamEventKind::End,
+                },
+            ]
+        };
+        let make = |request: Vec<crate::StreamEvent>| FlowStreamEvents {
+            flow_id: "flow".into(),
+            start_offset_ns: 0,
+            request,
+            response: Vec::new(),
+        };
+        // Differing request framing produces no finding...
+        let findings =
+            compare_stream_events(&make(request_events(3)), &make(request_events(9)), None);
+        assert!(
+            findings.is_empty(),
+            "request-direction events are out of scope: {findings:?}"
+        );
+        // ...and no cadence finding either, since cadence is scoped the same.
+        let cadence =
+            compare_stream_events(&make(request_events(3)), &make(request_events(9)), Some(0));
+        assert!(
+            cadence.is_empty(),
+            "request-direction cadence is out of scope: {cadence:?}"
+        );
+        // The response direction is unaffected and still compares.
+        let mut baseline = make(Vec::new());
+        baseline.response = vec![crate::StreamEvent {
+            delta_ns: 0,
+            event: StreamEventKind::Data {
+                offset: 0,
+                length: 3,
+            },
+        }];
+        let mut candidate = make(Vec::new());
+        candidate.response = vec![crate::StreamEvent {
+            delta_ns: 0,
+            event: StreamEventKind::Data {
+                offset: 0,
+                length: 9,
+            },
+        }];
+        let response_findings = compare_stream_events(&baseline, &candidate, None);
+        assert!(
+            response_findings
+                .iter()
+                .any(|finding| finding.field == "stream.response.events"),
+            "the response direction must still be compared"
+        );
+    }
+
+    #[test]
+    fn a_schema_2_report_still_deserializes() {
+        // M019 Track A: `suppressed` is the compatibility story. A report
+        // written before the field existed must still load.
+        let legacy = serde_json::json!({
+            "schema_version": 2,
+            "scheduler": "sequential",
+            "baseline_flow_ids": ["flow-0000"],
+            "findings": [],
+        });
+        let report: RegressionReport =
+            serde_json::from_value(legacy).expect("schema-2 report must still deserialize");
+        assert_eq!(report.schema_version, 2);
+        assert!(report.suppressed.is_empty());
+        assert!(report.is_success());
     }
 }

@@ -183,6 +183,10 @@ impl ComparisonOptions {
             compare_sse,
             sse_ignored: sse_ignored.unwrap_or_default(),
             websocket_cadence_tolerance_ns,
+            // Volatile headers are seeded by the Rust default and are not yet
+            // operator-settable from Python. The CLI agrees: neither surface
+            // offers the knob, so the two cannot drift apart.
+            ..RustComparisonPolicy::default()
         };
         inner.validate().map_err(ConfigurationError::new_err)?;
         Ok(Self { inner })
@@ -198,6 +202,13 @@ impl ComparisonOptions {
         self.inner.compare_sse
     }
 
+    /// Header names whose values are not compared. Read-only by design: the
+    /// seed is narrow and is not an operator-tunable escape hatch.
+    #[getter]
+    fn volatile_headers(&self) -> Vec<String> {
+        self.inner.volatile_headers.clone()
+    }
+
     fn to_dict<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let result = PyDict::new(py);
         result.set_item("compare_stream_events", self.inner.compare_stream_events)?;
@@ -208,6 +219,7 @@ impl ComparisonOptions {
             "websocket_cadence_tolerance_ns",
             self.inner.websocket_cadence_tolerance_ns,
         )?;
+        result.set_item("volatile_headers", self.inner.volatile_headers.clone())?;
         Ok(result)
     }
 }

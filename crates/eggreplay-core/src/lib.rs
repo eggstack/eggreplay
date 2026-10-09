@@ -66,7 +66,13 @@ pub const SESSION_SCHEMA_V1: u16 = 1;
 pub const SESSION_SCHEMA_VERSION: u16 = 2;
 
 /// Current JSON report schema version.
-pub const REPORT_SCHEMA_VERSION: u16 = 2;
+///
+/// Version 3 adds `RegressionReport::suppressed`, the machine-readable record
+/// of volatile headers that were present on both sides and deliberately not
+/// compared. The field is `#[serde(default)]`, so a version-2 report still
+/// deserializes; a consumer distinguishes the eras by checking this counter
+/// before reading `suppressed`. `findings` and `is_success()` are unchanged.
+pub const REPORT_SCHEMA_VERSION: u16 = 3;
 
 /// Tool version embedded in fixtures and reports.
 pub const TOOL_VERSION: &str = env!("CARGO_PKG_VERSION");

@@ -204,7 +204,7 @@ and `interrupted_replacement_restores_the_last_valid_backup`
 `enforce` flag and the command name (`main.rs:687-724`). `regression` opens the
 session, parses the target, builds the client, and loads baseline stream
 events when requested — missing metadata is an explicit `fixture` or
-`configuration` error, never a fallback (`main.rs:1401-1432`).
+`configuration` error, never a fallback (`main.rs:1428-1437`).
 
 `SchedulerChoice` selects the concurrency model (`main.rs:524-534`):
 

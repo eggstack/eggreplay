@@ -130,8 +130,23 @@ derived SSE semantics only with `--compare-sse` or repeatable
 comparison). Raw body comparison remains authoritative; SSE findings never
 suppress raw-body findings. Requested stream comparison requires valid metadata
 on both sides; missing metadata is an explicit fixture/configuration error.
-Candidate response stream observation uses monotonic deltas; request cadence is
-not recorded.
+
+Stream comparison covers the **response direction only**, and that is a
+structural decision rather than a gap. Recorded request events are inbound
+transport-frame boundaries, and a candidate's request is synthesized by the
+replay client, so a request-direction comparison would measure the original
+client's framing against EggReplay's own. `Date` is treated as volatile for
+comparison: a differing `Date` is reported in the report's `suppressed` list —
+present on both sides, deliberately not compared — rather than as a finding and
+rather than as a silent absence. Other response headers, and the *presence* of a
+volatile header, are still compared normally.
+
+`--max-elapsed-ms <N>` asserts that each candidate flow finishes within N
+milliseconds of starting, emitting a `timing.elapsed_ms` finding when it does
+not. It is a **comparison** bound on a finished run, not playback configuration:
+it is independent of `--timing-mode`, which controls how a fixture is paced
+during replay. `diff` compares two fixtures and applies the same bound to the
+candidate side.
 
 `replay` and `test` keep sequential candidate execution by default. Add
 `--scheduler timeline` to start candidate requests at their recorded monotonic

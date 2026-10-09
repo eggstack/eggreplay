@@ -158,6 +158,8 @@ class ComparisonPolicy:
     def compare_stream_events(self) -> bool: ...
     @property
     def compare_sse(self) -> bool: ...
+    @property
+    def volatile_headers(self) -> list[str]: ...
     def to_dict(self) -> dict[str, Any]: ...
 
 class RouteSpecification:
@@ -224,6 +226,7 @@ async def regress_flow(
     compare_sse: bool = ...,
     compare_stream_events: bool = ...,
     cadence_tolerance_ns: int | None = ...,
+    max_elapsed_ms: int | None = ...,
 ) -> RegressionReport: ...
 
 def fixture_context(
