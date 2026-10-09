@@ -1,7 +1,8 @@
 # M019 — Comparison Authority Closure
 
-Status: **implemented** — local gate green; hosted CI outstanding. This
-milestone is **not** closed until a hosted run is green and recorded here.
+Status: **closed** — local gate green and hosted qualification complete on
+qualifying revision `005423b3bd882207bfa0f7d79c6135821a527016`, hosted runs
+`37983260082` (14/14 jobs green) and `37983259913` (10/10 jobs green).
 
 Plan: `plans/implementation/corrective/m019-comparison-authority.md`
 
@@ -165,3 +166,44 @@ identical failures — so neither is caused by this milestone:
 The `docs/testing.md` note stays. It was made reproducible rather than deleted:
 a local pass would not have qualified a hosted claim, and a local failure is
 not grounds to remove an accurate note.
+
+The claim is re-proven on the qualifying revision. The three hosted `interception`
+lanes — `interception (ubuntu-latest)`, `interception (macos-latest)`,
+`interception (windows-latest)` — all ran `curl_interop` and all passed on
+`005423b`, which is exactly the hosted evidence the original note cited. So the
+determination is unchanged and independently re-qualified: the tests fail here
+and pass everywhere hosted.
+
+## Hosted qualification
+
+Qualifying revision `005423b3bd882207bfa0f7d79c6135821a527016`.
+
+Run [`37983260082`](https://github.com/eggstack/eggreplay/actions/runs/37983260082) — 14/14:
+
+| Job | Conclusion |
+|---|---|
+| `dependency-boundary` | success |
+| `protocol-boundary` | success |
+| `python-abi3-cross-version` | success |
+| `verify (ubuntu-latest, stable)` | success |
+| `verify (ubuntu-latest, 1.89.0)` | success |
+| `verify (macos-latest, stable)` | success |
+| `verify (windows-latest, stable)` | success |
+| `interception (ubuntu-latest)` | success |
+| `interception (macos-latest)` | success |
+| `interception (windows-latest)` | success |
+| `python-bindings (ubuntu-latest, 3.11, 1.89.0)` | success |
+| `python-bindings (ubuntu-latest, 3.14, stable)` | success |
+| `python-bindings (macos-latest, 3.11, stable)` | success |
+| `python-bindings (windows-latest, 3.11, stable)` | success |
+
+Run [`37983259913`](https://github.com/eggstack/eggreplay/actions/runs/37983259913) — 10/10:
+`wheel (macos-arm64)`, `wheel (macos-x86_64)`, `wheel (manylinux-x86_64)`,
+`wheel (manylinux-aarch64)`, `wheel (windows-x86_64)`,
+`source-distribution`, and `abi3-interpreter-smoke` on CPython 3.11, 3.12,
+3.13, and 3.14 — all success.
+
+The two boundary lanes matter more than the pass count here. This milestone
+changed a published report schema and removed a comparison arm, which compiles
+and passes every behavioural test without either lane noticing — they exist to
+catch exactly that class of change.

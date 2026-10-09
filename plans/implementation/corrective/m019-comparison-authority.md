@@ -1,9 +1,11 @@
 # M019 — Comparison Authority: Volatile-Header Normalization, Timing Assertions, and Request-Direction Stream Comparison
 
-Status: **implemented** — local gate green (495 passed, 2 failed; both the known
+Status: **closed** — local gate green (495 passed, 2 failed; both the known
 machine-specific `curl_interop` pair, re-verified identical at `c32aa6b` with
-these changes stashed). Hosted CI outstanding, so this milestone is **not**
-closed. Dependencies satisfied (M018 closed on `17f4022`, run `37644212037`).
+these changes stashed) and hosted qualification complete on qualifying revision
+`005423b3bd882207bfa0f7d79c6135821a527016`, hosted runs `37983260082` (14/14)
+and `37983259913` (10/10). Dependencies satisfied (M018 closed on `17f4022`,
+run `37644212037`).
 
 Closure record: `plans/closure/m019-comparison-authority.md`.
 

@@ -81,7 +81,7 @@ boundary, and ADR 0008 owns interception security/transport ownership.
 | M016 | `implementation/corrective/m016-post-m015-corrective.md` | closed | M015E (closed), M015D (closed) | bounded outbound timeout, route error attribution, WebSocket shutdown race |
 | M017 | `implementation/corrective/m017-unterminated-bidi-grpc.md` | closed | M016 closure, M015D closure | un-terminated bidirectional gRPC: classified body errors, pinned replay contract |
 | M018 | `implementation/corrective/m018-candidate-error-attribution-and-h2-body-diagnostics.md` | closed | M017 closure | shared error table; 413 for a declared oversized body; retired the mis-measured H2 header-list limitation |
-| M019 | `implementation/corrective/m019-comparison-authority.md` | **implemented** | M018 (closed) | comparison authority: `date` normalization with a visible suppression, `TimingAssertion` wired to CLI and Python, request-direction stream comparison resolved by removal, gRPC decision, `curl_interop` record |
+| M019 | `implementation/corrective/m019-comparison-authority.md` | closed | M018 (closed) | comparison authority: `date` normalization with a visible suppression, `TimingAssertion` wired to CLI and Python, request-direction stream comparison resolved by removal, gRPC decision, `curl_interop` record |
 
 ### Current execution gate
 
@@ -250,8 +250,8 @@ measurement error, and it is **retired** in `docs/http2-support.md`. The test
 that encoded it also asserted the wrong direction (`advertised > 1024`) and is
 corrected.
 
-M019 is **implemented** — local gate green, hosted CI outstanding — and closes
-all five items it owned. Its unifying claim was that `eggreplay-core` exposed a
+M019 is **closed** on qualifying revision `005423b`, hosted runs `37983260082`
+(14/14) and `37983259913` (10/10), and closes all five items it owned. Its unifying claim was that `eggreplay-core` exposed a
 comparison surface partly unreachable from any product, and all three code items
 were the same disease: public API that reads as supported and is not. Track A
 gave the comparison authority a volatile-header concept, seeded narrowly to

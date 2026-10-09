@@ -85,7 +85,8 @@ candidate/regression path's independent copy of the transport-error table, added
 that M015E had recorded from a misread SETTINGS identifier — there was no
 upstream seam, and the operator's bound was always advertised correctly. It is
 closed on `17f4022` (hosted run `37644212037`, all 14 jobs green). **M019** is
-implemented and owns what M018 left behind: comparison-level `date` normalization
+closed on `005423b` (hosted runs `37983260082` 14/14 and `37983259913` 10/10)
+and owns what M018 left behind: comparison-level `date` normalization
 with a visible suppression, the `TimingAssertion` authority that no product
 caller reached (now `--max-elapsed-ms` on the CLI and `max_elapsed_ms` in
 Python), request-direction stream comparison — resolved by deleting the dead
