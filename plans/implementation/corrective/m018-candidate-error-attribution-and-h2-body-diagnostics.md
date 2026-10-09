@@ -140,7 +140,7 @@ Two audited items are **not** taken here, on purpose:
    subject is error attribution — the same thing M017's closure warned against
    when it deferred cross-direction ordering as "a genuine canonical milestone
    — schema v2, additive field, cross-cutting consumers". They are registered as
-   **M019** (`m019-comparison-authority.md`, status `ready`), which is that
+   **M019** (`m019-comparison-authority.md`, status `closed`), which is that
    milestone.
 2. **Whether replay should reproduce the downstream client experience** for an
    un-terminated bidirectional gRPC call, rather than applying the recorded

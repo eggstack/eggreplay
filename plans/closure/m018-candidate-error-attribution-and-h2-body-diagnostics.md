@@ -230,7 +230,7 @@ this run, not on the presence of source.
   transport-adapter error attribution fixed here. Request-direction ordering is
   additionally schema-v2 canonical work that M017's closure explicitly ruled
   out of bundling into a corrective. They are registered as **M019**
-  (`implementation/corrective/m019-comparison-authority.md`, status `ready`),
+  (`implementation/corrective/m019-comparison-authority.md`, status `closed`),
   which also carries the gRPC question below and the stale `curl_interop`
   record.
 - **Whether replay should reproduce the downstream client experience** of an
