@@ -1,6 +1,6 @@
 # Security and Privacy Roadmap
 
-Status: active roadmap
+Status: archived; superseded by implementation and closure records (see [archive index](../README.md))
 Owners: M002, M003, M008, M013
 
 ## Threat model

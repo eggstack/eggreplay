@@ -1,6 +1,6 @@
 # Protocol and Interop Roadmap
 
-Status: active roadmap
+Status: archived; superseded by implementation and closure records (see [archive index](../README.md))
 
 ## v0.1
 

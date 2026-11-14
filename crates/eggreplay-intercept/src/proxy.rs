@@ -7,7 +7,7 @@
 //! - `Eggress` (via [`eggreplay_http::EggressDialer`]) owns raw outbound route
 //!   establishment for `CONNECT` tunnels. A configured route never falls
 //!   back to direct: dial failures fail closed.
-//! - `EggFetch` (via [`record_request_with_session`](eggreplay_http::record_request_with_session))
+//! - `EggFetch` (via [`record_request_with_session`])
 //!   owns semantic upstream HTTP/TLS verification for plain proxy requests.
 //! - This crate owns listener safety, target policy, hop-by-hop filtering,
 //!   recording integration, and tunnel bounds.

@@ -1,6 +1,6 @@
 # Matching and Replay Roadmap
 
-Status: active roadmap
+Status: archived; superseded by implementation and closure records (see [archive index](../README.md))
 Owners: M004, M005, M009
 
 ## Pipeline

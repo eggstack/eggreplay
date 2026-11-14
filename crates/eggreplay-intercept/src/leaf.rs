@@ -1,8 +1,8 @@
 //! Bounded in-memory leaf certificate issuance for interception.
 //!
 //! A [`LeafIssuer`] mints exact-host TLS server certificates signed by one
-//! selected [`CaAuthority`](crate::ca::CaAuthority). Input is a previously
-//! policy-approved exact target ([`NormalizedHost`](crate::policy::NormalizedHost)):
+//! selected [`CaAuthority`]. Input is a previously
+//! policy-approved exact target ([`NormalizedHost`]):
 //! a normalized ASCII DNS name or an exact IP literal.
 //!
 //! # Leaf profile

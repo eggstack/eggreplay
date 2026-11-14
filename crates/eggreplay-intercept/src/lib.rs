@@ -24,7 +24,7 @@
 //! - [`mitm`] owns the `intercept` policy view, CONNECT/SNI/HTTP authority
 //!   coherence, per-target rustls server configurations, the decrypted
 //!   origin service, and the caller-owned H1 driver orchestration. Decrypted
-//!   requests record through the existing [`RecordingSession`] authority;
+//!   requests record through the existing [`eggreplay_store::RecordingSession`] authority;
 //!   TLS failures after `200` close the tunnel with a bounded operational
 //!   event and never fabricate a flow.
 //!
@@ -35,11 +35,6 @@
 //! generation/signing is `rcgen`'s job, pairing is `eggnet-tls`'s job, and
 //! read-only certificate-property checks belong to the maintained
 //! `x509-parser` crate.
-//!
-//! `EggServe` owns inbound H1 parsing/lifecycle and tunnel handoff, `Eggress`
-//! owns raw `CONNECT` route establishment, and `EggFetch` owns semantic
-//! upstream HTTP/TLS verification. This crate adds no second `Hyper`
-//! client/server, SOCKS/CONNECT stack, TLS verifier, or X.509 implementation.
 
 #![forbid(unsafe_code)]
 
@@ -125,12 +120,10 @@ pub mod substrate {
     pub const TIME: &str = "0.3.55";
 }
 
-/// M013B `EggServe` runtime profile consumed by the explicit proxy listener.
+/// `EggServe` runtime profile used by the explicit proxy listener.
 ///
-/// This helper centralizes the `EggServe` configuration decisions M013B will
-/// rely on. Its fields are public so focused tests can assert them: a future
-/// `EggServe` upgrade must not silently change default ownership or accept-form
-/// semantics.
+/// Its public fields let tests pin ownership and request-target semantics across
+/// `EggServe` upgrades.
 #[derive(Debug, Clone)]
 pub struct InterceptionProfile {
     /// Address supplied by the caller (loopback by default; non-loopback
@@ -155,10 +148,10 @@ pub struct InterceptionProfile {
 }
 
 impl InterceptionProfile {
-    /// Construct the canonical M013B interception profile.
+    /// Construct the canonical loopback interception profile.
     ///
-    /// `bind` must be a caller-supplied loopback address; remote listeners
-    /// require policy that M013B has not introduced.
+    /// Remote binds require [`ProxyListenerConfig::with_remote_opt_in`] and an
+    /// operator-managed ingress allow policy; the proxy has no authentication.
     pub const fn loopback(bind: SocketAddr) -> Self {
         Self {
             bind,

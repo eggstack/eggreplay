@@ -1,6 +1,6 @@
 # Regression Roadmap
 
-Status: active roadmap
+Status: archived; superseded by implementation and closure records (see [archive index](../README.md))
 Owners: M006, M007, M010
 
 ## Regression unit

@@ -1,7 +1,7 @@
 //! Opaque `CONNECT` tunnel relay with finite bounds.
 //!
 //! Tunnels never parse application bytes: the relay moves bytes between the
-//! `EggServe` [`TunnelIo`](eggserve_server::tunnel::TunnelIo) downstream and
+//! `EggServe` [`TunnelIo`] downstream and
 //! the `Eggress`-established upstream with direct backpressure
 //! (`tokio::io::copy_bidirectional`). Byte, total-duration, and
 //! idle/no-progress bounds close runaway relays; half-close in either
@@ -62,7 +62,7 @@ impl Default for TunnelLimits {
 
 impl TunnelLimits {
     /// Build explicit limits; every bound must be positive and the
-    /// concurrency ceiling must fit [`MAX_CONCURRENT_TUNNELS`].
+    /// concurrency ceiling must fit `MAX_CONCURRENT_TUNNELS`.
     ///
     /// # Errors
     ///

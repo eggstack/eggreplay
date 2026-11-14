@@ -1,6 +1,6 @@
 # Flow and Storage Roadmap
 
-Status: active roadmap
+Status: archived; superseded by implementation and closure records (see [archive index](../README.md))
 Owners: M002, then M010/M011/M014
 
 ## Canonical schema
