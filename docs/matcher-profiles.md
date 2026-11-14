@@ -20,5 +20,5 @@ consumption policy.
 `serve`, `replay`, or `test`, so a second identical request against a served
 fixture returns `409`. `repeat-last` and `unlimited` are reachable from the
 Python bindings only. If you need repeat serving from the CLI today, record
-duplicate flows or extend the surface — do not assume the core capability is
+duplicate flows or extend the surface. Do not assume the core capability is
 exposed.

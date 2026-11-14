@@ -1,16 +1,13 @@
 # Non-goals and unsupported claims
 
-This is the authoritative list of what EggReplay does **not** do. Each entry is
-a deliberate boundary with a recorded reason, not a gap awaiting a patch. No
-item may be removed without tests that qualify it, and no item may be added
-without an ADR or a closure record.
+This page lists capabilities EggReplay does **not** provide or deliberately
+keeps out of scope, with the reason for each boundary.
 
-## Deferred by decision
+## Deliberate exclusions
 
-- **HTTP/3 / QUIC** on every path — direct, routed, replay, and intercept.
-  Deferred per ADR 0009: no Eggress QUIC route connector, no H3 serving seam,
-  and EggFetch's `http3` safety unreviewed. The `protocol-boundary` CI lane
-  asserts QUIC/H3 is absent from every supported graph.
+- **HTTP/3 / QUIC** on any path, including direct, routed, replay, and
+  interception. No Eggress QUIC route connector or H3 serving seam is available,
+  and EggFetch's `http3` safety is unreviewed.
 - **A generic reverse proxy.** EggReplay replays and compares recorded
   semantics; it is not a forward/reverse proxy product.
 
@@ -47,17 +44,9 @@ without an ADR or a closure record.
 - **Reactivity is authored, not inferred.** Scenarios are finite state machines
   in a fixture; there is no live scripting against process or host state.
 - **`append-new` does not acquire new WebSocket conversations.**
-- **Segmented packet behaviour** — arbitrary corruption, TCP flag manipulation,
-  and kernel-level emulation — is out of scope. The authored `ScenarioFault`
-  model is the supported alternative.
+- **Segmented packet behavior is out of scope.** EggReplay does not emulate
+  arbitrary corruption, TCP flag manipulation, or kernel-level behavior. The
+  authored `ScenarioFault` model is the supported alternative.
 - **HAR is a lossy interchange, never canonical.** Both directions are lossy by
   design and never imply round-trip losslessness; see
   [`har-interchange.md`](har-interchange.md).
-
-## Milestone history
-
-`docs/non-goals.md` previously described the v0.1 horizon, listing Python
-bindings, HAR interchange, scenarios, streaming timing, and TLS interception as
-unavailable. All of those have since been implemented and qualified through
-M017. The current status is in [`../plans/registry.md`](../plans/registry.md);
-per-milestone closure records are under `plans/closure/`.

@@ -55,8 +55,8 @@ Record, in a closure record under `plans/closure/`:
 
 - the exact qualifying revision (full SHA) and the hosted run URLs;
 - the exact commands run, and the per-suite test counts;
-- the supported matrix — including which capabilities are default, supported,
-  or experimental, and which are unsupported or deferred;
+- the supported matrix, including which capabilities are default, supported,
+  experimental, unsupported, or deferred;
 - known limitations and any pre-existing machine-specific failures;
 - the deferred milestones, if any.
 
@@ -69,5 +69,5 @@ A release documents what the build actually does. Re-check the support matrices
 against the feature flags in the released binary, and do not promote an
 experimental tier to supported without the qualification evidence that
 justifies it. When a documented limitation no longer holds, remove it in the
-same change that fixes it — and record the milestone that closed it rather than
+same change that fixes it. Record the milestone that closed it rather than
 leaving a stale deferral in place.

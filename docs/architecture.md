@@ -99,10 +99,10 @@ is a plan with a closure record, not a `cargo update`.
 Ordinary record/replay gateways remain `OriginOnly` with EggServe-owned policy
 and admission; the M013B interception helper opts into `OriginOrAbsolute` while
 retaining EggServe-owned bounds and one tunnel-admission authority. The
-`protocol-boundary` CI lane asserts that no ordinary profile — default, direct,
-H1, `h2` outbound, interception, or Python — acquires `eggserve-core`,
-`eggserve-static`, or the H2 protocol graph, and that interception never adopts
-it at all.
+`protocol-boundary` CI lane asserts that no ordinary profile, including
+default, direct, H1, outbound `h2`, interception, or Python, acquires
+`eggserve-core`, `eggserve-static`, or the H2 protocol graph. Interception never
+adopts that graph.
 
 Eggress remains intentionally narrow: only `eggress-outbound/pproxy-compat` is
 enabled. No default library feature enables Eggress, the WebSocket codec, or TLS

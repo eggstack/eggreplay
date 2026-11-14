@@ -2,7 +2,7 @@
 
 Every result-producing command accepts `--output human|json|junit` (JUnit is
 meaningful for `replay`/`test`/`diff`; other commands project a single
-assertion). The flag is **per-subcommand, not global** — it must follow the
+assertion). The flag is **per-subcommand, not global**. It must follow the
 command name (`eggreplay validate --output json`). JSON is a versioned envelope
 (`command`, `schema_version`, `success`, `failure_class`, `warnings`,
 `payload`); stdout carries JSON/JUnit, stderr carries `{failure_class}:
@@ -14,7 +14,7 @@ the report schema and the session/flow schemas.
 Commands: `record`, `serve`, `replay`, `test`, `diff`, `inspect`, `validate`,
 `har import`, `har export`, `migrate`, plus the `--features intercept`-gated
 `proxy record`, `proxy validate`, and `ca init|import|inspect|export|rotate`.
-`validate` checks a fixture without reading bodies — it is not the same as
+`validate` checks a fixture without reading bodies; it is not the same as
 `inspect --bodies`.
 
 Stable exit codes (compatibility contract):
@@ -44,7 +44,7 @@ whole message payloads before publication; configured JSON Pointer redaction
 also applies to valid JSON text messages. `serve --record-mode append-new`
 rejects `--websockets`. Offline `replay`/sealed `serve` and candidate `test`
 automatically use recorded WebSocket transcripts. The optional
-`--websocket-cadence-tolerance-ms` adds message cadence findings — note it is a
+`--websocket-cadence-tolerance-ms` adds message cadence findings. It is a
 **comparison** flag, so it exists on `replay`, `test`, and `diff`, not on
 `record` or `serve`.
 
@@ -56,7 +56,7 @@ it never prints message bytes.
 
 `serve` and `record` take `--inbound`, which selects the **serving** protocol.
 Accepted values are `http1` (aliases: `h1`, the default) and `http2` (aliases:
-`h2`, `h2c`, `http2-cleartext` — cleartext HTTP/2 prior knowledge).
+`h2`, `h2c`, `http2-cleartext`; all select cleartext HTTP/2 prior knowledge).
 
 `--inbound h2-tls` / `http2-tls` is a **recognised name that is deliberately
 rejected**: TLS serving requires operator certificate and key material, so the
@@ -66,14 +66,14 @@ therefore happens when the identity is supplied, not when the name is chosen.
 
 `http2` requires a build with the `h2-inbound` (or `h2-inbound-tls`) cargo
 feature; without it the flag fails closed with exit code `2` rather than
-silently serving HTTP/1.1. TLS additionally requires `--inbound-tls-cert` and
-`--inbound-tls-key` — an operator identity, never a minted CA.
+silently serving HTTP/1.1. For TLS, pass both `--inbound-tls-cert` and
+`--inbound-tls-key` to supply the operator's identity. These are not a minted CA.
 `--h2-max-concurrent-streams` bounds concurrent streams per connection. The JSON
 result of both commands reports the effective `serving` policy.
 
 `serve`, `replay`, `record`, and `test` take `--outbound-version`, which selects
 the **outbound** client policy. Accepted values are `auto` (the default),
-`http1`, and `http2` — note the spellings are `http1`/`http2`, not `h1`/`h2`,
+`http1`, and `http2`. Use the spellings `http1` and `http2`, not `h1` or `h2`,
 which are rejected at parse time. Selecting `http2` requires the CLI's `h2`
 feature. **`auto` means HTTP/1.1**, not EggFetch's `Auto`: an upstream release
 must not be able to change the protocol of an existing invocation.
@@ -82,11 +82,10 @@ must not be able to change the protocol of an existing invocation.
 ceiling for one outbound request. It bounds every phase **including `total`**,
 which is the part that matters most: the per-phase `read` budget is "time
 between response body chunks", so an origin that accepts a connection and then
-says nothing is bounded only by `total`. The flag is **unset by default** —
-a new deadline would change the behaviour of every existing invocation, the
-same rule `--outbound-version auto` follows. A timed-out transaction is
-recorded as `ErrorCategory::Timeout` in the flow outcome; it is not a
-command-level error, so the command still exits 0. The effective timeout is
+says nothing is bounded only by `total`. The flag is **unset by default**,
+preserving existing invocation behavior, just as `--outbound-version auto`
+does. A timed-out transaction is recorded in the flow as
+`ErrorCategory::Timeout`; the command still exits 0. The effective timeout is
 reported as `outbound_timeout` in the JSON result (`{"bounded": false,
 "total_secs": null}` when unset). `diff` reports `outbound_timeout: null`
 because it never opens a socket.
@@ -135,11 +134,10 @@ Stream comparison covers the **response direction only**, and that is a
 structural decision rather than a gap. Recorded request events are inbound
 transport-frame boundaries, and a candidate's request is synthesized by the
 replay client, so a request-direction comparison would measure the original
-client's framing against EggReplay's own. `Date` is treated as volatile for
-comparison: a differing `Date` is reported in the report's `suppressed` list —
-present on both sides, deliberately not compared — rather than as a finding and
-rather than as a silent absence. Other response headers, and the *presence* of a
-volatile header, are still compared normally.
+client's framing against EggReplay's own. The volatile `Date` header is
+suppressed when present on both sides and listed in the report's `suppressed`
+array. If it appears on only one side, the presence mismatch remains a finding.
+Other headers are compared normally.
 
 `--max-elapsed-ms <N>` asserts that each candidate flow finishes within N
 milliseconds of starting, emitting a `timing.elapsed_ms` finding when it does
@@ -154,37 +152,30 @@ offsets; equal offsets follow fixture order, and `--max-concurrency` (default
 8, maximum 1,024) bounds active requests. Timeline mode requires one validated
 start offset for every flow and reports findings in fixture order.
 
-HAR interchange and migration (M014A) add three offline commands with the same
-envelope/exit contract: `eggreplay har import --har input.har --fixture
-out.eggr` (lossy HAR 1.2 → fixture with the selected redaction policy applied
-before publication, plus an optional `interop-provenance` extension and
-`--loss-report`), `eggreplay har export --fixture in.eggr --har out.har`
-(lossy fixture → HAR with an embedded `_eggreplay` loss/provenance section and
-optional side report, never claiming round-trip losslessness), and
-`eggreplay migrate --fixture old.eggr --to new.eggr` /
-`eggreplay migrate --fixture old.eggr --in-place` (transactional schema-1 →
-current upgrade with registered-extension checks; `--to` names the destination
-because `--output` already selects `human|json|junit`). Unknown required
-extensions and future schemas block migration as `fixture` errors. See
-`docs/har-interchange.md` for the loss matrices, redaction rules, and golden
-corpus.
+HAR import and export are offline and lossy. Import a HAR 1.2 file with
+`eggreplay har import --har input.har --fixture out.eggr`; the selected redaction
+policy is applied before publication. Import writes a non-required
+`interop-provenance` extension and can emit a loss report with `--loss-report`.
+Export with `eggreplay har export --fixture in.eggr --har out.har`; the output
+includes `_eggreplay` loss/provenance metadata and can emit a separate loss
+report with `--loss-report`.
+Neither direction is lossless. Upgrade a schema-1 fixture transactionally with
+`eggreplay migrate --fixture old.eggr --to new.eggr` or
+`eggreplay migrate --fixture old.eggr --in-place` to replace it. Migration
+checks registered extensions and rejects unknown required extensions and future
+schemas. See
+[`har-interchange.md`](har-interchange.md) for the loss matrices and redaction
+rules.
 
-Interception builds add two namespaces kept separate from ordinary gateway
-recording: `eggreplay proxy record ...` (explicit-proxy listener with target
-policy file/flags, `deny`/`tunnel`/`intercept` CONNECT default, CA directory
-for intercept rules, and bounded tunnel/cert-cache limits) plus
-`eggreplay proxy validate --policy-file ...` (dry-run policy check printing
-the normalized policy), and `eggreplay ca
-init|import|inspect|export|rotate ...` (operator-owned CA lifecycle; public
-metadata only, no overwrites, no trust installation). These commands exist
-only in `intercept`-feature builds; other builds fail them with a capability
-message. Default builds do not enable the feature. M013 closed the
-qualification matrix on hosted evidence; default features are unchanged by
-M013F, and any change to the release-binary default for `intercept` is a
-separate post-M013 decision. Source builds always require the explicit
-`--features intercept` opt-in. JSON output reports the bind address,
-compiled capability, CA public fingerprint, policy counts,
-accepted/rejected/tunneled/intercepted counters, recorded flow count, and
-bounded categorized failures, and never key contents, key paths,
-credentials, or decrypted payloads. See `docs/interception-ca-trust.md` for
-manual trust setup.
+Interception builds add `eggreplay proxy record`,
+`eggreplay proxy validate --policy-file ...`, and
+`eggreplay ca init|import|inspect|export|rotate`. Proxy recording uses an
+explicit-proxy listener and a CONNECT policy (`deny`, `tunnel`, or `intercept`);
+intercept rules require a CA directory. Validation prints the normalized
+policy. CA commands manage operator-owned certificates and keys, expose public
+metadata only, and do not install trust. These commands require an explicit
+`--features intercept` build; default builds do not enable interception. JSON
+reports the bind address, capability, public CA fingerprint, policy counts,
+traffic counters, and bounded failures. It never includes key contents, key
+paths, credentials, or decrypted payloads. See
+[`interception-ca-trust.md`](interception-ca-trust.md) for manual trust setup.

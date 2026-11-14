@@ -1,15 +1,8 @@
 # HTTP/2 support (experimental, outbound and inbound)
 
-HTTP/2 is a qualified **experimental** tier in both directions. HTTP/1.1
-remains the default and the only multiprotocol-free profile: no HTTP/2
-capability is enabled in any default build.
-
-- **Outbound** H2 record and regression-candidate execution is qualified under
-  M014B and re-qualified on the Stage 11 dependency line under M015C.
-- **Inbound** H2 serving — the recording gateway and the offline replay
-  server — is qualified under M015B, with the end-to-end semantic matrix in
-  M015C and the hardening matrix in M015E.
-- **gRPC over H2** is qualified as an experimental tier under M015D.
+HTTP/2 is supported as an **experimental, opt-in** capability for outbound
+requests, inbound serving, and gRPC. HTTP/1.1 remains the default; no default
+build enables HTTP/2.
 
 ## What is supported
 
@@ -26,7 +19,7 @@ capability is enabled in any default build.
 - Concurrent streams on one connection, request/response trailers (stored as
   flow trailers plus `StreamEventKind::Trailers`), large streaming bodies with
   backpressure, per-stream cancellation without corrupting siblings, target
-  remapping, strict/practical matching, scenarios, M010 stream-event timing,
+  remapping, strict/practical matching, scenarios, stream-event timing,
   regression diffing, graceful GOAWAY handling, and routed H2-over-TLS through
   an Eggress TCP route (SNI/ALPN stay in EggFetch; the dialer moves raw TCP
   bytes only).
@@ -72,25 +65,19 @@ capability is enabled in any default build.
 
 ### Un-terminated bidirectional gRPC
 
-Qualified under M017, with an honest scope. The gateway is already
-full-duplex, so server replies do reach the client; but a client that never
-half-closes produces no terminal `grpc-status`. The recorded flow is valid and
-its envelope is whole — the **missing status is the signal** that the call never
-completed, and the fixture also records *why* it stopped, as a terminal `Error`
-stream event with the classified category.
-
-Replaying such a fixture is safe: a gRPC client never observes a successful
-call. Live and replayed clients do report different failure codes (`Unknown`
-live, `Internal` on replay), and that asymmetry is recorded rather than smoothed
-over. See `docs/grpc-and-faults.md` and
-`plans/closure/m017-unterminated-bidi-grpc.md`.
+For an un-terminated bidirectional call, a client that never half-closes has no
+terminal `grpc-status`, even if the server has sent replies. The fixture records
+why capture ended in a terminal `Error` stream event. Replaying it does not
+produce a successful call: the live
+client reports `Unknown` and the replayed client reports `Internal`. EggReplay
+preserves this difference. See [`grpc-and-faults.md`](grpc-and-faults.md).
 
 ## What is not supported
 
 - **H2 interception (MITM).** `eggreplay-intercept` never adopts the
   multiprotocol serving layer; it stays on `eggserve-server` and H1.
-- **HTTP/3 / QUIC** on every path — deferred per ADR 0009. No Eggress QUIC
-  route connector, no H3 serving seam, and EggFetch's `http3` safety unreviewed.
+- **HTTP/3 / QUIC** on any path. There is no Eggress QUIC route connector or H3
+  serving seam, and EggFetch's `http3` safety is unreviewed.
 - **WSS** and **extended-CONNECT WebSockets**. The replay handshake path still
   requires HTTP/1.1.
 - **A generic reverse proxy.**
@@ -98,9 +85,9 @@ over. See `docs/grpc-and-faults.md` and
 ## Invariants worth knowing
 
 - **The recorded scheme participates in matching.** An `https`-acquired flow
-  served cleartext is refused, not relaxed — a bounded refusal, not a silent
-  mismatch. A gateway flow records the **upstream** authority it was configured
-  to reach, not the inbound `:authority`, so a replay client must be addressed
+  served cleartext is refused, not relaxed. This is a bounded refusal, not a
+  silent mismatch. A gateway flow records the **upstream** authority it was
+  configured to reach, not the inbound `:authority`, so a replay client must be
   at the recorded origin.
 - **Protocol annotations are observational.** The
   `("transport", "http-version:h2")` annotation is preserved in the fixture and
@@ -118,75 +105,12 @@ over. See `docs/grpc-and-faults.md` and
 - **A configured Eggress route never falls back to direct.** A route that
   cannot be reached fails the call.
 
-## Known limitations found during hardening
+## Operational limits
 
-These are recorded rather than hidden. They are properties of the adopted
-EggServe runtime or of the canonical model, not of a test.
-
-- ~~`H2Limits::max_header_list_size` is enforced inbound but not advertised.~~
-  **Retired by M018.** This was never a limitation: the operator's bound is both
-  enforced and advertised, and a client sizing its header block is told the
-  number the operator chose. M015E recorded the claim by reading SETTINGS id
-  `0x5`, which is `SETTINGS_MAX_FRAME_SIZE`; `SETTINGS_MAX_HEADER_LIST_SIZE` is
-  `0x6` (RFC 9113 §6.5.2). The stubborn 16384 was hyper's default max *frame*
-  size, a limit EggReplay never configures. Reading the correct id shows the
-  operator's exact value on the wire, tracked across settings — pinned by
-  `the_advertised_header_list_bound_is_the_operators_own`, with the enforced
-  half proven by `an_oversized_header_list_is_refused_and_the_listener_survives`.
-- An oversized request body of **undeclared** length surfaces as **500**, not
-  413: the overrun is only discoverable mid-stream, so the runtime's bounded
-  refusal is all that is available. A body whose `content-length` *declares*
-  more than the operator's ceiling is now refused with **413** from the headers
-  alone, before a byte is consumed. A malformed or absent `content-length` is
-  deliberately left to the runtime rather than guessed at, so there is only one
-  body-limit path.
-- An **incomplete** request still consumes a single-use candidate, so a later
-  request for the same recorded path finds nothing left. The failure is
-  stream-local; it is not a connection failure.
-- `eggfetch_core::Timeout::from_secs` sets `pool`, `connect`, `write`, and
-  `read` but **not** `total`. The `read` budget is "time between response body
-  chunks", so an upstream that accepts a request and then sends nothing is
-  unbounded by `from_secs` alone. EggReplay therefore populates `total`
-  explicitly: the CLI's `--timeout-secs` bounds the whole transaction and is
-  **unset by default**, so no existing invocation's behaviour changed. A
-  timed-out transaction is recorded as an `ErrorCategory::Timeout` flow outcome
-  rather than a command-level error, so the command still exits `0`.
-- Route failures are attributed. A typed `DialError` is classified into the
-  taxonomy (`ConnectionRefused`, `Unreachable`, …) instead of collapsing to
-  `Other`; this was the M016 fix, and it is why
-  `ErrorCategory::ConnectionRefused` is reachable in the product at all.
-  Classification is shared, not per-layer: the recording path and the
-  **candidate** path resolve the same table in `error_classify`, so a recorded
-  run and a candidate run of one request against one dead route report the same
-  category. M018 fixed the candidate path, which had its own copy missing the
-  route arm entirely. A candidate body cut off by a deadline now records as
-  `timeout` rather than as an uninformative `other`.
-- A TLS peer that claims `:scheme: http` is refused with **400** before the
-  matcher runs. That is the right place to catch it, but it is worth knowing.
-- The regression authority compares `date`, which is origin-generated and
-  second-granular. A comparison about protocol *semantics* should normalize
-  that one field, as the pre-existing outbound-H2 qualification does.
-
-## Dependency posture
-
-`eggfetch-core 0.2.2`, `eggserve-primitives 0.2.2`, `eggserve-server 0.4.0`,
-`eggserve-core 0.4.0` (optional, inbound only), `eggnet-tls 0.2.0`,
-`eggress-outbound 1.0.11`. H2 on the outbound side is the already-published
-`native-http2` capability; H2 on the inbound side is EggServe Core's H2 driver,
-adopted in Stage 11 as an opt-in dependency.
-
-The gRPC oracle (Tonic 0.14.6) used to qualify gRPC is a **dev-dependency** of
-`eggreplay-http` only and enters no product graph.
-
-## Evidence
-
-- `plans/adrs/0010-inbound-http2-serving-boundary.md` — the ownership decision
-- `plans/closure/m015a-published-dependency-and-h2-boundary-preflight.md`
-- `plans/closure/m015b-inbound-http2-gateway-and-replay.md`
-- `plans/closure/m015c-http2-end-to-end-semantic-and-regression-qualification.md`
-- `plans/closure/m015d-grpc-over-http2-integration-qualification.md`
-- `plans/closure/m015e-h2-hardening-hosted-qualification-and-closure.md`
-- `plans/closure/m015-bidirectional-http2-and-transport-baseline.md`
-- `plans/closure/m014b-http2-qualification.md` — the original outbound tier
-- `plans/closure/m014c-http3-feasibility-and-qualification.md` and
-  `plans/adrs/0009-http3-integration-boundary.md` — the H3 deferral
+- A request with a declared `content-length` above the configured body limit is
+  rejected with **413** before its body is read. An oversized body with no
+  declared length is detected while streaming and may surface as **500**.
+- An **incomplete** request still consumes a single-use candidate. A later
+  request for the same recorded path finds no candidate, but the failure stays
+  local to that stream and does not close the connection.
+- A TLS peer that sends `:scheme: http` is rejected with **400** before matching.

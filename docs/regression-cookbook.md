@@ -1,108 +1,91 @@
 # Regression cookbook
 
-Three commands produce comparison reports. They differ in **what they compare**
-and **what they do with a difference**.
+Three commands produce comparison reports. They differ in what they compare and
+what they do with a difference.
 
 | Command | Compares | On a difference | Opens a socket |
 |---|---|---|---|
-| `replay` | recorded baseline vs a **live target** | reports, exits `0` | yes |
-| `test` | recorded baseline vs a **live target** | exits `1` | yes |
-| `diff` | **two fixtures** | exits `1` | **never** |
+| `replay` | A recorded baseline and a live target | Reports findings, exits `0` | Yes |
+| `test` | A recorded baseline and a live target | Exits `1` | Yes |
+| `diff` | Two fixtures | Exits `1` | No |
 
-`replay` and `test` produce the same typed report; only `test` enforces it, so
-`replay` is the debugging tool and `test` is the CI gate. `diff` is for offline
-"did this change?" questions — two recordings, no network.
+`replay` and `test` produce the same report. Use `replay` to inspect a candidate
+and `test` as a CI gate. Use `diff` to compare two recordings offline.
 
-## Live target
+## Compare with a live target
 
 ```sh
 eggreplay replay --fixture demo.eggr --target https://api.example.com --output json
-eggreplay test   --fixture demo.eggr --target https://api.example.com --output junit
+eggreplay test --fixture demo.eggr --target https://api.example.com --output junit
 ```
 
-The target's **path, query, and headers come from the recorded flow** — the
-target argument supplies the origin to send them to. The candidate is recorded
-with the baseline request verbatim, so nothing can silently rewrite what is
-being compared.
+The target supplies the origin. The recorded flow supplies the path, query, and
+request headers. The candidate request is kept separate from the baseline, so
+target remapping does not change what the report compares.
 
-## Two fixtures, offline
+## Compare two fixtures
 
 ```sh
 eggreplay diff --baseline before.eggr --candidate after.eggr --output json
 ```
 
-The flags are `--baseline` and `--candidate`; there is no `--fixture`/`--other`
-form. `diff` never opens a socket, so it is safe to run anywhere.
+Use existing fixture paths. The flags are `--baseline` and `--candidate`;
+`diff` never opens a socket.
 
 ## What is compared
 
-By default, ordinary status, selected headers and trailers, body digest and
-length, and outcome category/phase. Report findings are typed with a `kind`
-(`status`, `header`, `body`, `outcome`, `stream`, `sse`, `websocket`, …) and a
-`field` naming the exact location, so a finding is actionable rather than just
-"differs".
+By default, the report compares status, selected headers and trailers, body
+digest and length, and outcome category and phase. Each finding has a typed
+`kind` and a `field` naming its location.
 
-Optional dimensions are **off by default** and must be requested, because they
-need fixture support that many recordings lack:
+The default comparison policy treats `Date` as volatile. When the header is
+present on both sides, its comparison is suppressed and the report records the
+suppression in `suppressed`. If it is missing on either side, the presence
+difference remains a finding. This policy is separate from the `practical`
+matcher profile.
 
-| Flag | Requires |
+Optional dimensions are off by default and require supporting fixture metadata:
+
+| Flag | Requirement |
 |---|---|
-| `--compare-stream-events` | a `stream-events` extension |
-| `--cadence-tolerance-ms <N>` | implies stream comparison; a request for it without support is an explicit `fixture` error, never a silent skip |
+| `--compare-stream-events` | A `stream-events` extension |
+| `--cadence-tolerance-ms <N>` | Implies stream comparison and requires stream metadata |
 | `--compare-sse` | `text/event-stream` bodies |
-| `--sse-ignore <FIELDS>` | repeatable; `data,event,id,retry,comments`; implies SSE comparison |
-| `--websocket-cadence-tolerance-ms <N>` | a `websockets.jsonl` extension |
+| `--sse-ignore <FIELDS>` | Repeatable fields: `data,event,id,retry,comments`; implies SSE comparison |
+| `--websocket-cadence-tolerance-ms <N>` | A `websockets.jsonl` extension |
 
-## The `date` finding
-
-A regression against a live origin will normally report one finding:
-
-```
-Header response.headers.date baseline=<present> candidate=<present>
-```
-
-`Date` is origin-generated and second-granular, so it differs on every run.
-This is expected, not a misconfiguration. The `practical` matcher profile
-ignores `date` when **matching** a flow, but the regression **comparison**
-authority has no header-ignore option, so it surfaces here. Comparison-level
-normalization is not implemented; until it is, treat `date` as noise and read
-the other findings.
+A requested comparison without required metadata fails explicitly. It never
+silently skips the requested dimension.
 
 ## Schedulers
 
-`--scheduler` chooses how candidate requests are issued:
+`--scheduler` selects how candidate requests are issued:
 
-- `sequential` (default) — one at a time, deterministic, simplest to debug
-- `timeline` — issues candidates in recorded order using the fixture's stream
-  event metadata, so a request is only sent once its recorded predecessor has
-  finished. Requires that metadata; without it the command is an explicit
-  error, never a silent downgrade to sequential.
+- `sequential` is the default. It sends one request at a time and is easiest to
+  debug.
+- `timeline` starts candidates at recorded offsets. It requires valid stream
+  metadata and respects fixture order for equal offsets. Missing metadata is an
+  error, not a fallback to sequential scheduling.
 
-`--max-concurrency` bounds concurrent requests under `timeline` scheduling
-(default `8`). The scheduler actually used is recorded in the report, so a diff
-is reproducible.
+`--max-concurrency` bounds active requests with timeline scheduling. Its default
+is `8`. The report records the scheduler used.
 
-## Timeouts
+## Time bounds
 
-`--timeout-secs` is **unset by default**, so no existing invocation's behaviour
-changed when it was introduced. When set, every phase is bounded *and* `total`
-is populated — `total` matters most, because the per-phase `read` budget means
-"time since the last body chunk" and an origin that accepts a request and then
-says nothing is bounded only by `total`.
+`--timeout-secs` bounds each outbound transaction, including its total duration.
+It is unset by default. A timeout is recorded as a flow outcome, so the command
+still produces a report.
 
-A timed-out transaction is recorded as a flow **outcome**, not a command error,
-so the command still exits `0` and the timeout appears as a finding.
+`--max-elapsed-ms <N>` is a separate comparison assertion. It checks whether a
+completed candidate flow stayed within the given duration and reports a timing
+finding if it did not. It is independent of `--timing-mode`, which controls
+fixture playback pacing.
 
-## Routing
+## Report versions
 
-`--route` is accepted on the network-capable commands and takes `direct`
-(default) or an Eggress pproxy URI. A configured route never falls back to
-direct: an unreachable route fails the request and the failure is classified
-(`connection_refused`, `unreachable`, …) rather than collapsing to `other`.
+The comparison report schema is version `3`. It includes `findings` and the
+machine-readable `suppressed` list. The CLI JSON envelope has its own
+`schema_version` of `1`; fixture session and flow schemas are separate again.
 
-## Reading a report
-
-`schema_version` on the report is `2` and is separate from the CLI envelope's
-`schema_version` (1) and from the session/flow schemas. Each report carries its
-`schema_version`, the `scheduler` used, and per-flow `findings` with typed
-`kind` and `field`, plus the `baseline_flow_ids` each finding came from.
+See [CLI and exit contracts](cli.md) for flags and output details, and
+[Configuration](configuration.md) for matcher and recording settings.

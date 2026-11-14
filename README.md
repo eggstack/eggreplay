@@ -1,19 +1,18 @@
 # EggReplay
 
-Record real HTTP interactions once, then replay them **offline with no origin
-running** — deterministically, in CI, with no network flakiness. Or point the
-same fixture at a live service to diff a candidate against a recorded baseline.
+Record HTTP interactions in versioned `.eggr` fixtures. Replay them without an
+origin, or send the recorded requests to a live service and compare responses.
 
-EggReplay owns HTTP *semantics* — flows, matching, scenarios, redaction,
-comparison, reporting. Transport (HTTP, TLS, framing, inbound serving, route
-establishment) is delegated to [EggFetch](https://crates.io/crates/eggfetch-core),
+EggReplay owns the semantic layer: flows, matching, scenarios, redaction,
+comparison, and reporting. HTTP, TLS, framing, inbound serving, and route
+establishment are delegated to [EggFetch](https://crates.io/crates/eggfetch-core),
 [EggServe](https://crates.io/crates/eggserve-server), and
-[Eggress](https://crates.io/crates/eggress-outbound). There is no parallel HTTP
-stack inside this project.
+[Eggress](https://crates.io/crates/eggress-outbound).
 
 ## Install
 
-Not published to crates.io yet. Build from source (Rust 1.89+):
+The CLI is not yet published on crates.io. Install it from source with Rust
+1.89 or newer:
 
 ```sh
 git clone https://github.com/eggstack/eggreplay.git
@@ -22,140 +21,105 @@ cargo install --path crates/eggreplay-cli
 eggreplay --version
 ```
 
+To include the optional HTTP/1.1 proxy and HTTPS interception commands, add
+`--features intercept` to `cargo install`.
+
 ## Quickstart
 
-This walks the whole loop with a throwaway origin. Every command below is
-verified as written.
+This records a request, stops the origin, then serves the fixture offline. It
+requires Python 3 and `curl`. Use two terminals. Keep the first terminal in the
+same shell so its `ORIGIN_PID` variable remains available.
 
-**1. Start something to record.** Any real service works; this needs no setup:
+In **terminal 1**, start the temporary origin and recorder:
 
 ```sh
-mkdir qs && cd qs && echo '{"greeting":"hello"}' > api.json
+mkdir -p eggr-quickstart
+cd eggr-quickstart
+printf '%s\n' '{"greeting":"hello"}' > api.json
 python3 -m http.server 9100 --bind 127.0.0.1 &
+ORIGIN_PID=$!
+eggreplay record --listen 127.0.0.1:8080 \
+  --upstream http://127.0.0.1:9100 --fixture demo.eggr
 ```
 
-**2. Record through the gateway.** Your client talks to the gateway, not the
-origin. Traffic flows through unmodified, so record in any environment you like:
+While `record` is running, use **terminal 2** to make a request through the
+gateway:
 
 ```sh
-eggreplay record --listen 127.0.0.1:8080 --upstream http://127.0.0.1:9100 --fixture demo.eggr
+curl http://127.0.0.1:8080/api.json
 ```
+
+Press `Ctrl-C` in terminal 1 to finalize the fixture. Then stop the origin and
+start offline replay in terminal 1:
 
 ```sh
-curl http://127.0.0.1:8080/api.json      # {"greeting":"hello"}
-```
-
-Press `Ctrl-C` to finalize the fixture. The result is a directory — not a
-single file:
-
-```
-demo.eggr/
-├── manifest.json          # written last; the publication marker
-├── flows.jsonl            # one JSON flow per line
-├── blobs/<sha256>         # content-addressed bodies
-└── stream-events.json     # required extension
-```
-
-**3. Kill the origin and replay offline.** This is the whole point:
-
-```sh
-# the http.server from step 1 is gone
+kill "$ORIGIN_PID"
+wait "$ORIGIN_PID" 2>/dev/null || true
 eggreplay serve --fixture demo.eggr --listen 127.0.0.1:9100
 ```
 
-```sh
-curl http://127.0.0.1:9100/api.json      # {"greeting":"hello"} — no network, no origin
-```
-
-> Serve on the **authority the flows recorded** (here `127.0.0.1:9100`, the
-> upstream). Replay is origin-only: a gateway recording stores the *upstream*
-> authority it reached, so a request with a different `Host` is a clean `404`
-> "no match" rather than a relaxed match. Recorded flows are consumed once, so
-> a second identical request returns `409`.
-
-**4. Check a fixture, or diff two of them:**
+In terminal 2, request the recorded origin again:
 
 ```sh
-eggreplay validate --fixture demo.eggr --output json
-eggreplay inspect  --fixture demo.eggr --output json
-eggreplay diff --baseline before.eggr --candidate after.eggr --output json
+curl http://127.0.0.1:9100/api.json
 ```
 
-**5. Regress a live service against a recording.** `test` enforces and exits
-non-zero on a difference; `replay` reports the same thing but always exits `0`:
+The response comes from `demo.eggr`; no origin is running. Press `Ctrl-C` in
+terminal 1 to stop the replay server. Replay matches the recorded upstream
+authority, here `127.0.0.1:9100`, and consumes each flow once.
 
-```sh
-eggreplay test --fixture demo.eggr --target http://127.0.0.1:9100 --output junit
-```
+For a full walkthrough, including validation, live regression, and redaction,
+see the [Quickstart guide](docs/quickstart.md).
 
-```xml
-<testsuite name="test" tests="1" failures="1" errors="0">
-  <testcase name="flow-…" classname="test">
-    <failure message="mismatch">Header response.headers.date …</failure>
-  </testcase>
-</testsuite>
-```
+## Capabilities
 
-That `date` finding is expected and is the one thing to know about step 5:
-`Date` is origin-generated and second-granular, so it differs on every run. The
-`practical` matcher profile ignores `date` when *matching*, but the regression
-*comparison* authority has no header-ignore, so it will surface. Treat it as
-noise until comparison-level normalization ships.
-
-## What it does
-
-| Capability | Status |
+| Capability | Availability |
 |---|---|
-| Gateway recording of HTTP/1.1 into a `.eggr` fixture | default |
-| Offline replay server, zero network | default |
-| Regression compare with a versioned report (JSON / JUnit) | default |
-| Structural redaction (headers, query, JSON/form bodies) | default |
-| Authored scenarios, near-miss reporting, WebSocket codec | default |
-| HAR 1.2 import / export (lossy, with a loss report) | default |
-| Explicit HTTP/1.1 proxy, CONNECT policy, HTTPS MITM, CA lifecycle | opt-in `--features intercept` |
-| Outbound HTTP/2, inbound HTTP/2 (h2c / ALPN), gRPC over H2 | opt-in cargo features, experimental |
-| Eggress listener-free outbound routing | opt-in cargo feature |
+| HTTP/1.1 recording, offline replay, and live regression | CLI default |
+| HAR 1.2 import and export | CLI default; lossy, with a loss report |
+| WebSocket conversation recording and replay | Supported; recording requires `--websockets` |
+| Eggress routing | Available in the CLI; direct is the default |
+| Outbound and inbound HTTP/2 | Optional CLI features; experimental |
+| gRPC-derived views | Optional `eggreplay-http/grpc` feature; experimental |
+| HTTP/1.1 proxy, CONNECT policy, and HTTPS MITM | Optional `intercept` feature; policy-gated |
 
-**No HTTP/2 capability is default in any profile.** A protocol you did not ask
-for is a protocol you cannot silently get. Full matrices, including what is
-explicitly *not* supported, live in
-[`docs/http2-support.md`](docs/http2-support.md) and
-[`docs/non-goals.md`](docs/non-goals.md).
+HTTP/2 is never enabled by default. See the [protocol support matrix](docs/http2-support.md)
+and [unsupported capabilities](docs/non-goals.md) for details and limitations.
 
 ## Documentation
 
-Start here, then go deeper:
-
 | Guide | Covers |
 |---|---|
-| [Quickstart](docs/quickstart.md) | The full walkthrough above, plus scenarios, redaction, and regression |
-| [CLI and exit contracts](docs/cli.md) | Every command, flag, exit code, and the JSON envelope |
-| [Configuration](docs/configuration.md) | Matcher profiles, timing, route policy, recording modes |
-| [Regression cookbook](docs/regression-cookbook.md) | `replay` vs `test` vs `diff`, schedulers, comparison policy |
-| [`.eggr` schema](docs/eggr-schema.md) | On-disk format, extension registry, bounds, integrity |
-| [HAR interchange](docs/har-interchange.md) | What HAR cannot carry, in both directions |
-| [HTTP/2 support](docs/http2-support.md) | H2/gRPC/WebSocket/Eggress tiers and known limitations |
-| [Interception threat model](docs/interception-threat-model.md) | The proxy, CONNECT policy, CA, and MITM boundaries |
-| [CA and trust](docs/interception-ca-trust.md) | CA lifecycle and trust operations |
-| [Testing](docs/testing.md) | The verification gate and the CI lanes |
-| [Release process](docs/release-process.md) | Manual release procedure and dependency pins |
-| [Architecture](docs/architecture.md) | Crate ownership, transport delegation, dependency state |
+| [Quickstart](docs/quickstart.md) | Record, inspect, replay, and regress a fixture |
+| [CLI and exit contracts](docs/cli.md) | Commands, flags, exit codes, and output formats |
+| [Configuration](docs/configuration.md) | Matcher, timing, recording, and route settings |
+| [Matcher profiles](docs/matcher-profiles.md) | Matching behavior and flow consumption |
+| [Regression cookbook](docs/regression-cookbook.md) | `replay`, `test`, and `diff` |
+| [`.eggr` schema](docs/eggr-schema.md) | Fixture layout, extensions, bounds, and integrity |
+| [HAR interchange](docs/har-interchange.md) | Import/export behavior and known data loss |
+| [HTTP/2 support](docs/http2-support.md) | H2 and gRPC tiers and limitations |
+| [Interception threat model](docs/interception-threat-model.md) | Proxy, CONNECT policy, and MITM boundaries |
+| [CA and trust](docs/interception-ca-trust.md) | CA lifecycle and manual trust setup |
+| [Non-goals](docs/non-goals.md) | Deliberate exclusions and redaction limits |
+| [Python bindings](crates/eggreplay-python/README.md) | Python package and pytest integration |
+| [Testing](docs/testing.md) | Local checks and CI qualification |
 
-For the reasoning behind the design, see
-[`architecture/overview.md`](architecture/overview.md) and the deep dives it
-indexes. For agents working in this repository, [`AGENTS.md`](AGENTS.md) is the
-entry point.
+For the design and crate boundaries, see [Architecture](docs/architecture.md) and
+[the architecture index](architecture/overview.md). For repository contribution
+rules, start with [`AGENTS.md`](AGENTS.md).
 
 ## Python
 
-PyO3 bindings ship as a separate abi3 wheel, deliberately multiprotocol-free
-and without the interception capability:
+Python bindings are distributed separately as an abi3 wheel. The default wheel
+excludes interception and multiprotocol serving. To develop locally:
 
 ```sh
-cd crates/eggreplay-python && uv sync --extra dev && maturin develop
+cd crates/eggreplay-python
+uv sync --extra dev
+maturin develop
 ```
 
-See [`crates/eggreplay-python/README.md`](crates/eggreplay-python/README.md).
+See the [Python package guide](crates/eggreplay-python/README.md).
 
 ## Development
 
@@ -166,10 +130,10 @@ cargo fmt --all -- --check \
   && cargo test --workspace --all-features
 ```
 
-CI adds `--locked` and `--no-fail-fast`, plus four single-runner lanes that
-assert *architecture* rather than behavior. A change can pass every test and
-still break a boundary — see [`AGENTS.md`](AGENTS.md) and
-[`plans/registry.md`](plans/registry.md) for the live execution gate.
+CI also uses `--locked` and `--no-fail-fast`, plus architecture boundary lanes.
+A passing test suite alone does not prove the dependency and protocol boundaries
+are intact. See [`AGENTS.md`](AGENTS.md) and the
+[planning registry](plans/registry.md).
 
 Contributing and security reports: [CONTRIBUTING.md](CONTRIBUTING.md),
 [SECURITY.md](SECURITY.md).

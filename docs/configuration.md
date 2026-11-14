@@ -2,7 +2,7 @@
 
 Configuration is explicit and ordered: **CLI flag > explicit file > documented
 default**. Nothing is read implicitly, and there is no ambient environment
-profile — a flag you did not pass means the documented default, every time.
+profile. A flag you did not pass means the documented default.
 Introduce a new default only alongside a change to the meaning of an existing
 one, and never in a minor release.
 
@@ -44,7 +44,6 @@ rather than a literal placeholder.
 
 `--inbound` (`http1`/`http2`) and `--outbound-version` (`auto`/`http1`/`http2`)
 select protocols, and both fail closed with exit `2` when the build lacks the
-required cargo feature. There is no silent fallback to HTTP/1.1. Optional
-capabilities — interception, H2, gRPC — are cargo features, not config:
-see [`./http2-support.md`](./http2-support.md).
+required cargo feature. There is no silent fallback to HTTP/1.1. Optional capabilities such as interception, H2, and gRPC are cargo features,
+not configuration. See [`./http2-support.md`](./http2-support.md).
 

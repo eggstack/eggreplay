@@ -1,229 +1,118 @@
 # Quickstart
 
-Every command in this guide is verified against a real build. `eggreplay`
-refuses rather than guesses: an invalid flag value exits `2` with a diagnostic,
-so a command that runs at all is a command that meant what you typed.
+This guide records an HTTP request, validates the fixture, replays it offline,
+and shows how to compare against a live service. It assumes the `eggreplay` CLI
+is installed, plus Python 3 and `curl` for the local example.
 
-Machine-readable results go to **stdout**; operational logs and
-`{failure_class}: {message}` diagnostics go to **stderr**. JSON and JUnit are
-result contracts; human rendering is terminal text and is not a parsing
-contract.
+JSON and JUnit results go to stdout. Operational logs and diagnostics go to
+stderr.
 
-## Set up a throwaway origin
+## Start an origin and record a request
 
-The guide uses a static file server so it runs anywhere with no setup. Any real
-service works identically.
+In terminal 1, create a response file, start a local origin in the background,
+and run the recorder. Keep using this shell so `ORIGIN_PID` is available for
+cleanup.
 
 ```sh
-mkdir qs && cd qs && echo '{"greeting":"hello"}' > api.json
+mkdir -p eggr-quickstart
+cd eggr-quickstart
+printf '%s\n' '{"greeting":"hello"}' > api.json
 python3 -m http.server 9100 --bind 127.0.0.1 &
+ORIGIN_PID=$!
+eggreplay record --listen 127.0.0.1:8080 \
+  --upstream http://127.0.0.1:9100 --fixture demo.eggr
 ```
 
-## Record
-
-Run the gateway, then point your client at the gateway rather than the origin.
-Traffic passes through untouched, so you can record in development, in CI, or
-against a shared environment.
+While the recorder runs, use terminal 2 to send a request through the gateway:
 
 ```sh
-eggreplay record --listen 127.0.0.1:8080 --upstream http://127.0.0.1:9100 --fixture demo.eggr
+curl http://127.0.0.1:8080/api.json
 ```
 
-```sh
-curl http://127.0.0.1:8080/api.json      # {"greeting":"hello"}
-```
+Press `Ctrl-C` in terminal 1 to finalize the fixture. Recording publishes a
+fixture only after a clean shutdown. An interrupted recording leaves an
+`.incomplete-*` staging directory instead of a completed fixture. Existing
+fixtures are never replaced unless you pass `--overwrite`.
 
-The recorder logs `recording on 127.0.0.1:8080 (inbound http1)` and then
-`record: ok`. Press `Ctrl-C` to finalize. **A fixture is only published on a
-clean shutdown** — an interrupted recording leaves a `.incomplete-*` staging
-directory, never a fixture that looks complete.
+A `.eggr` fixture is a directory containing a manifest, flow records,
+content-addressed body blobs, and any required extensions.
 
-Recording an existing fixture requires explicit `--overwrite`; there is no
-silent replacement.
-
-### What you get
-
-A `.eggr` is a **directory**:
-
-```
-demo.eggr/
-├── manifest.json          # written last; the publication marker
-├── flows.jsonl            # one JSON flow per line
-├── blobs/<sha256>         # content-addressed bodies, no extension
-└── stream-events.json     # required extension (not an extensions/ dir)
-```
-
-## Inspect and validate
+## Validate and inspect
 
 ```sh
 eggreplay validate --fixture demo.eggr --output json
+eggreplay inspect --fixture demo.eggr --output json
 ```
 
-```json
-{"command":"validate","schema_version":1,"success":true,"failure_class":null,
- "warnings":[],"payload":{"fixture":"demo.eggr","flow_count":1,"schema_version":2}}
-```
-
-```sh
-eggreplay inspect --fixture demo.eggr --output json              # metadata only
-eggreplay inspect --fixture demo.eggr --bodies --output json     # reads blobs
-eggreplay inspect --fixture demo.eggr --websockets --output json # conversations
-```
-
-`validate` checks fixture integrity without reading bodies; `inspect --bodies`
-reads blobs. `inspect` never prints WebSocket message bytes — it reports kind,
-direction, timing, and a digest instead.
+`validate` checks fixture integrity without reading body blobs. `inspect` shows
+metadata. Add `--bodies` to read a bounded amount of body data or `--websockets`
+to inspect conversation metadata. Inspection never prints WebSocket message
+bytes. See the [fixture schema guide](eggr-schema.md) for the on-disk format.
 
 ## Replay offline
 
-Stop the origin first, so there is no doubt about where the response came from:
+Stop the origin before starting the replay server. In terminal 1:
 
 ```sh
-# the http.server from the setup step is no longer running
+kill "$ORIGIN_PID"
+wait "$ORIGIN_PID" 2>/dev/null || true
 eggreplay serve --fixture demo.eggr --listen 127.0.0.1:9100
 ```
 
-```sh
-curl http://127.0.0.1:9100/api.json      # {"greeting":"hello"} — offline
-```
-
-### Two things that will surprise you
-
-**Serve on the recorded authority.** A gateway recording stores the *upstream*
-authority it reached — `127.0.0.1:9100` above, not the gateway's `8080`. Replay
-is origin-only, so a request whose `Host` does not match gets a clean `404`
-`eggreplay replay no match` rather than a relaxed match. Either serve on the
-recorded authority (what this guide does), or send the right `Host`:
+In terminal 2:
 
 ```sh
-curl -H 'Host: 127.0.0.1:9100' http://127.0.0.1:8080/api.json
+curl http://127.0.0.1:9100/api.json
 ```
 
-**Flows are consumed once.** Replay is a match-and-consume model, not a static
-site mirror. A second identical request gets `409`. A flow that *matches* but
-cannot be consumed is reported as a **near-miss** — never a silent repeat and
-never a silent skip.
+The response comes from the fixture. Press `Ctrl-C` in terminal 1 to stop the
+server.
 
-`serve --record-mode` also supports `once`, `append-new`, and `re-record`, which
-forward to an upstream and fold the new traffic into the fixture. Those are
-network-capable, and `--route` is only accepted with them.
+A gateway recording stores the upstream authority it reached, so replay must
+use `127.0.0.1:9100` here, not the recorder's `8080` address. A request with a
+different `Host` does not match. Flows are consumed once by default, so a
+second identical request returns `409`.
 
-## Regress a live service
+## Compare against a live service
 
-`replay` and `test` produce the same typed report; only `test` enforces it.
+Start a candidate service at the recorded authority, then run `test` or
+`replay`:
 
 ```sh
-eggreplay replay --fixture demo.eggr --target http://127.0.0.1:9100 --output json
-eggreplay test   --fixture demo.eggr --target http://127.0.0.1:9100 --output junit
+eggreplay test --fixture demo.eggr \
+  --target http://127.0.0.1:9100 --output junit
 ```
 
-`replay` reports and always exits `0`. `test` exits `1` on a difference, so it
-drops straight into CI:
+`test` exits `1` when there is a regression. `replay` produces the same typed
+report but exits `0` even when it contains findings. The default comparison
+suppresses `Date` values when the header is present on both sides and records
+the suppression in the report's `suppressed` list. If the header is missing on
+either side, its presence difference remains a finding.
 
-```xml
-<testsuite name="test" tests="1" failures="1" errors="0">
-  <testcase name="flow-…" classname="test">
-    <failure message="mismatch">Header response.headers.date …</failure>
-  </testcase>
-</testsuite>
-```
-
-**Expect the `date` finding.** `Date` is origin-generated and second-granular,
-so it differs on every run. The `practical` matcher profile ignores `date` when
-*matching*, but regression *comparison* has no header-ignore option, so it
-surfaces here. This is a known limitation, not a misconfiguration.
-
-Opt into finer comparison only when the fixture supports it:
+To compare two existing fixtures without a network request, use `diff`:
 
 ```sh
---compare-stream-events --cadence-tolerance-ms 250
---compare-sse --sse-ignore id,retry
+eggreplay diff --baseline baseline.eggr --candidate candidate.eggr --output json
 ```
 
-### Compare two fixtures, no network
+Replace the sample fixture names with paths that exist. `diff` never opens a
+socket. See the [regression cookbook](regression-cookbook.md) for schedulers,
+comparison options, and report fields.
 
-```sh
-eggreplay diff --baseline before.eggr --candidate after.eggr --output json
-```
+## Redaction and next steps
 
-`diff` never opens a socket. Note the flags are `--baseline` and
-`--candidate`, not `--fixture`/`--other`.
-
-## Redact secrets at record time
-
-Redaction runs **before** any body is finalized, so a secret is never written
-and then rewritten.
-
-```sh
-eggreplay record --listen 127.0.0.1:8080 --upstream https://api.example.com \
-  --fixture clean.eggr \
-  --redact-header authorization \
-  --redact-query token \
-  --redact-json-path /user/email
-```
-
-A redacted request field becomes a **matcher wildcard**, not a literal
-`<redacted>` placeholder — so the recording still matches whatever the live
-request sends in that position. Opaque binary payloads cannot be semantically
-redacted; fixtures remain sensitive data, so restrict access to fixture
-directories. See [`./non-goals.md`](./non-goals.md) for the full limit list.
-
-## Import and export HAR
-
-```sh
-eggreplay har export --fixture demo.eggr --har demo.har --overwrite --loss-report loss.json
-eggreplay har import --har demo.har --fixture imported.eggr --overwrite
-```
-
-HAR is a **lossy interchange in both directions** and never implies
-round-trip losslessness. `--loss-report` is how you find out what did not
-survive. See [`./har-interchange.md`](./har-interchange.md) for the matrices.
-
-## Upgrade a fixture's schema
-
-```sh
-eggreplay migrate --fixture old.eggr --to new.eggr --target-schema 2
-eggreplay migrate --fixture old.eggr --in-place            # atomic replace
-```
-
-`--to <DIR>` and `--in-place` are mutually exclusive. Migration stages a
-sibling, validates it, then publishes — the source is never mutated before the
-replacement validates.
-
-## Route outbound through Eggress
-
-Direct is always the default. An explicitly configured route never silently
-falls back to direct:
-
-```sh
-eggreplay record --listen 127.0.0.1:8080 --upstream https://api.example.com \
-  --fixture demo.eggr --route socks5://127.0.0.1:1080
-```
-
-If the route is unreachable, the request fails (`502`) and the failure is
-classified — it does **not** quietly bypass the proxy. EggFetch keeps ownership
-of logical Host/SNI, TLS, framing, and pooling; the dialer only moves raw TCP
-bytes.
-
-## Exit codes
-
-```
-0  success
-1  regression or diff mismatch
-2  invalid CLI input, configuration, or policy
-3  invalid or corrupt fixture
-4  network or runtime execution failure
-5  internal error
-```
-
-## Where to go next
+Recording can redact selected headers, query keys, and JSON/form fields before
+publishing any body bytes. Redacted request fields become matcher wildcards.
+Opaque binary data cannot be semantically redacted, so fixtures remain
+sensitive. See [configuration](configuration.md) for redaction options and
+limits.
 
 | Topic | Guide |
 |---|---|
-| Every flag and envelope field | [`./cli.md`](./cli.md) |
-| Matcher profiles, timing, record modes | [`./configuration.md`](./configuration.md) |
-| `replay` vs `test` vs `diff`, schedulers | [`./regression-cookbook.md`](./regression-cookbook.md) |
-| On-disk format and extension registry | [`./eggr-schema.md`](./eggr-schema.md) |
-| HTTP/2, gRPC, WebSocket, Eggress tiers | [`./http2-support.md`](./http2-support.md) |
-| Proxy, CONNECT policy, CA, MITM | [`./interception-threat-model.md`](./interception-threat-model.md) |
-| What is deliberately unsupported | [`./non-goals.md`](./non-goals.md) |
+| Every command and flag | [CLI and exit contracts](cli.md) |
+| Matcher profiles and recording modes | [Configuration](configuration.md) and [matcher profiles](matcher-profiles.md) |
+| HAR import/export | [HAR interchange](har-interchange.md) |
+| HTTP/2 and gRPC support | [HTTP/2 support](http2-support.md) and [gRPC views](grpc-and-faults.md) |
+| Routes through Eggress | [Eggress routing](eggress-routing.md) |
+| Proxy, CONNECT, and CA | [Interception threat model](interception-threat-model.md) and [CA and trust](interception-ca-trust.md) |
+| Deliberate exclusions | [Non-goals](non-goals.md) |
