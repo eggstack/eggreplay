@@ -31,6 +31,7 @@ fn async_sleep(py: Python<'_>, seconds: f64) -> PyResult<Bound<'_, PyAny>> {
 }
 
 /// Private native `EggReplay` extension.
+#[allow(clippy::used_underscore_items)] // Required by the `eggreplay._native` import name.
 #[pymodule]
 fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(version, module)?)?;
