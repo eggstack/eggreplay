@@ -27,7 +27,7 @@ jobs:
             machine: aarch64
             platform_tag: manylinux_2_34_aarch64
           - target: macos-arm64
-            os: macos-14
+            os: macos-15 # macOS 14 GitHub Actions runners retired on 2026-11-02 (actions/runner-images#15226).
             machine: arm64
             platform_tag: macosx_11_0_arm64
           - target: macos-x86_64
