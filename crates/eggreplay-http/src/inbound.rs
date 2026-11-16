@@ -105,10 +105,13 @@ impl InboundProtocol {
     /// Whether this policy terminates TLS.
     pub const fn terminates_tls(&self) -> bool {
         #[cfg(feature = "h2-inbound-tls")]
-        if matches!(self, Self::Http2Tls { .. }) {
-            return true;
+        {
+            matches!(self, Self::Http2Tls { .. })
         }
-        false
+        #[cfg(not(feature = "h2-inbound-tls"))]
+        {
+            false
+        }
     }
 
     /// Whether this policy serves HTTP/2 without TLS.
