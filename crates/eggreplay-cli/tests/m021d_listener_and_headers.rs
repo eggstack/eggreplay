@@ -219,15 +219,12 @@ fn record_reaches_the_bind_with_the_opt_in() {
     std::fs::remove_dir_all(dir).ok();
 }
 
+#[cfg(feature = "h2-inbound")]
 #[test]
-fn inbound_protocol_flags_cannot_bypass_the_gate() {
-    let dir = temp_dir("protocol-bypass");
+fn inbound_http2_flag_cannot_bypass_the_gate() {
+    let dir = temp_dir("protocol-bypass-h2");
     let fixture = dir.join("fixture.eggr");
     copied_fixture("schema-1-with-flows", &fixture);
-    let cert = dir.join("cert.pem");
-    let key = dir.join("key.pem");
-    std::fs::write(&cert, b"not-a-cert").unwrap();
-    std::fs::write(&key, b"not-a-key").unwrap();
 
     // Cleartext HTTP/2 names a protocol, not an exposure policy.
     let h2 = run_cli(&[
@@ -242,6 +239,19 @@ fn inbound_protocol_flags_cannot_bypass_the_gate() {
         "json",
     ]);
     assert_listener_refusal(&h2, "0.0.0.0:0");
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[cfg(feature = "h2-inbound-tls")]
+#[test]
+fn inbound_tls_flags_cannot_bypass_the_gate() {
+    let dir = temp_dir("protocol-bypass-tls");
+    let fixture = dir.join("fixture.eggr");
+    copied_fixture("schema-1-with-flows", &fixture);
+    let cert = dir.join("cert.pem");
+    let key = dir.join("key.pem");
+    std::fs::write(&cert, b"not-a-cert").unwrap();
+    std::fs::write(&key, b"not-a-key").unwrap();
 
     // TLS protects bytes in transit; it does not authenticate the client.
     let tls = run_cli(&[
