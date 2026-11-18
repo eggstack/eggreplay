@@ -25,7 +25,10 @@ current session schema (2) with flow records unchanged, and current →
 current copies that must be idempotent. Migration stages into a sibling
 directory, validates the staged copy, then publishes transactionally
 (`--to` replaces the destination only with `--overwrite`; `--in-place`
-atomically replaces the source with rollback). The registered migrators are
+atomically replaces the source with rollback). Replacement is fixture-aware:
+`--overwrite` accepts an absent path, an empty directory, or a directory that
+`Session::open` accepts, and refuses symlinks, non-directories, non-empty
+non-fixtures, and fixtures that fail to open. The registered migrators are
 `rules v1`, `stream-events v1`, `websocket-messages v1`, and
 `interop-provenance v1` (identity only); any other required extension, or any
 known extension at a non-current schema, blocks migration. The checked-in
@@ -84,6 +87,30 @@ session. Fixture opening validates offsets, order, schema, and delays; missing,
 malformed, unsupported-version, duplicate-flow, or body-length inconsistent
 stream metadata fails closed.
 
+Stream-event trailer **values are non-authoritative and are always written as
+the literal `<redacted>`**. Field names, order, duplicates, and the event's
+position/delay are preserved, but a recorder never persists a trailer value in
+this extension: trailer values are compared by count and case-insensitive name
+only, and replay takes trailer values from the flow's own `trailers`. A flow
+with at least one non-empty stream-event trailer event carries
+`("redaction", "stream-trailers-values-suppressed")`; the annotation contains
+no values and distinguishes "no trailers" from "names with values withheld".
+The flow's `trailers` remain the configured-redaction authority.
+
+Fixtures recorded before this guarantee may still contain raw values.
+`eggreplay validate` emits a value-free warning naming the flow id and field
+count, and
+`eggreplay migrate --in-place --scrub-stream-trailers` (or `--to`) rewrites the
+values to `<redacted>` idempotently inside the transactional migration. The
+scrub is opt-in; migration without it preserves the extension bytes verbatim.
+
+`flow.annotations` can also carry HAR-import comments
+(`har.request.comment`, `har.response.comment`) and creator metadata. Those
+fields are **user-supplied metadata**: header, query, and structured body
+redaction do not rewrite them, and no automatic comment redaction is applied.
+The optional `interop-provenance` extension is the same category. Treat both
+as outside the configured redaction policy when sharing a fixture.
+
 Replay is immediate by default. Immediate applies semantic event and terminal
 mid-body error behavior with zero added delay; `serve --timing-mode recorded`
 reproduces relative delays and `scaled:<factor>` scales them within the
@@ -109,3 +136,53 @@ hash/length verification; unselected corrupt blobs never affect load and
 selected corrupt replacements fail as integrity errors. `Session::open`
 still fully validates at open time; streaming adds TOCTOU protection by
 failing on concurrent mutation rather than serving replaced bytes.
+
+## Untrusted-input bounds (M021C)
+
+Every untrusted document is bounded **before** it is allocated or parsed:
+
+- `manifest.json` — `MAX_MANIFEST_BYTES` is 16 MiB. `Session::open` checks the
+  file metadata first (an allocation-free refusal for the common oversized
+  case), then reads at most limit + 1 bytes and parses only those bytes with
+  `serde_json::from_slice`. The diagnostic names the path and limit and never
+  echoes manifest contents.
+- `flows.jsonl` and the WebSocket transcript's flow scan — one bounded line
+  reader is shared by `FlowIter` and `validate_websocket_fixture`. It never
+  buffers more than `StoreLimits::max_line_bytes` for a line (the historical
+  bound counts the trailing newline). An oversized line fails with the exact
+  message `flow JSONL line exceeds configured limit`, store category
+  `Invalid` (CLI exit `3`, `failure_class` unchanged), and the iterator
+  yields that error once and then terminates rather than reading the rest of
+  the rejected line.
+- HAR import — the CLI checks `metadata().len()` against
+  `eggreplay_har::MAX_HAR_FILE_BYTES` (32 MiB) before reading, then reads
+  through `take(MAX + 1)` to close the metadata race. An oversized document
+  keeps the `configuration` class and the `HAR document exceeds size limit`
+  diagnostic. `import_har_to_writer` keeps its own check for callers that
+  already hold bytes.
+- Display truncation — HAR comments/creator strings and `FlowError` messages
+  truncate through the shared `eggreplay_core::truncate_utf8_boundary`
+  helper, which rounds down to a character boundary. A multi-byte character
+  straddling the limit can no longer panic.
+
+## Residual risk: blob symlink race (M021C)
+
+`Session::open_blob` checks `symlink_metadata` before opening a blob, then
+verifies the opened file length and streams the SHA-256 incrementally. The
+check and the open are separate syscalls, so a local attacker **with write
+access to an open fixture directory** could replace a blob with a symlink in
+between (a TOCTOU race). A portable no-follow open (`O_NOFOLLOW`) requires a
+new platform/`libc` dependency that this corrective does not add, so the
+residual is accepted, not hidden: such an attacker already controls fixture
+contents, the length/hash check fails closed with `StoreError::Integrity`, and
+no replaced bytes are returned as valid. This is the documented immutability
+contract — fixtures must not be mutated while a session or handle is open —
+not a sandbox for a compromised fixture directory.
+
+## File permissions and Windows (M021C)
+
+Unix fixtures are published with `0700` directories and `0600` files. Windows
+caveat (fixtures and CA files): mode bits are a Unix contract; Unix
+directories are `0700` and files `0600`, while on Windows
+`set_private_permissions` is a deliberate no-op, secrecy depends on the
+containing directory's ACLs, and no Unix-equivalent guarantee is claimed.

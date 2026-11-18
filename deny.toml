@@ -1,0 +1,108 @@
+# Dependency, license, advisory, and source policy for EggReplay (M021E).
+#
+# Enforced by the `dependency-policy` CI job:
+#
+#     cargo deny check advisories bans licenses sources
+#
+# `all-features = true` makes the checked graph the widest one the workspace can
+# build (including the opt-in `h2-inbound`, `eggress`, and `grpc` profiles),
+# matching the `--all-features` workspace gate in AGENTS.md. A default-feature
+# graph would let an advisory in an opt-in capability pass unnoticed.
+
+[graph]
+all-features = true
+
+[advisories]
+# A yanked release is a supply-chain event even when the advisory database has
+# no entry for it, so it fails the job rather than warning.
+yanked = "deny"
+
+# Reviewed exceptions to the advisory gate. Each entry names the package, why
+# the finding is accepted, the owner, and the condition for removal. There is
+# deliberately no severity threshold and no blanket `ignore = ["*"]`: any new
+# vulnerability fails the job.
+#
+# `rsa` and `russh` are lockfile-only. `Cargo.lock` records them because
+# Eggress's optional SSH transport exists, but no EggReplay feature graph
+# activates that transport (`cargo tree -i rsa` / `-i russh` are empty, and the
+# `dependency-boundary` lane asserts the narrow Eggress profile stays SSH-free).
+# cargo-deny therefore reports `advisory-not-detected` warnings for these three
+# entries — expected, and the evidence that the exception is inert. They are
+# kept in-tree so the disposition is reviewable, and so that a future transport
+# change that makes them reachable must remove them explicitly (see step 4 of
+# M020's sequencing). If those warnings disappear after a lockfile change, an
+# ignored advisory became reachable — RUSTSEC-2026-0492 is 7.5 high — so
+# re-review before merging.
+ignore = [
+  # Package: rsa 0.10.0-rc.18 (via russh). Owner: maintainers.
+  # Removal: the planned Eggress transport change that adopts patched russh/rsa.
+  { id = "RUSTSEC-2023-0071", reason = "rsa 0.10.0-rc.18 is lockfile-only through the optional Eggress SSH path, never in an EggReplay feature graph, and the 0.10.0-rc line has no fixed release. Owner: maintainers. Remove when Eggress adopts a patched rsa in a planned transport change." },
+  # Package: russh 0.62.7. Owner: maintainers.
+  # Removal: the planned Eggress transport change that adopts patched russh.
+  { id = "RUSTSEC-2026-0495", reason = "russh 0.62.7 is lockfile-only through the optional Eggress SSH path; the Eggress 1.0.x adapter constrains russh to 0.62.x, and no EggReplay feature enables the SSH transport. Owner: maintainers. Remove when Eggress adopts a patched russh." },
+  # Package: russh 0.62.7 (7.5 high). Owner: maintainers.
+  # Removal: the planned Eggress transport change that adopts patched russh.
+  { id = "RUSTSEC-2026-0492", reason = "russh 0.62.7 is lockfile-only through the optional Eggress SSH path and is unreachable from every EggReplay feature graph, including --all-features. Owner: maintainers. Remove when Eggress adopts a patched russh; do not activate the SSH path before then." },
+  # Package: chrono 0.4.45. Owner: maintainers.
+  # Removal: the planned `time` migration described in
+  # docs/chrono-dependency-decision.md.
+  { id = "RUSTSEC-2026-0543", reason = "chrono 0.4.45 is unmaintained with no fixed release. Migration is decided separately in docs/chrono-dependency-decision.md (recommendation: move the three formatting/parsing call sites to `time`). Owner: maintainers. Remove the exception in the migration plan's lockfile change." },
+]
+
+[licenses]
+# Derived from `cargo metadata --all-features --format-version 1` over the
+# workspace graph, then narrowed to the licenses the checked graph actually
+# needs. Every entry below is permissive; unknown and copyleft licenses fail.
+#
+#   Apache-2.0                    most of the Rust ecosystem half; also the
+#                                 AND-ed half of ring (Apache-2.0 AND ISC)
+#   Apache-2.0 WITH LLVM-exception  target-lexicon 0.13.5
+#   BSD-2-Clause                  zerocopy / zerocopy-derive (OR alternative)
+#   BSD-3-Clause                  subtle, curve25519-dalek, ed25519-dalek,
+#                                 and the AND-ed half of matchit
+#   CDLA-Permissive-2.0           webpki-roots 0.26.11 and 1.0.12 — permissive
+#                                 data license, no copyleft, reviewed for M021E
+#   ISC                           ring, rustls-webpki, untrusted
+#   MIT                           the other ecosystem half, plus `fnv`'s legacy
+#                                 `Apache-2.0 / MIT` slash expression
+#   Unicode-3.0                   ICU4X crates, litemap, yoke, zerovec, and the
+#                                 AND-ed half of unicode-ident
+#   Unlicense                     aho-corasick, byteorder, memchr
+#
+# Deliberately NOT allowed (present only as unneeded OR alternatives in the
+# lockfile, so they do not fail today): 0BSD (adler2), BSD-1-Clause
+# (fiat-crypto), LGPL-2.1-or-later (r-efi's UEFI-only alternative), and Zlib
+# (`zlib-rs`, absent from the checked graph). If one of them ever becomes the
+# only choice for a reachable crate, the job fails and a human review decides:
+# do not add an entry without recording why in this file.
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "CDLA-Permissive-2.0",
+    "ISC",
+    "MIT",
+    "Unicode-3.0",
+    "Unlicense",
+]
+# Explicit default: a crate without a machine-readable license field must match
+# its bundled license text closely before it is accepted.
+confidence-threshold = 0.8
+
+[bans]
+# Duplicates are expected: the workspace carries parallel crypto/TLS lines
+# (sha2 0.10/0.11, rand 0.8/0.9/0.10, time vs. the chrono bridge, and so on).
+# They are reported for review, never used to force a transport bump.
+multiple-versions = "warn"
+# A `*` requirement is a review smell, not a policy failure: external crates
+# are outside this workspace's control.
+wildcards = "allow"
+
+[sources]
+# crates.io is the only source. A git or alternative-registry dependency is a
+# supply-chain decision that needs an explicit, reviewed exception here.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

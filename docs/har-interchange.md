@@ -10,6 +10,14 @@ Transport ownership is unchanged: HAR conversion performs no network I/O and
 adds no HTTP stack. Recording still owns EggFetch outbound, EggServe inbound,
 and Eggress optional routing.
 
+> **Sensitivity.** An exported HAR contains recorded request and response
+> bodies and headers. Treat it as sensitive even when redaction markers such as
+> `<redacted>` are present, because opaque bodies, unselected fields, HAR
+> comments, and provenance are not covered by the header/query/body policy. On
+> Unix `har export` and every `--loss-report` are created with mode `0600`;
+> on non-Unix, secrecy depends on the destination directory ACLs. `*.har` is
+> git-ignored so an export is never committed by accident.
+
 ## Import loss matrix
 
 `eggreplay har import --har input.har --fixture out.eggr` maps each HAR 1.2
@@ -59,6 +67,13 @@ Every import writes an optional `interop-provenance` extension
 tool version, HAR creator, entry/flow counts, and the bounded loss list.
 Older readers ignore it without changing replay semantics.
 
+HAR comments (`har.request.comment`, `har.response.comment`) and
+`interop-provenance.json` are **user-supplied metadata, not covered by
+header/query/body redaction**. A configured `--redact-header` or
+`--redact-query` selector leaves them byte-for-byte intact, and EggReplay does
+not guess which comments are sensitive. Review or remove them before sharing a
+fixture; automatic comment redaction is a deliberate non-goal.
+
 ## Export loss matrix
 
 `eggreplay har export --fixture in.eggr --har out.har` projects each flow
@@ -88,7 +103,8 @@ Each entry carries `_eggreplay = {flow_id, redactions, annotations, provenance}`
 
 A `--loss-report <path>` sidecar (`{command, fixture, har, entries, losses}`)
 is available for both import and export. The HAR document itself always
-embeds the full loss list; the sidecar is a convenience copy.
+embeds the full loss list; the sidecar is a convenience copy. Both outputs are
+created `0600` on Unix.
 
 ## CLI contracts
 
@@ -102,7 +118,8 @@ Stable exit codes (same contract as `docs/cli.md`):
 
 - `0` success;
 - `2` invalid CLI/config/policy (missing HAR, bad version, conflicting
-  migrate flags, existing destination without `--overwrite`);
+  migrate flags, existing destination without `--overwrite`, or an existing
+  destination that is not a fixture or empty directory);
 - `3` invalid/corrupt fixture (unreadable source, future extension schema,
   migration blocked);
 - `4` runtime (unwritable HAR/loss output, transactional replace failure);
@@ -113,13 +130,16 @@ Commands:
 ```sh
 eggreplay har import --har input.har --fixture out.eggr [--overwrite] [--loss-report losses.json] [--redact-header ...] [--redact-query ...] [--redact-json-path ...] [--redaction-profile ...]
 eggreplay har export --fixture in.eggr --har out.har [--overwrite] [--loss-report losses.json]
-eggreplay migrate --fixture old.eggr --to new.eggr [--overwrite] [--target-schema 2]
-eggreplay migrate --fixture old.eggr --in-place
+eggreplay migrate --fixture old.eggr --to new.eggr [--overwrite] [--target-schema 2] [--scrub-stream-trailers]
+eggreplay migrate --fixture old.eggr --in-place [--scrub-stream-trailers]
 ```
 
 `--to` (not `--output`) names the migration destination because `--output`
 already selects the envelope format on every command. `--to` and `--in-place`
-are mutually exclusive.
+are mutually exclusive. For `har import`, `migrate --to`, and `proxy record`,
+`--overwrite` replaces an existing fixture or empty directory only; a
+malformed HAR, an invalid policy, or any other existing path is refused before
+the destination is touched, and the old fixture is preserved byte-for-byte.
 
 ## Migration
 
@@ -127,8 +147,10 @@ are mutually exclusive.
 validates current-to-current idempotence. Flow records remain schema 1.
 The source is never mutated before the new fixture validates:
 
-- `--to`: migrates into a sibling staging directory, then publishes to the
-  destination (transactional replace when it exists with `--overwrite`).
+- `--to`: validates the destination, migrates into a sibling staging
+  directory, then publishes to the destination (transactional replace of an
+  existing fixture or empty directory with `--overwrite`; any other existing
+  path is refused and left untouched).
 - `--in-place`: stages to a sibling, validates the staged copy, then
   atomically replaces the source with rollback on publish failure.
 
@@ -140,6 +162,15 @@ ignore-required-extension switch; `Session::open` already fails closed on
 the same conditions, and migration re-checks before copying. `copy_to`
 streams and revalidates every blob/flow/extension; downgrades with extensions
 fail closed.
+
+`--scrub-stream-trailers` is an explicit, opt-in remediation for fixtures
+recorded before stream-event trailer values were suppressed. Inside the same
+transactional copy it parses `stream-events`, rewrites every trailer value to
+`<redacted>`, and leaves names, order, duplicates, delays, DATA/END events,
+and every other extension untouched. A malformed `stream-events` payload fails
+the migration closed. The transform is idempotent, and omitting the flag
+preserves the existing extension bytes verbatim. `validate` warns (without any
+value) when a fixture still carries non-`<redacted>` trailer values.
 
 ## Golden corpus
 

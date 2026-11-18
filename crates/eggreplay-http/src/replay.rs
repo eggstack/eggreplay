@@ -3242,4 +3242,43 @@ mod tests {
         server.wait().await;
         std::fs::remove_dir_all(&dir).ok();
     }
+
+    /// A `WholeMessage` redaction is a wildcard, not a literal `[REDACTED]`
+    /// payload comparison.
+    #[cfg(all(feature = "eggserve", feature = "websocket"))]
+    #[test]
+    fn replay_whole_message_redaction_matches_any_live_payload() {
+        use tokio_tungstenite::tungstenite::Message;
+        let dir = temp_path("websocket-wildcard");
+        let writer =
+            SessionWriter::create(&dir, SessionMetadata::default(), test_limits()).unwrap();
+        let session = writer.finish().unwrap();
+        let expected = eggreplay_core::WebSocketMessage {
+            sequence: 0,
+            direction: eggreplay_core::WebSocketDirection::ClientToServer,
+            delta_ns: 0,
+            kind: eggreplay_core::WebSocketMessageKind::Text,
+            payload: None,
+            close_code: None,
+            close_reason: None,
+            redactions: vec![eggreplay_core::WebSocketRedaction::WholeMessage],
+        };
+        assert!(
+            websocket_message_matches(
+                &expected,
+                &Message::Text("a live value that is not the marker".into()),
+                &session
+            ),
+            "a withheld payload must match whatever the live client sends"
+        );
+        assert!(
+            !websocket_message_matches(
+                &expected,
+                &Message::Binary(b"wrong kind".to_vec().into()),
+                &session
+            ),
+            "the message kind still has to agree"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }

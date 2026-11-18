@@ -95,9 +95,11 @@ body redaction must ensure clients declare JSON content types.
 - HTTP/2 MITM, HTTP/3/QUIC, WSS, client mTLS, non-HTTP TLS, and
   transparent/TUN interception remain unsupported and fail explicitly.
 - Unix CA protection is `0700`/`0600` mode bits, enforced and repaired on
-  Unix. On Windows, files are created with default sharing and secrecy
-  depends on the operator profile-directory ACLs; no Unix-equivalent claim
-  is made (see `ca.rs` Permissions docs; Windows hosted coverage pins
+  Unix. Windows caveat (fixtures and CA files): mode bits are a Unix
+  contract; Unix directories are `0700` and files `0600`, while on Windows
+  `set_private_permissions` is a deliberate no-op, secrecy depends on the
+  containing directory's ACLs, and no Unix-equivalent guarantee is claimed
+  (see `ca.rs` Permissions docs; Windows hosted coverage pins
   creation/open/export behavior only).
 - Leaf serials are unique within the issuing process (counter + seeded
   step); cross-process collision is negligible but not promised.

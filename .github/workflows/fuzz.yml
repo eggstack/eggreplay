@@ -1,0 +1,48 @@
+name: Fuzz smoke
+
+# Bounded parser fuzzing (M021C harnesses, M021E lane). This is deliberately
+# NOT a pull-request gate: a nightly toolchain and sanitizer build are too slow
+# and too variable to block every change. A crash uploads its reproducer and
+# fails the job, so a green scheduled run is evidence, not a proof of absence.
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Weekly, off the main CI schedule.
+    - cron: '41 4 * * 2'
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    name: fuzz (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [har_import, session_open, websocket_transcript]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+        with:
+          toolchain: nightly
+      - name: Install pinned cargo-fuzz
+        # A tool update is a reviewed change, matching the dependency-policy
+        # job's pinned `cargo-deny`.
+        run: cargo install cargo-fuzz --locked --version 0.13.2
+      - name: Fuzz ${{ matrix.target }} for 60 seconds
+        working-directory: fuzz
+        run: cargo fuzz run ${{ matrix.target }} -- -max_total_time=60 -max_len=4096
+      - name: Upload corpus and crash artifacts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: fuzz-${{ matrix.target }}
+          path: |
+            fuzz/corpus/${{ matrix.target }}
+            fuzz/artifacts/${{ matrix.target }}
+          if-no-files-found: ignore
+          retention-days: 14

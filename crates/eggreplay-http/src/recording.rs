@@ -154,6 +154,43 @@ pub fn negotiated_version_annotation(version: http::Version) -> Option<(String, 
     }
 }
 
+/// Fixed value persisted for every stream-event trailer field.
+///
+/// Stream-event trailers duplicate the flow's authoritative `trailers` without
+/// contributing a comparison dimension (`report.rs` compares trailer count and
+/// names only). Persisting the values therefore adds only leak surface, so the
+/// fixed non-authoritative placeholder is written instead.
+const SUPPRESSED_STREAM_TRAILER_VALUE: &str = "<redacted>";
+
+/// Flow annotation recording that stream-event trailer values were withheld.
+const STREAM_TRAILER_SUPPRESSION: (&str, &str) = ("redaction", "stream-trailers-values-suppressed");
+
+/// Copy trailer fields, preserving names, order, and duplicates, while
+/// replacing every value with the fixed placeholder.
+///
+/// This is the single authority for stream-event trailer persistence; all
+/// fixture-writing sites call it so none can drift back to raw values.
+fn suppressed_stream_trailer_fields(fields: &[HeaderEntry]) -> Vec<HeaderEntry> {
+    fields
+        .iter()
+        .map(|field| HeaderEntry {
+            name: field.name.clone(),
+            value: SUPPRESSED_STREAM_TRAILER_VALUE.into(),
+        })
+        .collect()
+}
+
+/// Whether any persisted event carries trailer fields whose values were
+/// suppressed.
+fn stream_trailer_values_suppressed(events: &[eggreplay_core::StreamEvent]) -> bool {
+    events.iter().any(|event| {
+        matches!(
+            &event.event,
+            eggreplay_core::StreamEventKind::Trailers { fields } if !fields.is_empty()
+        )
+    })
+}
+
 /// Execute one request through EggFetch and append one semantic flow.
 ///
 /// The redaction policy is explicit. Without structured body selectors, DATA
@@ -266,7 +303,7 @@ where
                         eggreplay_core::StreamEvent {
                             delta_ns: elapsed_ns(response_started),
                             event: eggreplay_core::StreamEventKind::Trailers {
-                                fields: response_trailers.clone(),
+                                fields: suppressed_stream_trailer_fields(&response_trailers),
                             },
                         },
                     )?;
@@ -382,6 +419,12 @@ where
     if converted.lossy_header_values {
         flow.annotations
             .push(("conversion".into(), "opaque-header-values-escaped".into()));
+    }
+    if stream_trailer_values_suppressed(&response_events) {
+        flow.annotations.push((
+            STREAM_TRAILER_SUPPRESSION.0.into(),
+            STREAM_TRAILER_SUPPRESSION.1.into(),
+        ));
     }
     reconcile_stream_event_body_length(&mut response_events, &flow.outcome);
     writer.append_flow(&flow)?;
@@ -520,7 +563,7 @@ where
                         eggreplay_core::StreamEvent {
                             delta_ns: elapsed_ns(response_started),
                             event: eggreplay_core::StreamEventKind::Trailers {
-                                fields: response_trailers.clone(),
+                                fields: suppressed_stream_trailer_fields(&response_trailers),
                             },
                         },
                     )?;
@@ -638,6 +681,14 @@ where
     if converted.lossy_header_values {
         flow.annotations
             .push(("conversion".into(), "opaque-header-values-escaped".into()));
+    }
+    if stream_trailer_values_suppressed(&request_events)
+        || stream_trailer_values_suppressed(&response_events)
+    {
+        flow.annotations.push((
+            STREAM_TRAILER_SUPPRESSION.0.into(),
+            STREAM_TRAILER_SUPPRESSION.1.into(),
+        ));
     }
     reconcile_stream_event_body_length(&mut response_events, &flow.outcome);
     session.append_flow(&flow)?;
@@ -1668,12 +1719,20 @@ where
                 redacted = Some(WebSocketRedaction::WholeMessage);
             }
             WebSocketMessageKind::Text if !redaction.json_paths.is_empty() => {
-                if let Ok((clean, _)) = apply_json_redaction(&payload_bytes, &redaction.json_paths)
-                {
-                    payload_bytes = clean;
-                    redacted = Some(WebSocketRedaction::JsonPointers {
-                        pointers: redaction.json_paths.iter().cloned().collect(),
-                    });
+                // Structured redaction fails safe: a text payload that does not
+                // parse as JSON cannot be pointer-redacted, so the whole
+                // message is withheld rather than recorded verbatim.
+                match apply_json_redaction(&payload_bytes, &redaction.json_paths) {
+                    Ok((clean, _)) => {
+                        payload_bytes = clean;
+                        redacted = Some(WebSocketRedaction::JsonPointers {
+                            pointers: redaction.json_paths.iter().cloned().collect(),
+                        });
+                    }
+                    Err(_) => {
+                        payload_bytes = b"[REDACTED]".to_vec();
+                        redacted = Some(WebSocketRedaction::WholeMessage);
+                    }
                 }
             }
             WebSocketMessageKind::Binary if options.redact_binary => {
@@ -1682,7 +1741,15 @@ where
             }
             _ => {}
         }
-        if kind == WebSocketMessageKind::Close && options.redact_text && close_reason.is_some() {
+        // A close reason is text. Any configured WebSocket redaction means the
+        // operator expects payload-level secrecy, so the reason is withheld
+        // too; the close code stays authoritative and is never redacted.
+        let close_redaction_configured =
+            options.redact_text || options.redact_binary || !redaction.json_paths.is_empty();
+        if kind == WebSocketMessageKind::Close
+            && close_redaction_configured
+            && close_reason.is_some()
+        {
             close_reason = Some("[REDACTED]".into());
             redacted = Some(WebSocketRedaction::CloseReason);
         }
@@ -2258,7 +2325,8 @@ where
                         target.extend(header_entries(&header_map).0);
                     }
                     if let Ok(mut events) = this.events.lock() {
-                        let fields = header_entries(&header_map).0;
+                        let fields =
+                            suppressed_stream_trailer_fields(&header_entries(&header_map).0);
                         if let Err(error) = push_stream_event_inner(
                             &mut events,
                             eggreplay_core::StreamEvent {
@@ -4294,6 +4362,7 @@ mod tests {
             .uri(uri)
             .header("Authorization", format!("Bearer {sentinel}"))
             .header("Cookie", format!("session={sentinel}"))
+            .header("X-Api-Key", sentinel)
             .body(Full::new(Bytes::new()))
             .unwrap();
         let flow = record_request_with_session(
@@ -4312,6 +4381,19 @@ mod tests {
             flow.redactions
                 .iter()
                 .any(|marker| marker.field.to_ascii_lowercase().contains("authorization"))
+        );
+        let api_key = flow
+            .request
+            .headers
+            .iter()
+            .find(|header| header.name.eq_ignore_ascii_case("x-api-key"))
+            .expect("curated API-key header is recorded");
+        assert_eq!(api_key.value, "<redacted>");
+        assert!(
+            flow.redactions.iter().any(|marker| marker
+                .field
+                .eq_ignore_ascii_case("request.headers.x-api-key")),
+            "the default set must emit a wildcard marker for x-api-key"
         );
         for header in &flow.request.headers {
             assert!(!header.value.contains(sentinel));
@@ -4509,6 +4591,544 @@ mod tests {
         if let Ok(recorded) = converted {
             assert!(!recorded.request.authority.contains('@'));
             assert!(!recorded.request.authority.contains("user"));
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // M021A: stream-event trailers and WebSocket fail-safe redaction
+    // ------------------------------------------------------------------
+
+    /// Minimal HTTP/1.1 upstream that consumes a chunked request with
+    /// trailers, then answers with a chunked body and trailers.
+    async fn start_trailer_upstream(
+        response_body: &[u8],
+        response_trailers: &[(&'static str, &'static str)],
+    ) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let body = response_body.to_vec();
+        let trailers: Vec<(String, String)> = response_trailers
+            .iter()
+            .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
+            .collect();
+        let handle = tokio::spawn(async move {
+            let Ok((mut socket, _)) = listener.accept().await else {
+                return;
+            };
+            let mut buf = Vec::new();
+            let mut tmp = [0u8; 4096];
+            let header_end = loop {
+                let count = socket.read(&mut tmp).await.unwrap_or(0);
+                if count == 0 {
+                    return;
+                }
+                buf.extend_from_slice(&tmp[..count]);
+                if let Some(position) = buf.windows(4).position(|window| window == b"\r\n\r\n") {
+                    break position + 4;
+                }
+                if buf.len() > 64 * 1024 {
+                    return;
+                }
+            };
+            let head = String::from_utf8_lossy(&buf[..header_end]).to_ascii_lowercase();
+            if head.contains("transfer-encoding: chunked") {
+                // Wait for the terminal chunk and its complete trailer block,
+                // bounded so a client that streams differently cannot deadlock
+                // the fixture. The request tee records trailers as the client
+                // body is polled, not from anything this peer reads.
+                let drain = async {
+                    loop {
+                        if let Some(rest) = buf.get(header_end..)
+                            && let Some(position) =
+                                rest.windows(3).position(|window| window == b"0\r\n")
+                        {
+                            let after = &rest[position + 3..];
+                            if after.windows(4).any(|window| window == b"\r\n\r\n") {
+                                break;
+                            }
+                        }
+                        let count = socket.read(&mut tmp).await.unwrap_or(0);
+                        if count == 0 {
+                            break;
+                        }
+                        buf.extend_from_slice(&tmp[..count]);
+                        if buf.len() > 64 * 1024 {
+                            break;
+                        }
+                    }
+                };
+                let _ = tokio::time::timeout(std::time::Duration::from_millis(500), drain).await;
+            }
+            let mut out =
+                b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n"
+                    .to_vec();
+            out.extend_from_slice(format!("{:x}\r\n", body.len()).as_bytes());
+            out.extend_from_slice(&body);
+            out.extend_from_slice(b"\r\n0\r\n");
+            for (name, value) in &trailers {
+                out.extend_from_slice(format!("{name}: {value}\r\n").as_bytes());
+            }
+            out.extend_from_slice(b"\r\n");
+            let _ = socket.write_all(&out).await;
+            let _ = socket.shutdown().await;
+        });
+        (addr, handle)
+    }
+
+    fn trailer_names(fields: &[eggreplay_core::HeaderEntry]) -> Vec<&str> {
+        fields.iter().map(|field| field.name.as_str()).collect()
+    }
+
+    #[tokio::test]
+    async fn stream_event_trailers_never_persist_values_on_any_file() {
+        use http_body_util::StreamBody;
+
+        const RESPONSE_SENTINEL: &str = "M021A-RESPONSE-TRAILER-SENTINEL-7f3c";
+        const REQUEST_SENTINEL: &str = "M021A-REQUEST-TRAILER-SENTINEL-2b91";
+        const UNCONFIGURED_SENTINEL: &str = "M021A-UNCONFIGURED-TRAILER-5d40";
+
+        let (upstream_addr, upstream_handle) = start_trailer_upstream(
+            b"hello",
+            &[
+                ("X-Secret", RESPONSE_SENTINEL),
+                ("X-Dup", "one"),
+                ("X-Dup", "two"),
+                ("X-Open", UNCONFIGURED_SENTINEL),
+            ],
+        )
+        .await;
+        let dir = c003_temp("stream-trailers");
+        let session =
+            RecordingSession::create(&dir, SessionMetadata::default(), StoreLimits::default())
+                .unwrap();
+        let client = Client::builder().retry_canceled_requests(false).build();
+        let mut config = RedactionConfig::default_secure();
+        config.headers.insert("x-secret".into());
+        config.headers.insert("x-req-secret".into());
+
+        let mut request_trailers = http::HeaderMap::new();
+        request_trailers.append(
+            "x-req-secret",
+            http::HeaderValue::from_static(REQUEST_SENTINEL),
+        );
+        request_trailers.append("x-req-dup", http::HeaderValue::from_static("one"));
+        request_trailers.append("x-req-dup", http::HeaderValue::from_static("two"));
+        let frames = futures_util::stream::iter(vec![
+            Ok::<_, std::io::Error>(http_body::Frame::data(Bytes::from_static(b"abc"))),
+            Ok(http_body::Frame::trailers(request_trailers)),
+        ]);
+        let uri: Uri = format!("http://{upstream_addr}/upload").parse().unwrap();
+        let request = Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header("content-type", "text/plain")
+            .body(StreamBody::new(frames))
+            .unwrap();
+
+        let flow = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            record_request_with_session(
+                &client,
+                &session,
+                request,
+                &config,
+                "default-v1",
+                eggreplay_core::DEFAULT_MAX_STRUCTURED_REDACTION_BYTES,
+                None,
+            ),
+        )
+        .await
+        .expect("recording must not deadlock on upstream trailers")
+        .unwrap();
+        session.shutdown();
+        let fixture = session.finish().unwrap();
+        upstream_handle.abort();
+
+        // The flow's own trailers remain authoritative; configured names are
+        // redacted, and the unconfigured response trailer intentionally stays.
+        let response = match &flow.outcome {
+            FlowOutcome::Response(response) => response,
+            other => panic!("expected a response, got {other:?}"),
+        };
+        assert_eq!(flow.request.trailers.len(), 3);
+        assert!(
+            flow.request
+                .trailers
+                .iter()
+                .any(|f| f.name == "x-req-secret" && f.value == "<redacted>"),
+            "the configured request trailer stays covered by redact_flow: {:?}",
+            flow.request.trailers
+        );
+        assert_eq!(
+            flow.request
+                .trailers
+                .iter()
+                .filter(|f| f.name == "x-req-dup")
+                .map(|f| f.value.as_str())
+                .collect::<Vec<_>>(),
+            ["one", "two"],
+            "unconfigured flow trailers remain authoritative"
+        );
+        assert!(
+            response
+                .trailers
+                .iter()
+                .any(|f| f.name == "x-open" && f.value == UNCONFIGURED_SENTINEL),
+            "the flow's own trailers stay authoritative: {:?}",
+            response.trailers
+        );
+        assert!(
+            response
+                .trailers
+                .iter()
+                .filter(|f| f.name == "x-secret")
+                .all(|f| f.value == "<redacted>")
+        );
+
+        // No configured sentinel may exist anywhere under the fixture,
+        // including staging siblings after publication.
+        assert_no_sentinel_in_dir(&dir, RESPONSE_SENTINEL);
+        assert_no_sentinel_in_dir(&dir, REQUEST_SENTINEL);
+        let parent = dir.parent().unwrap();
+        let staging_prefix = format!(
+            ".{}.incomplete-",
+            dir.file_name().unwrap().to_string_lossy()
+        );
+        for entry in std::fs::read_dir(parent).unwrap().flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.starts_with(&staging_prefix) {
+                panic!("staging sibling survived finalization: {name}");
+            }
+        }
+
+        let bytes = fixture
+            .read_extension("stream-events")
+            .unwrap()
+            .expect("stream events extension");
+        let events: eggreplay_core::StreamEvents = serde_json::from_slice(&bytes).unwrap();
+        let flow_events = events
+            .flows
+            .iter()
+            .find(|events| events.flow_id == flow.id)
+            .expect("flow stream events");
+        let request_fields = flow_events
+            .request
+            .iter()
+            .find_map(|event| match &event.event {
+                eggreplay_core::StreamEventKind::Trailers { fields } => Some(fields),
+                _ => None,
+            })
+            .expect("request trailer event");
+        let response_fields = flow_events
+            .response
+            .iter()
+            .find_map(|event| match &event.event {
+                eggreplay_core::StreamEventKind::Trailers { fields } => Some(fields),
+                _ => None,
+            })
+            .expect("response trailer event");
+
+        // Names, order, and duplicates survive; every value is suppressed.
+        assert_eq!(
+            trailer_names(request_fields),
+            trailer_names(&flow.request.trailers)
+        );
+        assert_eq!(
+            trailer_names(response_fields),
+            trailer_names(&response.trailers)
+        );
+        assert!(request_fields.iter().all(|f| f.value == "<redacted>"));
+        assert!(response_fields.iter().all(|f| f.value == "<redacted>"));
+        assert_eq!(
+            request_fields
+                .iter()
+                .filter(|field| field.name == "x-req-dup")
+                .count(),
+            2,
+            "duplicate request trailers must not be collapsed"
+        );
+        assert_eq!(
+            response_fields
+                .iter()
+                .filter(|field| field.name == "x-dup")
+                .count(),
+            2,
+            "duplicate response trailers must not be collapsed"
+        );
+        assert!(
+            flow.annotations
+                .iter()
+                .any(|(key, value)| key == "redaction"
+                    && value == "stream-trailers-values-suppressed"),
+            "a flow with suppressed trailer values must carry the annotation: {:?}",
+            flow.annotations
+        );
+
+        // The flow record keeps the unconfigured trailer value; only the
+        // non-authoritative stream-event copy is suppressed for every name.
+        let flows_text = std::fs::read_to_string(dir.join("flows.jsonl")).unwrap();
+        assert!(
+            flows_text.contains(UNCONFIGURED_SENTINEL),
+            "the flow's own trailers remain authoritative"
+        );
+
+        // The extension itself must not contain any trailer value, including
+        // the unconfigured name whose flow value stays authoritative.
+        let extension_text = String::from_utf8_lossy(&bytes).into_owned();
+        for sentinel in [RESPONSE_SENTINEL, REQUEST_SENTINEL, UNCONFIGURED_SENTINEL] {
+            assert!(
+                !extension_text.contains(sentinel),
+                "stream-events must not contain {sentinel}"
+            );
+            assert!(
+                !bytes
+                    .windows(sentinel.len())
+                    .any(|window| window == sentinel.as_bytes()),
+                "stream-events must not contain {sentinel} bytes"
+            );
+        }
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[cfg(all(feature = "eggserve", feature = "websocket"))]
+    async fn relay_single_message(
+        dir: std::path::PathBuf,
+        redaction: RedactionConfig,
+        options: WebSocketRecordingOptions,
+        message: tokio_tungstenite::tungstenite::Message,
+    ) -> (
+        RecordingSession,
+        Vec<eggreplay_core::WebSocketMessage>,
+        eggreplay_core::WebSocketTerminal,
+    ) {
+        use futures_util::{SinkExt, StreamExt};
+        use tokio::io::duplex;
+        use tokio_tungstenite::tungstenite::Message;
+
+        let session =
+            RecordingSession::create(&dir, SessionMetadata::default(), StoreLimits::default())
+                .unwrap();
+        let reader = session.clone();
+        let (client_io, downstream_io) = duplex(4096);
+        let (upstream_io, server_io) = duplex(4096);
+        let mut client = crate::websocket::client(client_io, None).await;
+        let mut downstream =
+            crate::websocket::server(downstream_io, Some(websocket_codec_config())).await;
+        let mut upstream =
+            crate::websocket::client(upstream_io, Some(websocket_codec_config())).await;
+        let mut server = crate::websocket::server(server_io, None).await;
+        let lifecycle = eggserve_primitives::RequestLifecycle::from_shared(
+            eggserve_primitives::RequestShared::new_active(),
+        );
+        let task = tokio::spawn(async move {
+            relay_websocket(
+                &mut downstream,
+                &mut upstream,
+                &session,
+                &redaction,
+                "test-v1",
+                options,
+                lifecycle,
+            )
+            .await
+        });
+        let (messages, terminal) =
+            tokio::time::timeout(std::time::Duration::from_secs(2), async move {
+                client.send(message).await.unwrap();
+                let forwarded = server.next().await.unwrap().unwrap();
+                if matches!(forwarded, Message::Close(_)) {
+                    // Tungstenite queues the close reply; flushing sends it
+                    // and lets the relay observe a bilateral close.
+                    server.flush().await.unwrap();
+                } else {
+                    client.send(Message::Close(None)).await.unwrap();
+                    assert!(matches!(
+                        server.next().await.unwrap().unwrap(),
+                        Message::Close(_)
+                    ));
+                    server.flush().await.unwrap();
+                }
+                task.await.unwrap()
+            })
+            .await
+            .expect("relay timed out");
+        (reader, messages, terminal)
+    }
+
+    #[cfg(all(feature = "eggserve", feature = "websocket"))]
+    fn transcript_validates(
+        messages: Vec<eggreplay_core::WebSocketMessage>,
+        terminal: eggreplay_core::WebSocketTerminal,
+    ) {
+        let transcript = eggreplay_core::WebSocketTranscript {
+            schema_version: eggreplay_core::WEBSOCKET_SCHEMA_VERSION,
+            conversations: vec![eggreplay_core::WebSocketConversation {
+                id: "conversation".into(),
+                flow_id: "flow".into(),
+                offered_subprotocols: Vec::new(),
+                selected_subprotocol: None,
+                messages,
+                terminal,
+            }],
+        };
+        transcript
+            .validate(eggreplay_core::WebSocketLimits::default())
+            .expect("a redacted conversation must remain replayable");
+    }
+
+    #[cfg(all(feature = "eggserve", feature = "websocket"))]
+    #[tokio::test]
+    async fn websocket_non_json_text_with_json_pointers_is_withheld() {
+        use tokio_tungstenite::tungstenite::Message;
+
+        const SENTINEL: &str = "M021A-WS-NONJSON-SENTINEL-4e2d";
+        let dir = c003_temp("ws-non-json");
+        let mut config = RedactionConfig::default_secure();
+        config.json_paths.insert("/secret".into());
+        let (session, messages, terminal) = relay_single_message(
+            dir.clone(),
+            config,
+            WebSocketRecordingOptions::default(),
+            Message::Text(format!("not-json {SENTINEL}").into()),
+        )
+        .await;
+        assert!(matches!(
+            terminal,
+            eggreplay_core::WebSocketTerminal::CleanClose { .. }
+        ));
+        let text = messages
+            .iter()
+            .find(|message| {
+                message.kind == eggreplay_core::WebSocketMessageKind::Text
+                    && message.direction == eggreplay_core::WebSocketDirection::ClientToServer
+            })
+            .expect("text message recorded");
+        assert_eq!(
+            text.redactions,
+            vec![eggreplay_core::WebSocketRedaction::WholeMessage],
+            "a non-JSON payload under JSON-pointer policy must fall back to whole-message"
+        );
+        let payload = session
+            .read_body(text.payload.as_ref().expect("redacted marker payload"))
+            .unwrap();
+        assert_eq!(payload, b"[REDACTED]");
+        transcript_validates(messages, terminal);
+        session.shutdown();
+        session.finish().unwrap();
+        assert_no_sentinel_in_dir(&dir, SENTINEL);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[cfg(all(feature = "eggserve", feature = "websocket"))]
+    #[tokio::test]
+    async fn websocket_valid_json_text_still_uses_json_pointers() {
+        use tokio_tungstenite::tungstenite::Message;
+
+        const SENTINEL: &str = "M021A-WS-JSON-SENTINEL-91c7";
+        let dir = c003_temp("ws-json");
+        let mut config = RedactionConfig::default_secure();
+        config.json_paths.insert("/secret".into());
+        let body = format!(r#"{{"secret":"{SENTINEL}","keep":"visible"}}"#);
+        let (session, messages, terminal) = relay_single_message(
+            dir.clone(),
+            config,
+            WebSocketRecordingOptions::default(),
+            Message::Text(body.into()),
+        )
+        .await;
+        assert!(matches!(
+            terminal,
+            eggreplay_core::WebSocketTerminal::CleanClose { .. }
+        ));
+        let text = messages
+            .iter()
+            .find(|message| {
+                message.kind == eggreplay_core::WebSocketMessageKind::Text
+                    && message.direction == eggreplay_core::WebSocketDirection::ClientToServer
+            })
+            .expect("text message recorded");
+        match text.redactions.as_slice() {
+            [eggreplay_core::WebSocketRedaction::JsonPointers { pointers }] => {
+                assert_eq!(pointers, &vec!["/secret".to_owned()]);
+            }
+            other => panic!("expected JsonPointers, got {other:?}"),
+        }
+        let payload = session
+            .read_body(text.payload.as_ref().expect("redacted payload"))
+            .unwrap();
+        let text_payload = String::from_utf8_lossy(&payload);
+        assert!(text_payload.contains("<redacted>"), "{text_payload}");
+        assert!(text_payload.contains("visible"), "{text_payload}");
+        assert!(!text_payload.contains(SENTINEL), "{text_payload}");
+        transcript_validates(messages, terminal);
+        session.shutdown();
+        session.finish().unwrap();
+        assert_no_sentinel_in_dir(&dir, SENTINEL);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[cfg(all(feature = "eggserve", feature = "websocket"))]
+    #[tokio::test]
+    async fn websocket_close_reason_redacted_when_any_redaction_is_configured() {
+        use tokio_tungstenite::tungstenite::Message;
+        use tokio_tungstenite::tungstenite::protocol::CloseFrame;
+        use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
+
+        const SENTINEL: &str = "M021A-WS-CLOSE-SENTINEL-a65f";
+        let mut json_only = RedactionConfig::default_secure();
+        json_only.json_paths.insert("/secret".into());
+        let cases = [
+            (
+                "binary-only",
+                RedactionConfig::default_secure(),
+                WebSocketRecordingOptions {
+                    redact_binary: true,
+                    ..WebSocketRecordingOptions::default()
+                },
+            ),
+            ("json-only", json_only, WebSocketRecordingOptions::default()),
+        ];
+        for (label, config, options) in cases {
+            let dir = c003_temp(&format!("ws-close-{label}"));
+            let close = Message::Close(Some(CloseFrame {
+                code: CloseCode::from(1000u16),
+                reason: SENTINEL.into(),
+            }));
+            let (session, messages, terminal) =
+                relay_single_message(dir.clone(), config, options, close).await;
+            assert!(matches!(
+                terminal,
+                eggreplay_core::WebSocketTerminal::CleanClose { .. }
+            ));
+            let recorded = messages
+                .iter()
+                .find(|message| {
+                    message.kind == eggreplay_core::WebSocketMessageKind::Close
+                        && message.direction == eggreplay_core::WebSocketDirection::ClientToServer
+                })
+                .expect("close recorded");
+            assert_eq!(
+                recorded.close_code,
+                Some(1000),
+                "close code stays authoritative"
+            );
+            assert_eq!(
+                recorded.close_reason.as_deref(),
+                Some("[REDACTED]"),
+                "{label}"
+            );
+            assert!(
+                recorded
+                    .redactions
+                    .contains(&eggreplay_core::WebSocketRedaction::CloseReason),
+                "{label}: close reason marker missing"
+            );
+            transcript_validates(messages, terminal);
+            session.shutdown();
+            session.finish().unwrap();
+            assert_no_sentinel_in_dir(&dir, SENTINEL);
+            std::fs::remove_dir_all(dir).ok();
         }
     }
 }

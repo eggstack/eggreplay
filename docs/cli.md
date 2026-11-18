@@ -28,6 +28,37 @@ Stable exit codes (compatibility contract):
 - `4` network/runtime execution failure;
 - `5` internal/unexpected failure.
 
+## Replacing fixtures and destinations
+
+`--overwrite` on `record`, `har import`, `migrate --to`, and (interception
+builds) `proxy record` means **replace an existing fixture or empty
+directory**. It is not permission to delete an arbitrary path. A replacement
+target must be one of:
+
+- absent (it is created);
+- an empty directory (replacing it discards nothing);
+- a directory that opens as a valid `.eggr` fixture, including supported older
+  session schemas (`eggreplay validate` succeeds).
+
+Anything else is a `configuration` refusal (exit `2`) that names the path and
+the reason. `.`, `..`, filesystem roots, paths containing a `.` or `..`
+component, symlinks (never followed), regular files, non-empty directories
+that are not fixtures, and fixtures that fail to open (missing manifest,
+unsupported future schema, malformed flows) are all refused.
+
+Without `--overwrite`, an existing target is refused even when it is a valid
+fixture or an empty directory. `serve --record-mode re-record` has no
+`--overwrite`: it implicitly replaces its own fixture under the same rules and
+validates the target before binding the listener.
+
+Every destructive command validates its configuration and inputs first,
+records or migrates into a sibling staging directory, finalizes and re-opens
+the staged fixture, and only then swaps it into place. A failure at any point
+up to the swap preserves the old fixture **byte-for-byte**; a failed swap
+restores the backup. Normal error paths remove the staging tree. Only a crash
+or `SIGKILL` can leave a hidden `.incomplete-*` directory, and nothing sweeps
+those automatically on startup.
+
 `record`, `replay`, and `test` accept a common `--route` (`direct` default, or
 a pproxy URI such as `socks5://127.0.0.1:1080` and two-hop
 `socks5://...__http://...`). Non-direct routes use `EggressDialer` via
@@ -41,16 +72,55 @@ WebSocket recording is disabled by default. Use `record --websockets` or
 `serve --record-mode once|re-record --websockets` to admit HTTP/1.1 WebSocket
 upgrades. `--redact-websocket-text` and `--redact-websocket-binary` replace
 whole message payloads before publication; configured JSON Pointer redaction
-also applies to valid JSON text messages. `serve --record-mode append-new`
+also applies to valid JSON text messages. JSON-pointer policy fails **safe**:
+a text message that is not valid JSON is recorded as `[REDACTED]` with a
+whole-message marker instead of keeping the original bytes, and the
+conversation continues. Close reasons are redacted whenever any WebSocket
+redaction is configured (`--redact-websocket-text`,
+`--redact-websocket-binary`, or a JSON pointer); close codes stay
+authoritative. `serve --record-mode append-new`
 rejects `--websockets`. Offline `replay`/sealed `serve` and candidate `test`
 automatically use recorded WebSocket transcripts. The optional
 `--websocket-cadence-tolerance-ms` adds message cadence findings. It is a
 **comparison** flag, so it exists on `replay`, `test`, and `diff`, not on
 `record` or `serve`.
 
+Acquisition without payload redaction emits one advisory warning. It does not
+enable redaction; see
+[`configuration.md`](configuration.md#advisory-redaction-warnings).
+
+`record`, `har import`, and the network-capable `serve` recording modes also
+warn when a credential-like request header or query key is outside the
+effective redaction set. The default profile covers `authorization`,
+`proxy-authorization`, `cookie`, `set-cookie`, `x-api-key`, `api-key`,
+`x-auth-token`, `x-access-token`, `x-amz-security-token`, and
+`x-goog-api-key`; recommend `--redact-header x-csrf-token` and explicit
+`--redact-query` selectors for query credentials. The full list, compatibility
+impact, and the reason `location`/`referer` are excluded are in
+[`configuration.md`](configuration.md#redaction-policy-c003). Warnings are
+value-free and advisory: they never change exit codes or payload schemas.
+
 `inspect --websockets` reports conversation IDs, flow links, message kind,
 direction, timing, payload digest/length, close metadata, and redaction markers;
 it never prints message bytes.
+
+## Listener exposure
+
+`serve` defaults to `127.0.0.1:0` and `record` requires `--listen`; either way,
+a **non-loopback address is refused** unless `--allow-non-loopback` is passed.
+The listener is unauthenticated: a reachable replay server serves its fixture
+to any client, and a reachable recording gateway drives the configured
+`--upstream` on behalf of any client. TLS does not change that —
+`--inbound-tls-cert`/`--inbound-tls-key` protect bytes in transit and do not
+authenticate the caller, so a public bind with TLS is still an open listener.
+
+The refusal is a `configuration` failure (exit `2`) that names the bind. It runs
+immediately after the inbound protocol policy resolves, before fixture
+recovery, replacement-target classification, staging, or `bind()`, so a refused
+listener never touches a fixture. It applies to `record` and to every
+`serve --record-mode` value (`sealed`, `once`, `append-new`, `re-record`), and
+no `--inbound` value can bypass it. The explicit proxy has the same gate; see
+[`interception-ca-trust.md`](interception-ca-trust.md).
 
 ## Transport protocol flags
 
@@ -106,7 +176,9 @@ that server process.
 the policy resolves to sealed replay. `append-new` and `re-record` require an
 explicit `--upstream`; append-new uses EggFetch on exact misses and transactionally
 publishes the merged fixture when the server stops, while re-record stages a
-replacement and preserves the old fixture until the new recording validates.
+replacement, refuses a target that is neither a fixture nor an empty
+directory before binding, and preserves the old fixture until the new
+recording validates.
 `--route` is only accepted with a network-capable mode. `--matcher-profile`
 selects `strict` or `practical`, and serve's JSON result reports the effective
 record, matcher, upstream, and timing policies, plus the redaction profile and
@@ -154,16 +226,33 @@ start offset for every flow and reports findings in fixture order.
 
 HAR import and export are offline and lossy. Import a HAR 1.2 file with
 `eggreplay har import --har input.har --fixture out.eggr`; the selected redaction
-policy is applied before publication. Import writes a non-required
+policy is applied before publication. The HAR is read and parsed into a staged
+fixture before the destination is replaced, so `--overwrite` still means
+"replace a fixture or empty directory" and a malformed document leaves the old
+fixture untouched. Import writes a non-required
 `interop-provenance` extension and can emit a loss report with `--loss-report`.
 Export with `eggreplay har export --fixture in.eggr --har out.har`; the output
 includes `_eggreplay` loss/provenance metadata and can emit a separate loss
 report with `--loss-report`.
+On Unix both the HAR and every `--loss-report` are created with mode `0600`
+from creation, because they contain recorded bodies. `--overwrite` keeps its
+usual refusal/acceptance semantics. HAR comments and import provenance are
+user-supplied metadata outside the header/query/body policy; see
+[`har-interchange.md`](har-interchange.md).
 Neither direction is lossless. Upgrade a schema-1 fixture transactionally with
 `eggreplay migrate --fixture old.eggr --to new.eggr` or
-`eggreplay migrate --fixture old.eggr --in-place` to replace it. Migration
+`eggreplay migrate --fixture old.eggr --in-place` to replace it. A `--to`
+destination is validated before the source is read and must be absent, empty,
+or a valid fixture; `--overwrite` refuses any other existing path. Migration
 checks registered extensions and rejects unknown required extensions and future
-schemas. See
+schemas. `validate` warns, without naming any value, when a fixture's
+`stream-events` extension still contains pre-fix trailer values. Remediate
+explicitly with
+`eggreplay migrate --fixture old.eggr --in-place --scrub-stream-trailers` (or
+`--to <destination>`). The scrub is **opt-in**: migration without the flag
+preserves the extension bytes verbatim. It rewrites trailer values to
+`<redacted>` idempotently and leaves names, order, delays, DATA events, and
+other extensions untouched. See
 [`har-interchange.md`](har-interchange.md) for the loss matrices and redaction
 rules.
 

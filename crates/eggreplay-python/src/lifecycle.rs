@@ -177,9 +177,13 @@ fn cleanup_future(
 
 /// Start the existing Rust replay authority on `bind` (for example
 /// `127.0.0.1:0`).
+///
+/// `allow_non_loopback` is the explicit exposure opt-in. The replay listener
+/// is unauthenticated: any client that can reach it can consume this fixture.
+/// TLS is not authentication, and this surface has no TLS listener at all.
 #[pyfunction]
-#[pyo3(signature = (fixture, bind="127.0.0.1:0", matcher_profile="strict", timing_mode="immediate", max_body_bytes=67_108_864, scenario_id=None))]
-#[allow(clippy::needless_pass_by_value)]
+#[pyo3(signature = (fixture, bind="127.0.0.1:0", matcher_profile="strict", timing_mode="immediate", max_body_bytes=67_108_864, scenario_id=None, allow_non_loopback=false))]
+#[allow(clippy::needless_pass_by_value, clippy::too_many_arguments)]
 fn replay_server<'py>(
     py: Python<'py>,
     fixture: PyRef<'py, PyFixture>,
@@ -188,9 +192,10 @@ fn replay_server<'py>(
     timing_mode: &str,
     max_body_bytes: u64,
     scenario_id: Option<&str>,
+    allow_non_loopback: bool,
 ) -> PyResult<Bound<'py, PyAny>> {
     let session = Arc::clone(&fixture.session);
-    let bind = parse_bind(bind)?;
+    let bind = parse_bind(bind, allow_non_loopback)?;
     let matcher = matcher(matcher_profile)?;
     let timing = StreamTimingMode::parse(timing_mode).map_err(ConfigurationError::new_err)?;
     let scenario_id = scenario_id.map(str::to_owned);
@@ -216,8 +221,13 @@ fn replay_server<'py>(
 
 /// Start a Rust recording gateway. The destination must not exist and is
 /// published only after `aclose` has stopped and drained the gateway.
+///
+/// `allow_non_loopback` is the explicit exposure opt-in. The gateway listener
+/// is unauthenticated: any client that can reach it can drive this upstream
+/// through the recorder. TLS is not authentication, and this surface has no
+/// TLS listener at all.
 #[pyfunction]
-#[pyo3(signature = (fixture_path, upstream, bind="127.0.0.1:0", route="direct", record_mode="once", websockets=false, max_body_bytes=67_108_864))]
+#[pyo3(signature = (fixture_path, upstream, bind="127.0.0.1:0", route="direct", record_mode="once", websockets=false, max_body_bytes=67_108_864, allow_non_loopback=false))]
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn recording_gateway<'py>(
     py: Python<'py>,
@@ -228,12 +238,13 @@ fn recording_gateway<'py>(
     record_mode: &str,
     websockets: bool,
     max_body_bytes: u64,
+    allow_non_loopback: bool,
 ) -> PyResult<Bound<'py, PyAny>> {
     let path = Path::new(fixture_path).to_owned();
     let upstream: http::Uri = upstream
         .parse()
         .map_err(|_| ConfigurationError::new_err("invalid upstream URI"))?;
-    let bind = parse_bind(bind)?;
+    let bind = parse_bind(bind, allow_non_loopback)?;
     let (client, physical) = route_client(route)?;
     let safe_target = eggreplay_http::redact_route_credentials(&upstream.to_string());
     let mode = serde_json::from_value::<eggreplay_core::RecordMode>(serde_json::Value::String(
@@ -551,10 +562,26 @@ fn regress_flow<'py>(
     })
 }
 
-fn parse_bind(value: &str) -> PyResult<SocketAddr> {
-    value
+/// Parse a bind string and apply the exposure gate.
+///
+/// Loopback always passes. Every other address needs the explicit
+/// `allow_non_loopback` opt-in: the replay server and the recording gateway
+/// are unauthenticated listeners, so publishing one to a routable address
+/// hands the fixture (or the upstream, through the recorder) to anyone who
+/// can connect. The refusal is value-free — it names neither the fixture nor
+/// the upstream — so an exception trace cannot leak what was being served.
+fn parse_bind(value: &str, allow_non_loopback: bool) -> PyResult<SocketAddr> {
+    let bind: SocketAddr = value
         .parse()
-        .map_err(|_| ConfigurationError::new_err("bind must be a socket address"))
+        .map_err(|_| ConfigurationError::new_err("bind must be a socket address"))?;
+    if bind.ip().is_loopback() || allow_non_loopback {
+        return Ok(bind);
+    }
+    Err(ConfigurationError::new_err(
+        "refusing non-loopback bind: the listener is unauthenticated and TLS \
+         does not add authentication; pass allow_non_loopback=True to bind \
+         beyond loopback",
+    ))
 }
 
 async fn finish_session(session: RecordingSession) -> Result<Session, String> {

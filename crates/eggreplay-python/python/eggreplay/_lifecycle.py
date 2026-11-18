@@ -25,8 +25,15 @@ async def open_server(
     route: str = "direct",
     bind: str = "127.0.0.1:0",
     websockets: bool = False,
+    allow_non_loopback: bool = False,
 ) -> Server:
-    """Open the shared Rust replay/recording lifecycle for one fixture path."""
+    """Open the shared Rust replay/recording lifecycle for one fixture path.
+
+    The listener is unauthenticated: binding it beyond loopback exposes the
+    fixture (or, for recording modes, the upstream) to every reachable client.
+    TLS is not authentication. Pass ``allow_non_loopback=True`` explicitly to
+    bind a routable address.
+    """
     from . import (
         Fixture,
         RecordMode,
@@ -41,7 +48,9 @@ async def open_server(
             raise ValueError("WebSocket acquisition requires an explicit network record mode")
         if not path.is_dir():
             raise FileNotFoundError(f"EggReplay fixture does not exist: {path}")
-        return await replay_server(Fixture(str(path)), bind=bind)
+        return await replay_server(
+            Fixture(str(path)), bind=bind, allow_non_loopback=allow_non_loopback
+        )
 
     mode = record_mode.value if isinstance(record_mode, RecordMode) else record_mode
     policy = record_policy(
@@ -54,7 +63,9 @@ async def open_server(
             raise ValueError("WebSocket acquisition is unavailable for sealed replay")
         if not path.is_dir():
             raise FileNotFoundError(f"EggReplay fixture does not exist: {path}")
-        return await replay_server(Fixture(str(path)), bind=bind)
+        return await replay_server(
+            Fixture(str(path)), bind=bind, allow_non_loopback=allow_non_loopback
+        )
     if upstream is None:
         raise ValueError("an explicit upstream is required for recording modes")
     return await recording_gateway(
@@ -64,6 +75,7 @@ async def open_server(
         route=route,
         record_mode=policy["mode"].value,
         websockets=websockets,
+        allow_non_loopback=allow_non_loopback,
     )
 
 
@@ -119,8 +131,14 @@ def fixture_context(
     route: str = "direct",
     bind: str = "127.0.0.1:0",
     websockets: bool = False,
+    allow_non_loopback: bool = False,
 ) -> _FixtureContext:
-    """VCR-style context syntax backed by the same Rust server authority."""
+    """VCR-style context syntax backed by the same Rust server authority.
+
+    The listener is unauthenticated; see :func:`open_server` for why
+    ``allow_non_loopback`` is an explicit opt-in and why TLS is not
+    authentication.
+    """
     return _FixtureContext(
         fixture_path,
         record_mode=record_mode,
@@ -128,6 +146,7 @@ def fixture_context(
         route=route,
         bind=bind,
         websockets=websockets,
+        allow_non_loopback=allow_non_loopback,
     )
 
 

@@ -32,6 +32,83 @@ pub enum RegressionError {
     WebSocket(String),
 }
 
+/// Request headers the candidate driver owns, so a fixture cannot set them.
+///
+/// A candidate request is built by EggReplay and sent by EggFetch, not
+/// replayed from the recorded connection. Copying these from the fixture would
+/// let a recorded (or tampered) request choose the target authority (`host`),
+/// the message framing (`transfer-encoding`, `content-length`, `te`,
+/// `trailer`), the connection lifecycle (`connection`, `proxy-connection`,
+/// `keep-alive`), or hand a proxy-hop credential (`proxy-authorization`) to a
+/// target that never asked for it. The transport derives framing from the
+/// materialized [`Full`] body and the host from the operator's target, so
+/// forwarding a fixture value could only disagree with what is actually sent.
+///
+/// This is deliberately **not** an allow-list: end-to-end fields
+/// (`authorization`, `cookie`, `accept`, `user-agent`, `x-trace`, and the
+/// `forwarded` family) are part of the recorded request semantics and stay.
+const DRIVER_CONTROLLED_REQUEST_HEADERS: &[&str] = &[
+    "host",
+    "connection",
+    "proxy-connection",
+    "keep-alive",
+    "te",
+    "trailer",
+    "transfer-encoding",
+    "content-length",
+    "upgrade",
+    "expect",
+    "proxy-authorization",
+    "proxy-authenticate",
+];
+
+/// WebSocket handshake fields that the candidate driver mints per attempt.
+///
+/// Layered on top of [`is_driver_controlled_header`] for the WebSocket
+/// candidate path only: an ordinary HTTP candidate must not treat these as
+/// driver-controlled, and one handshake attempt must never reuse a recorded
+/// key, accept digest, version, or extension negotiation from another.
+#[cfg(feature = "websocket")]
+const WEBSOCKET_HANDSHAKE_HEADERS: &[&str] = &[
+    "sec-websocket-key",
+    "sec-websocket-accept",
+    "sec-websocket-version",
+    "sec-websocket-extensions",
+];
+
+/// Whether `name` is a driver-controlled request header for this candidate.
+///
+/// Shared by [`execute_candidate`] and [`compare_websocket_candidate`] so the
+/// two paths cannot drift; `name` is compared case-insensitively because the
+/// recorded spelling is whatever the origin saw.
+fn is_driver_controlled_header(name: &str) -> bool {
+    DRIVER_CONTROLLED_REQUEST_HEADERS
+        .iter()
+        .any(|candidate| name.eq_ignore_ascii_case(candidate))
+}
+
+/// Whether `name` is a WebSocket handshake field the candidate mints.
+#[cfg(feature = "websocket")]
+fn is_websocket_handshake_header(name: &str) -> bool {
+    WEBSOCKET_HANDSHAKE_HEADERS
+        .iter()
+        .any(|candidate| name.eq_ignore_ascii_case(candidate))
+}
+
+/// The `Host` value a candidate must send: the operator's target authority.
+///
+/// Never the recorded `host`. `http::uri::Authority` can carry userinfo
+/// syntax, so only the part after the last `@` is the host authority; the
+/// operator's target itself still fails closed upstream if it carries
+/// credentials.
+fn candidate_host(target_base: &Uri) -> Result<&str, RegressionError> {
+    let authority = target_base
+        .authority()
+        .ok_or_else(|| RegressionError::Conversion("target base has no authority".into()))?;
+    let authority = authority.as_str();
+    Ok(authority.rsplit('@').next().unwrap_or(authority))
+}
+
 /// Replay a recorded WebSocket transcript against a candidate through the
 /// same EggFetch client and return payload-safe semantic findings.
 #[cfg(feature = "websocket")]
@@ -49,21 +126,12 @@ pub async fn compare_websocket_candidate(
     use futures_util::SinkExt;
     use tokio_tungstenite::tungstenite::handshake::derive_accept_key;
     let uri = target_uri(target_base, request)?;
+    let host = candidate_host(target_base)?;
     let key = base64::engine::general_purpose::STANDARD.encode(uuid::Uuid::new_v4().as_bytes());
     let mut headers = Headers::new();
     for header in &request.headers {
-        if matches!(
-            header.name.to_ascii_lowercase().as_str(),
-            "host"
-                | "connection"
-                | "upgrade"
-                | "content-length"
-                | "transfer-encoding"
-                | "sec-websocket-key"
-                | "sec-websocket-accept"
-                | "sec-websocket-version"
-                | "sec-websocket-extensions"
-        ) {
+        if is_driver_controlled_header(&header.name) || is_websocket_handshake_header(&header.name)
+        {
             continue;
         }
         headers
@@ -71,7 +139,8 @@ pub async fn compare_websocket_candidate(
             .map_err(|e| RegressionError::WebSocket(e.to_string()))?;
     }
     headers
-        .append("Connection", "Upgrade")
+        .append("Host", host)
+        .and_then(|_| headers.append("Connection", "Upgrade"))
         .and_then(|_| headers.append("Upgrade", "websocket"))
         .and_then(|_| headers.append("Sec-WebSocket-Version", "13"))
         .and_then(|_| headers.append("Sec-WebSocket-Key", &key))
@@ -497,16 +566,29 @@ pub async fn execute_candidate(
     physical_route: Option<eggreplay_core::PhysicalRoute>,
 ) -> Result<CandidateObservation, RegressionError> {
     let uri = target_uri(target_base, request)?;
+    let host =
+        HeaderValue::from_bytes(candidate_host(target_base)?.as_bytes()).map_err(|error| {
+            RegressionError::Conversion(format!("invalid target authority: {error}"))
+        })?;
     let method = Method::from_bytes(request.method.as_bytes())
         .map_err(|error| RegressionError::Conversion(error.to_string()))?;
     let mut headers = HeaderMap::new();
     for header in &request.headers {
+        // Framing, connection management, and proxy-hop credentials belong to
+        // the driver; `Host` is the operator's target, not the recording's.
+        if is_driver_controlled_header(&header.name) {
+            continue;
+        }
         let name = http::header::HeaderName::from_bytes(header.name.as_bytes())
             .map_err(|error| RegressionError::Conversion(error.to_string()))?;
         let value = HeaderValue::from_bytes(header.value.as_bytes())
             .map_err(|error| RegressionError::Conversion(error.to_string()))?;
         headers.append(name, value);
     }
+    // EggFetch/hyper do not synthesize `Host` for an HTTP/1.1 client request,
+    // so it is set here from the target URI. Inserting after the loop also
+    // guarantees exactly one value even if the fixture carried several.
+    headers.insert(http::header::HOST, host);
     let mut outgoing = Request::builder()
         .method(method)
         .uri(uri)
@@ -815,6 +897,18 @@ mod tests {
                 }
             }
             let request = String::from_utf8(request).unwrap();
+            // The handshake still uses the shared driver-controlled classifier:
+            // a recorded `Host` and a proxy-hop credential never reach the peer,
+            // and the candidate mints one Host from the target.
+            let lowered = request.to_ascii_lowercase();
+            assert!(
+                lowered.contains(&format!("\r\nhost: {address}\r\n")),
+                "the candidate must derive Host from the target: {request}"
+            );
+            assert!(
+                !lowered.contains("proxy-authorization") && !lowered.contains("sentinel"),
+                "proxy credentials must not be forwarded: {request}"
+            );
             let key = request
                 .lines()
                 .find_map(|line| {
@@ -885,16 +979,23 @@ mod tests {
         };
         let client = Client::builder().retry_canceled_requests(false).build();
         let target: Uri = format!("http://{address}").parse().unwrap();
-        let findings = compare_websocket_candidate(
-            &client,
-            &session,
-            &test_request(&address.to_string(), "/socket"),
-            &target,
-            &conversation,
-            None,
-        )
-        .await
-        .unwrap();
+        // Recorded `Host` and a proxy-hop credential: the handshake path must
+        // drop both through the shared classifier.
+        let mut request = test_request("internal.example", "/socket");
+        request.headers = vec![
+            eggreplay_core::HeaderEntry {
+                name: "Host".into(),
+                value: "internal.example".into(),
+            },
+            eggreplay_core::HeaderEntry {
+                name: "Proxy-Authorization".into(),
+                value: "Basic SENTINEL".into(),
+            },
+        ];
+        let findings =
+            compare_websocket_candidate(&client, &session, &request, &target, &conversation, None)
+                .await
+                .unwrap();
         assert!(findings.is_empty(), "{findings:?}");
         peer.await.unwrap();
         drop(session);
@@ -1138,6 +1239,390 @@ mod tests {
             crate::error_classify::map_fetch_error(&error).category,
             "a recorded run and a candidate run of one request must classify \
              the same failure identically"
+        );
+    }
+
+    /// Regression treats a `WholeMessage` redaction as a wildcard, not as a
+    /// literal `[REDACTED]` payload comparison.
+    #[cfg(feature = "websocket")]
+    #[test]
+    fn candidate_whole_message_redaction_matches_any_live_payload() {
+        use eggreplay_core::{
+            SessionMetadata, WebSocketDirection, WebSocketMessageKind, WebSocketRedaction,
+        };
+        use eggreplay_store::{SessionWriter, StoreLimits};
+        use tokio_tungstenite::tungstenite::Message;
+
+        let dir = std::env::temp_dir().join(format!(
+            "eggreplay-regression-ws-wildcard-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let writer =
+            SessionWriter::create(&dir, SessionMetadata::default(), StoreLimits::default())
+                .unwrap();
+        let session = writer.finish().unwrap();
+        let expected = eggreplay_core::WebSocketMessage {
+            sequence: 0,
+            direction: WebSocketDirection::ClientToServer,
+            delta_ns: 0,
+            kind: WebSocketMessageKind::Text,
+            payload: None,
+            close_code: None,
+            close_reason: None,
+            redactions: vec![WebSocketRedaction::WholeMessage],
+        };
+        assert!(
+            candidate_message_matches(
+                &expected,
+                &Message::Text("live bytes that differ from the marker".into()),
+                &session
+            ),
+            "a withheld payload must match whatever the candidate sends"
+        );
+        assert!(
+            !candidate_message_matches(
+                &expected,
+                &Message::Binary(b"wrong kind".to_vec().into()),
+                &session
+            ),
+            "the message kind still has to agree"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// `Host` is the operator's target authority, never the fixture's, and
+    /// never a credential the target operator did not send.
+    #[test]
+    fn the_candidate_host_is_the_target_authority_without_userinfo() {
+        let target: Uri = "http://user:secret@example.test:8080/path".parse().unwrap();
+        assert_eq!(candidate_host(&target).unwrap(), "example.test:8080");
+        let plain: Uri = "http://127.0.0.1:9000".parse().unwrap();
+        assert_eq!(candidate_host(&plain).unwrap(), "127.0.0.1:9000");
+        let relative: Uri = "/no-authority".parse().unwrap();
+        assert!(
+            candidate_host(&relative).is_err(),
+            "a target without an authority must fail closed"
+        );
+    }
+
+    /// The documented driver-controlled set, case-insensitively.
+    #[test]
+    fn the_header_classifier_covers_the_documented_skip_set() {
+        for name in [
+            "host",
+            "connection",
+            "proxy-connection",
+            "keep-alive",
+            "te",
+            "trailer",
+            "transfer-encoding",
+            "content-length",
+            "upgrade",
+            "expect",
+            "proxy-authorization",
+            "proxy-authenticate",
+        ] {
+            assert!(is_driver_controlled_header(name), "{name}");
+            assert!(
+                is_driver_controlled_header(&name.to_ascii_uppercase()),
+                "the recorded spelling may be any case: {name}"
+            );
+        }
+        // End-to-end fields are request semantics, not framing.
+        for name in [
+            "authorization",
+            "cookie",
+            "accept",
+            "user-agent",
+            "x-trace",
+            "forwarded",
+            "x-forwarded-for",
+            "sec-websocket-key",
+        ] {
+            assert!(!is_driver_controlled_header(name), "{name}");
+        }
+    }
+
+    /// The WebSocket handshake set is layered on top, never a replacement.
+    #[cfg(feature = "websocket")]
+    #[test]
+    fn websocket_handshake_headers_stay_websocket_specific() {
+        for name in [
+            "sec-websocket-key",
+            "sec-websocket-accept",
+            "sec-websocket-version",
+            "sec-websocket-extensions",
+        ] {
+            assert!(is_websocket_handshake_header(name), "{name}");
+            assert!(
+                !is_driver_controlled_header(name),
+                "an ordinary HTTP candidate must not skip {name}"
+            );
+        }
+        // The pre-M021D WebSocket skip list is still fully covered by the
+        // shared classifier plus the handshake set. If this ever fails, the
+        // handshake path has been weakened by a refactor.
+        for name in [
+            "host",
+            "connection",
+            "upgrade",
+            "content-length",
+            "transfer-encoding",
+            "sec-websocket-key",
+            "sec-websocket-accept",
+            "sec-websocket-version",
+            "sec-websocket-extensions",
+        ] {
+            assert!(
+                is_driver_controlled_header(name) || is_websocket_handshake_header(name),
+                "{name} would be forwarded"
+            );
+        }
+    }
+
+    /// Accept exactly one request, capture its raw bytes, and answer `200 ok`.
+    ///
+    /// The server is deliberately raw TCP: the point is to see the bytes a
+    /// fixture-driven candidate actually puts on the wire, not what a
+    /// framework re-renders.
+    fn capture_one_request() -> (std::net::SocketAddr, std::sync::mpsc::Receiver<Vec<u8>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let Ok((mut stream, _)) = listener.accept() else {
+                return;
+            };
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+                .unwrap();
+            let mut raw = Vec::new();
+            let mut chunk = [0u8; 1024];
+            let mut head_end: Option<usize> = None;
+            let mut body_length = 0usize;
+            loop {
+                if let Some(end) = head_end
+                    && raw.len() >= end + 4 + body_length
+                {
+                    break;
+                }
+                let count = stream.read(&mut chunk).unwrap_or(0);
+                if count == 0 {
+                    break;
+                }
+                raw.extend_from_slice(&chunk[..count]);
+                if head_end.is_none()
+                    && let Some(index) = raw.windows(4).position(|window| window == b"\r\n\r\n")
+                {
+                    head_end = Some(index);
+                    let head = String::from_utf8_lossy(&raw[..index]).to_ascii_lowercase();
+                    body_length = head
+                        .lines()
+                        .find_map(|line| line.strip_prefix("content-length:"))
+                        .and_then(|value| value.trim().parse::<usize>().ok())
+                        .unwrap_or(0);
+                }
+            }
+            let _ = sender.send(raw);
+            let _ = stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok");
+        });
+        (address, receiver)
+    }
+
+    /// Split a captured request into its line, lowercased headers, and body.
+    fn request_parts(raw: &[u8]) -> (String, Vec<(String, String)>, Vec<u8>) {
+        let split = raw
+            .windows(4)
+            .position(|window| window == b"\r\n\r\n")
+            .expect("request must have a head terminator");
+        let head = String::from_utf8_lossy(&raw[..split]).into_owned();
+        let body = raw[split + 4..].to_vec();
+        let mut lines = head.split("\r\n");
+        let request_line = lines.next().unwrap_or_default().to_owned();
+        let headers = lines
+            .filter_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                Some((name.trim().to_ascii_lowercase(), value.trim().to_owned()))
+            })
+            .collect();
+        (request_line, headers, body)
+    }
+
+    /// A fixture that carries recorded framing, a foreign `Host`, and a
+    /// proxy-hop credential must not be able to steer the candidate request.
+    #[tokio::test]
+    async fn candidate_never_forwards_fixture_host_framing_or_proxy_credentials() {
+        let (address, captured) = capture_one_request();
+        let client = Client::builder().retry_canceled_requests(false).build();
+        let target: Uri = format!("http://{address}").parse().unwrap();
+        let mut request = test_request("internal.example", "/trace");
+        request.method = "POST".into();
+        request.headers = vec![
+            HeaderEntry {
+                name: "Host".into(),
+                value: "internal.example".into(),
+            },
+            HeaderEntry {
+                name: "Connection".into(),
+                value: "keep-alive".into(),
+            },
+            HeaderEntry {
+                name: "Transfer-Encoding".into(),
+                value: "chunked".into(),
+            },
+            HeaderEntry {
+                name: "Content-Length".into(),
+                value: "999".into(),
+            },
+            HeaderEntry {
+                name: "Proxy-Authorization".into(),
+                value: "Basic SENTINEL".into(),
+            },
+            HeaderEntry {
+                name: "X-Trace".into(),
+                value: "trace-1".into(),
+            },
+        ];
+        let observation =
+            execute_candidate(&client, &request, b"hello", &target, 1024 * 1024, None)
+                .await
+                .unwrap();
+        assert_eq!(observation.response_body, b"ok");
+        let raw = captured
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("request must be captured");
+        let (request_line, headers, body) = request_parts(&raw);
+        assert_eq!(request_line, "POST /trace HTTP/1.1");
+        let expected_host = address.to_string();
+        let hosts = headers
+            .iter()
+            .filter(|(name, _)| name == "host")
+            .map(|(_, value)| value.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            hosts,
+            vec![expected_host.as_str()],
+            "exactly one Host, from the target: {headers:?}"
+        );
+        let content_lengths = headers
+            .iter()
+            .filter(|(name, _)| name == "content-length")
+            .map(|(_, value)| value.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            content_lengths,
+            vec![body.len().to_string()],
+            "the transport recomputes framing from the materialized body"
+        );
+        assert_eq!(body, b"hello");
+        assert_eq!(
+            headers
+                .iter()
+                .find(|(name, _)| name == "x-trace")
+                .map(|(_, value)| value.as_str()),
+            Some("trace-1"),
+            "ordinary end-to-end headers stay"
+        );
+        let wire = String::from_utf8_lossy(&raw);
+        for sentinel in [
+            "internal.example",
+            "SENTINEL",
+            "keep-alive",
+            "chunked",
+            "999",
+        ] {
+            assert!(
+                !wire.contains(sentinel),
+                "{sentinel} must not reach the target: {wire}"
+            );
+        }
+        for name in [
+            "proxy-authorization",
+            "proxy-connection",
+            "proxy-authenticate",
+            "te",
+            "trailer",
+            "expect",
+            "upgrade",
+        ] {
+            assert!(
+                !headers.iter().any(|(header, _)| header == name),
+                "{name} must not be forwarded: {headers:?}"
+            );
+        }
+        assert!(
+            !matches!(headers.iter().find(|(name, _)| name == "connection"), Some((_, value)) if value == "keep-alive"),
+            "the recorded connection policy must not be forwarded: {headers:?}"
+        );
+    }
+
+    /// An ordinary fixture is unaffected: nothing that belongs to request
+    /// semantics is stripped.
+    #[tokio::test]
+    async fn candidate_with_only_ordinary_headers_still_executes() {
+        let (address, captured) = capture_one_request();
+        let client = Client::builder().retry_canceled_requests(false).build();
+        let target: Uri = format!("http://{address}").parse().unwrap();
+        let mut request = test_request("internal.example", "/ordinary");
+        request.headers = vec![
+            HeaderEntry {
+                name: "Authorization".into(),
+                value: "Bearer token-1".into(),
+            },
+            HeaderEntry {
+                name: "Cookie".into(),
+                value: "session=abc".into(),
+            },
+            HeaderEntry {
+                name: "Accept".into(),
+                value: "application/json".into(),
+            },
+            HeaderEntry {
+                name: "User-Agent".into(),
+                value: "eggreplay-test".into(),
+            },
+            HeaderEntry {
+                name: "X-Trace".into(),
+                value: "trace-2".into(),
+            },
+        ];
+        let observation = execute_candidate(&client, &request, b"", &target, 1024 * 1024, None)
+            .await
+            .unwrap();
+        assert_eq!(observation.response_body, b"ok");
+        let raw = captured
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("request must be captured");
+        let (_, headers, body) = request_parts(&raw);
+        assert!(body.is_empty());
+        for (name, value) in [
+            ("authorization", "Bearer token-1"),
+            ("cookie", "session=abc"),
+            ("accept", "application/json"),
+            ("user-agent", "eggreplay-test"),
+            ("x-trace", "trace-2"),
+        ] {
+            assert_eq!(
+                headers
+                    .iter()
+                    .find(|(header, _)| header == name)
+                    .map(|(_, value)| value.as_str()),
+                Some(value),
+                "{name} is request semantics, not framing"
+            );
+        }
+        let expected_host = address.to_string();
+        assert_eq!(
+            headers
+                .iter()
+                .find(|(name, _)| name == "host")
+                .map(|(_, value)| value.as_str()),
+            Some(expected_host.as_str())
         );
     }
 }
