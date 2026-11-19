@@ -794,7 +794,7 @@ dependencies = [
  "pin-project-lite",
  "rustls",
  "rustls-native-certs",
- "thiserror 2.0.20",
+ "thiserror 2.0.21",
  "tokio",
  "tokio-rustls",
  "tower-service",
@@ -809,7 +809,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dbc41df795f7b7152912bc8fccf424c58ceb76da83eed31096edaef2a9340d5f"
 dependencies = [
  "base64 0.23.1",
- "thiserror 2.0.20",
+ "thiserror 2.0.21",
  "tokio",
 ]
 
@@ -839,7 +839,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "tempfile",
- "thiserror 2.0.20",
+ "thiserror 2.0.21",
  "tokio",
  "tracing-subscriber",
  "url",
@@ -854,7 +854,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
- "thiserror 2.0.20",
+ "thiserror 2.0.21",
  "url",
  "uuid",
 ]
@@ -870,7 +870,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
- "thiserror 2.0.20",
+ "thiserror 2.0.21",
  "url",
 ]
 
@@ -905,7 +905,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "tempfile",
- "thiserror 2.0.20",
+ "thiserror 2.0.21",
  "tokio",
  "tokio-rustls",
  "tokio-tungstenite",
@@ -942,7 +942,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "tempfile",
- "thiserror 2.0.20",
+ "thiserror 2.0.21",
  "time",
  "tokio",
  "tokio-rustls",
@@ -977,14 +977,14 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "tempfile",
- "thiserror 2.0.20",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
 name = "eggress-config"
-version = "1.0.11"
+version = "1.0.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e0687cf106c48ace9547b3326540d45f152892ce5a69e3b5b1fef42498d3230f"
+checksum = "354e728278d96ae00b6b04ac895e7bda8e342829a8a2ba27e63385156cdb04d7"
 dependencies = [
  "eggress-core",
  "eggress-routing",
@@ -995,16 +995,16 @@ dependencies = [
  "regex",
  "rustls",
  "serde",
- "thiserror 2.0.20",
+ "thiserror 2.0.21",
  "toml",
  "zeroize",
 ]
 
 [[package]]
 name = "eggress-core"
-version = "1.0.11"
+version = "1.0.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e76e1c1e96d0b76b4a6be7694f3055c15c032afc5c1e10a2a7a301dafdfc566a"
+checksum = "dd9a88a4dd93b0098db01df1bdc1119b84040b12de39d336f5207b9d951ef481"
 dependencies = [
  "bytes",
  "eggress-relay",
@@ -1013,7 +1013,7 @@ dependencies = [
  "rustls",
  "serde",
  "socket2 0.5.10",
- "thiserror 2.0.20",
+ "thiserror 2.0.21",
  "tokio",
  "tokio-util",
  "tracing",
@@ -1022,9 +1022,9 @@ dependencies = [
 
 [[package]]
 name = "eggress-outbound"
-version = "1.0.11"
+version = "1.0.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2d5d30e68f32d1ea2f3d09c4c1b5a4bcb9acc86106ad8eb5a8ac910ac9d72d02"
+checksum = "aaf71c42ec88fd6f83e017a1da7fc8148391581daafa86b70f385c6b7deb1f70"
 dependencies = [
  "bytes",
  "eggress-core",
@@ -1039,7 +1039,7 @@ dependencies = [
  "libc",
  "rustls",
  "subtle",
- "thiserror 2.0.20",
+ "thiserror 2.0.21",
  "tokio",
  "tokio-util",
  "tracing",
@@ -1048,25 +1048,25 @@ dependencies = [
 
 [[package]]
 name = "eggress-pproxy-compat"
-version = "1.0.11"
+version = "1.0.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dbc42697c85891fff69517fe14f7635cf54b7d826f44646bb3edf036eb101c21"
+checksum = "289153ca540a82abe12643df718b0a07f4bba80415297e561b08116e856a2155"
 dependencies = [
  "eggress-config",
  "eggress-uri",
  "fancy-regex",
  "regex",
  "serde",
- "thiserror 2.0.20",
+ "thiserror 2.0.21",
  "toml",
  "tracing",
 ]
 
 [[package]]
 name = "eggress-protocol-http"
-version = "1.0.11"
+version = "1.0.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3c8ab58182d8dd133e84ccfd83b01073af5328fc0f919ad94211ef3ace7cf786"
+checksum = "65c705f0ee7c66cf73df7895dafdd3d3874f88e14e7802b5639acdb94ad0ccc3"
 dependencies = [
  "base64 0.23.1",
  "bytes",
@@ -1078,7 +1078,7 @@ dependencies = [
  "once_cell",
  "sha2 0.10.9",
  "subtle",
- "thiserror 2.0.20",
+ "thiserror 2.0.21",
  "tokio",
  "tokio-util",
  "tracing",
@@ -1086,32 +1086,32 @@ dependencies = [
 
 [[package]]
 name = "eggress-protocol-socks"
-version = "1.0.11"
+version = "1.0.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ab0e8acd16fa217033adf3bf132d17b1f0fdf2aea0fed61c6ade5cf13263f9fc"
+checksum = "ae3b2f6f46cbb98cb51ac041e0523da969beb597a4b6bac6b2769b5f7c5b6efe"
 dependencies = [
  "bytes",
  "eggress-core",
  "subtle",
- "thiserror 2.0.20",
+ "thiserror 2.0.21",
  "tokio",
  "zeroize",
 ]
 
 [[package]]
 name = "eggress-relay"
-version = "1.0.11"
+version = "1.0.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eeb10cbadba07828554a42bd82492432a1d56929c2b55a225265f7db3cc6f930"
+checksum = "bb9bbfe311ba1bacd7033fa69a7caa524e0c0d807296cb577c39abee09ef6ea0"
 dependencies = [
  "tokio",
 ]
 
 [[package]]
 name = "eggress-routing"
-version = "1.0.11"
+version = "1.0.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4729cafb9e44ef51fbe9d99138d66e0d61971f52e1cd9b1962a3d43f6f2cf70c"
+checksum = "cad732c4ed31edecbe62aade01fb7340305dfd99eec37a6bbb793f99df6b7561"
 dependencies = [
  "arc-swap",
  "eggress-core",
@@ -1122,7 +1122,7 @@ dependencies = [
  "regex",
  "serde",
  "serde_json",
- "thiserror 2.0.20",
+ "thiserror 2.0.21",
  "tokio",
  "tokio-util",
  "tracing",
@@ -1130,28 +1130,28 @@ dependencies = [
 
 [[package]]
 name = "eggress-transport-ssh"
-version = "1.0.11"
+version = "1.0.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8948d6ecb7e403ac333338e429a18fd599df46082b4e6094947e770f436467ba"
+checksum = "6d88d135ddc3313308d464ba58eddf074535992e552b5c85f9d06a835bd31926"
 dependencies = [
  "eggress-core",
  "russh",
- "thiserror 2.0.20",
+ "thiserror 2.0.21",
  "tokio",
  "tracing",
 ]
 
 [[package]]
 name = "eggress-transport-tls"
-version = "1.0.11"
+version = "1.0.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8a1556a4a3b7f261ae0c8ec3f77ba88a116cab6668999a35756232813e13f815"
+checksum = "096569194c7157d855b645b34c2ecab37d022a5b4b4aa086bafbc76460e1776c"
 dependencies = [
  "bytes",
  "eggress-core",
  "pkcs8",
  "rustls",
- "thiserror 2.0.20",
+ "thiserror 2.0.21",
  "tokio",
  "tokio-rustls",
  "tracing",
@@ -1160,9 +1160,9 @@ dependencies = [
 
 [[package]]
 name = "eggress-udp"
-version = "1.0.11"
+version = "1.0.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "426c04e51e8532a17493e3de3e7b8c5fa567c4243059ba8e3518a16d068d48dc"
+checksum = "e4d5ce22dee52f09d45314798f1d4560a6b6c3d01dd927162123eb1162b2f16e"
 dependencies = [
  "bytes",
  "eggress-core",
@@ -1172,7 +1172,7 @@ dependencies = [
  "ipnet",
  "rand 0.8.8",
  "serde",
- "thiserror 2.0.20",
+ "thiserror 2.0.21",
  "tokio",
  "tokio-util",
  "tracing",
@@ -1180,12 +1180,12 @@ dependencies = [
 
 [[package]]
 name = "eggress-uri"
-version = "1.0.11"
+version = "1.0.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ca708a59c977058a33d15421b137316d16b3ed36c5f94291ac94d34854064f9c"
+checksum = "eb741d298c655f7006b9aa27295e4dc7226fbcc137ade7a397ad37574158da98"
 dependencies = [
  "serde",
- "thiserror 2.0.20",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -1207,16 +1207,16 @@ dependencies = [
  "hyper-util",
  "rustix",
  "rustls",
- "thiserror 2.0.20",
+ "thiserror 2.0.21",
  "tokio",
  "tokio-rustls",
 ]
 
 [[package]]
 name = "eggserve-primitives"
-version = "0.2.2"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "78fd797e45a374bfa419bc75f7e497653ce25e24cde0e771cc332e267f18355c"
+checksum = "378f63b29a0019e028d57d85c9be10a5605084ad1267aec7845af5ae4ebe0cd1"
 dependencies = [
  "bytes",
  "futures-util",
@@ -1542,9 +1542,9 @@ dependencies = [
 
 [[package]]
 name = "h2"
-version = "0.4.19"
+version = "0.4.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ef8e5e5a340588f4452631496976cf8636d4a7ecf600239fdc27615d2530bc16"
+checksum = "7d29020232d6aa3fb1daca64c1127cf662cf97f254ae16c18c05b8ab635fc118"
 dependencies = [
  "atomic-waker",
  "bytes",
@@ -1711,19 +1711,20 @@ dependencies = [
 
 [[package]]
 name = "hyper-util"
-version = "0.1.20"
+version = "0.1.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "96547c2556ec9d12fb1578c4eaf448b04993e7fb79cbaad930a656880a6bdfa0"
+checksum = "ddc03d96684f9226b8a787cdb71488417b53ab5ea8fdb1dac946cb9431cc8bff"
 dependencies = [
  "bytes",
  "futures-channel",
  "futures-util",
  "http",
  "http-body",
+ "httparse",
  "hyper",
  "libc",
  "pin-project-lite",
- "socket2 0.5.10",
+ "socket2 0.6.5",
  "tokio",
  "tower-service",
  "tracing",
@@ -2218,7 +2219,7 @@ dependencies = [
  "log",
  "rand 0.10.3",
  "sha2 0.11.0",
- "thiserror 2.0.20",
+ "thiserror 2.0.21",
  "tokio",
  "windows",
  "windows-strings",
@@ -2504,9 +2505,9 @@ dependencies = [
 
 [[package]]
 name = "prost"
-version = "0.14.4"
+version = "0.14.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "528ac67416ff8646872a3c02cad9cc4ee5dc9f9540c9b10771855c95cb2e5ae1"
+checksum = "3ef0b569d1d907ab3a28596aee62cf1f61dacb0529a4bedcd8e7460e2d5228b4"
 dependencies = [
  "bytes",
  "prost-derive",
@@ -2514,9 +2515,9 @@ dependencies = [
 
 [[package]]
 name = "prost-derive"
-version = "0.14.4"
+version = "0.14.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b570b25f7617e43d59005d0990ccb79e950a423952cea19671b7a876da390adf"
+checksum = "1ad9c5423459fa2f729b8d9235fab810aa29628b171467744fc86d21460ad70d"
 dependencies = [
  "anyhow",
  "itertools",
@@ -2540,9 +2541,9 @@ dependencies = [
 
 [[package]]
 name = "prost-types"
-version = "0.14.4"
+version = "0.14.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f94967dc7688f3054c7fac87473ffae4cc4c3904800e2d9f5b857246d8963b0a"
+checksum = "f29a7c4c7a84cef41a53d338a2d10d4f1b043ea5c3dde26db22ee2c9c1b1c75b"
 dependencies = [
  "prost",
 ]
@@ -2881,7 +2882,7 @@ dependencies = [
  "ssh-encoding",
  "ssh-key",
  "subtle",
- "thiserror 2.0.20",
+ "thiserror 2.0.21",
  "tokio",
  "typenum",
  "universal-hash",
@@ -3124,9 +3125,9 @@ dependencies = [
 
 [[package]]
 name = "serde_json"
-version = "1.0.151"
+version = "1.0.154"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c841b55ecdae098c80dcae9cf767f6f8a0c2cdb3416bbef72181df4d0fe73f14"
+checksum = "e7e9cc8b1b85264074fbcc02a88680c4096b1e47df8f739dceb03bf482f04bd6"
 dependencies = [
  "itoa",
  "memchr",
@@ -3443,7 +3444,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",
@@ -3460,11 +3461,11 @@ dependencies = [
 
 [[package]]
 name = "thiserror"
-version = "2.0.20"
+version = "2.0.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ec86235f5fcc2a73650310756d2ac5b138a5780bbbdfae3eeccec992c435ba4f"
+checksum = "09e52cb86a36cede5cb101bf8908837b3e4c6e5e59fe7fd85c23fb56200d189e"
 dependencies = [
- "thiserror-impl 2.0.20",
+ "thiserror-impl 2.0.21",
 ]
 
 [[package]]
@@ -3480,9 +3481,9 @@ dependencies = [
 
 [[package]]
 name = "thiserror-impl"
-version = "2.0.20"
+version = "2.0.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bc04cd3e1236dd4a98afca4569f2deb3f120e5422a4023be2cb683f8486292af"
+checksum = "fe5197923287db20a58125f0bc85c062f7f2c892de97b18c356f9efb14b28524"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3567,9 +3568,9 @@ dependencies = [
 
 [[package]]
 name = "tokio-rustls"
-version = "0.26.2"
+version = "0.26.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8e727b36a1a0e8b74c376ac2211e40c2c8af09fb4013c60d910495810f008e9b"
+checksum = "c9cc2678c2cdd569ef8215e2afd7954ada2ae20b4fdd2c5fe6139a3b02d105db"
 dependencies = [
  "rustls",
  "tokio",
@@ -3656,9 +3657,9 @@ checksum = "5d99f8c9a7727884afe522e9bd5edbfc91a3312b36a77b5fb8926e4c31a41801"
 
 [[package]]
 name = "tonic"
-version = "0.14.6"
+version = "0.14.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ac2a5518c70fa84342385732db33fb3f44bc4cc748936eb5833d2df34d6445ef"
+checksum = "e2cdfc673aabd30fe8fee92e65837b644c37c5d47f0f97ae6d5e0f1237d15e1b"
 dependencies = [
  "async-trait",
  "axum",
@@ -3678,6 +3679,7 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tokio-stream",
+ "tokio-util",
  "tower",
  "tower-layer",
  "tower-service",
@@ -3686,9 +3688,9 @@ dependencies = [
 
 [[package]]
 name = "tonic-prost"
-version = "0.14.6"
+version = "0.14.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "50849f68853be452acf590cde0b146665b8d507b3b8af17261df47e02c209ea0"
+checksum = "eba464054e2226f182a34489b8b079bf4c6e3e7ab5fd7fc30e024f24aa92a484"
 dependencies = [
  "bytes",
  "prost",
@@ -3830,7 +3832,7 @@ dependencies = [
  "log",
  "rand 0.10.3",
  "sha1",
- "thiserror 2.0.20",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
