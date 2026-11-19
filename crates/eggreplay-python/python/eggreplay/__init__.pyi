@@ -205,7 +205,16 @@ async def replay_server(
     timing_mode: str = ...,
     max_body_bytes: int = ...,
     scenario_id: str | None = ...,
-) -> Server: ...
+    allow_non_loopback: bool = ...,
+) -> Server:
+    """Start the offline replay server on ``bind``.
+
+    The listener is unauthenticated: any client that can reach it can consume
+    this fixture. TLS is not authentication. A non-loopback ``bind`` is a
+    ``ConfigurationError`` unless ``allow_non_loopback=True`` is passed
+    explicitly.
+    """
+    ...
 
 async def recording_gateway(
     fixture_path: str,
@@ -215,7 +224,16 @@ async def recording_gateway(
     record_mode: str = ...,
     websockets: bool = ...,
     max_body_bytes: int = ...,
-) -> Server: ...
+    allow_non_loopback: bool = ...,
+) -> Server:
+    """Start the recording gateway on ``bind``.
+
+    The listener is unauthenticated: any client that can reach it can drive
+    ``upstream`` through the recorder. TLS is not authentication. A
+    non-loopback ``bind`` is a ``ConfigurationError`` unless
+    ``allow_non_loopback=True`` is passed explicitly.
+    """
+    ...
 
 async def regress_flow(
     fixture: Fixture,
@@ -237,7 +255,14 @@ def fixture_context(
     route: str = ...,
     bind: str = ...,
     websockets: bool = ...,
-) -> FixtureContext: ...
+    allow_non_loopback: bool = ...,
+) -> FixtureContext:
+    """Open the shared replay/recording lifecycle for a fixture path.
+
+    The listener is unauthenticated and TLS is not authentication; a
+    non-loopback ``bind`` requires ``allow_non_loopback=True``.
+    """
+    ...
 
 _F = TypeVar("_F", bound=Callable[..., Any])
 def use_fixture(

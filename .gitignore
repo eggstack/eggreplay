@@ -1,5 +1,6 @@
 /target/
 *.eggr/
+*.har
 .venv/
 __pycache__/
 .pytest_cache/

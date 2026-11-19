@@ -1,0 +1,38 @@
+# Dependabot configuration (M021E).
+#
+# Nothing here auto-merges, and there is no auto-merge workflow in
+# `.github/workflows/`. A dependency PR is a proposal: it must pass the full
+# `verify` matrix, the boundary lanes, and the `dependency-policy` advisory
+# gate, and it is reviewed like any other change. The transport artifacts
+# pinned in the root `Cargo.toml` are bumped only through a plan with a closure
+# record (see `docs/release-process.md`), so a Dependabot PR that touches one
+# of them is a prompt for that process, not an instruction to merge.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    # One grouped PR per week keeps SHA-pin churn reviewable as a single diff.
+    groups:
+      github-actions:
+        patterns: ["*"]
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "ci"
+
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    # Only patch updates are grouped. Grouping minor/major bumps would produce
+    # exactly the broad lockfile update M020 forbids and could move a
+    # transport pin without a plan; those arrive as individual PRs instead.
+    # The open-PR limit bounds the churn either way.
+    groups:
+      cargo-patch:
+        patterns: ["*"]
+        update-types: ["patch"]
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps"

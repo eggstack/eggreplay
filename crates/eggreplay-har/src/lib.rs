@@ -440,20 +440,58 @@ pub fn migration_blockers(extensions: &[eggreplay_store::ExtensionDescriptor]) -
     blockers
 }
 
+/// Fixed placeholder written for every stream-event trailer value.
+const SUPPRESSED_STREAM_TRAILER_VALUE: &str = "<redacted>";
+
+/// Rewrite every stream-event trailer value to the fixed placeholder.
+///
+/// Field names, order, duplicates, delays, DATA/END/ERROR events, the
+/// extension schema, and every other extension stay untouched. A payload that
+/// does not parse or does not validate fails closed, so a malformed
+/// `stream-events` extension is never silently dropped or replaced. The
+/// transform is idempotent: scrubbing an already-scrubbed payload serializes
+/// the same bytes.
+fn scrub_stream_trailer_values(bytes: &[u8]) -> Result<Vec<u8>, eggreplay_store::StoreError> {
+    use eggreplay_store::StoreError;
+    let mut events: eggreplay_core::StreamEvents =
+        serde_json::from_slice(bytes).map_err(|error| {
+            StoreError::Invalid(format!("malformed stream-events payload: {error}"))
+        })?;
+    for flow in &mut events.flows {
+        for event in flow.request.iter_mut().chain(flow.response.iter_mut()) {
+            if let eggreplay_core::StreamEventKind::Trailers { fields } = &mut event.event {
+                for field in fields {
+                    field.value = SUPPRESSED_STREAM_TRAILER_VALUE.into();
+                }
+            }
+        }
+    }
+    events.validate().map_err(StoreError::Invalid)?;
+    serde_json::to_vec(&events).map_err(StoreError::from)
+}
+
 /// Migrate `source` into `destination` at `target_schema`.
 ///
 /// The source is never mutated. The destination must not exist. Extension
 /// blockers from [`migration_blockers`] fail closed before any copy.
 ///
+/// When `scrub_stream_trailers` is true, every `stream-events` trailer value is
+/// rewritten to `<redacted>` inside the transactional copy. The flag is an
+/// explicit opt-in remediation for pre-fix fixtures; without it the extension
+/// bytes are preserved verbatim. It is not a schema conversion: a
+/// current-schema fixture is still scrubbed when the flag is present.
+///
 /// # Errors
 ///
 /// Returns [`MigrationError::Blocked`] for unsupported target schemas or
 /// unregistered required extensions, and [`MigrationError::Store`] when the
-/// transactional copy fails.
+/// transactional copy fails, including a malformed `stream-events` payload
+/// during scrub.
 pub fn migrate_session(
     source: &Session,
     destination: &Path,
     target_schema: u16,
+    scrub_stream_trailers: bool,
 ) -> Result<Session, MigrationError> {
     if !(eggreplay_core::SESSION_SCHEMA_V1..=CURRENT_SESSION_SCHEMA).contains(&target_schema) {
         return Err(MigrationError::Blocked(format!(
@@ -467,9 +505,21 @@ pub fn migrate_session(
     // `copy_to` streams and revalidates every blob/flow/extension and
     // publishes transactionally; downgrades with extensions fail closed
     // inside the store.
-    source
-        .copy_to(destination, target_schema)
-        .map_err(MigrationError::Store)
+    if scrub_stream_trailers {
+        source
+            .copy_to_with_extensions(destination, target_schema, |extension, bytes| {
+                if extension.name == "stream-events" {
+                    scrub_stream_trailer_values(&bytes)
+                } else {
+                    Ok(bytes)
+                }
+            })
+            .map_err(MigrationError::Store)
+    } else {
+        source
+            .copy_to(destination, target_schema)
+            .map_err(MigrationError::Store)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1410,10 +1460,12 @@ pub fn import_har_to_writer(
 }
 
 fn truncate_bounded(input: &str, max: usize) -> String {
-    if input.len() <= max {
+    let truncated = eggreplay_core::truncate_utf8_boundary(input, max);
+    if truncated.len() == input.len() {
         return input.to_owned();
     }
-    let mut out = input[..max].to_owned();
+    // Append the ellipsis only after a successful boundary-safe slice.
+    let mut out = truncated.to_owned();
     out.push('…');
     out
 }
@@ -1896,6 +1948,22 @@ mod tests {
     }"#;
 
     #[test]
+    fn truncate_bounded_never_splits_a_multibyte_character() {
+        let comment = "€".repeat(200);
+        assert_eq!(comment.len(), 600);
+        let truncated = truncate_bounded(&comment, 512);
+        assert!(truncated.ends_with('…'));
+        assert_eq!(
+            truncated.strip_suffix('…').unwrap(),
+            "€".repeat(170),
+            "512 rounds down to the 510-byte boundary"
+        );
+        // Short inputs are returned verbatim without an ellipsis.
+        assert_eq!(truncate_bounded("short €", 512), "short €");
+        assert_eq!(truncate_bounded("€€", 6), "€€");
+    }
+
+    #[test]
     fn import_preserves_method_url_query_headers_status_body_timing() {
         let dir = temp_dir("import-minimal");
         let fixture = dir.join("imported.eggr");
@@ -2308,14 +2376,15 @@ mod tests {
         assert_eq!(source.manifest().metadata.schema_version, 1);
         // Schema-1 -> current upgrades the session schema.
         let upgraded_path = dir.join("upgraded.eggr");
-        let upgraded = migrate_session(&source, &upgraded_path, CURRENT_SESSION_SCHEMA).unwrap();
+        let upgraded =
+            migrate_session(&source, &upgraded_path, CURRENT_SESSION_SCHEMA, false).unwrap();
         assert_eq!(
             upgraded.manifest().metadata.schema_version,
             CURRENT_SESSION_SCHEMA
         );
         // Current -> current is idempotent.
         let dest = dir.join("copy.eggr");
-        let copied = migrate_session(&upgraded, &dest, CURRENT_SESSION_SCHEMA).unwrap();
+        let copied = migrate_session(&upgraded, &dest, CURRENT_SESSION_SCHEMA, false).unwrap();
         assert_eq!(copied.manifest().metadata, upgraded.manifest().metadata);
         assert_eq!(copied.manifest().extensions, upgraded.manifest().extensions);
 
@@ -2475,5 +2544,30 @@ mod tests {
             .unwrap();
         assert_eq!(request_body, vec![0, 1, 2, 3, 4]);
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn stream_trailer_scrub_is_idempotent_and_fails_closed_on_malformed_payloads() {
+        let payload = br#"{"schema_version":1,"flows":[{"flow_id":"f","start_offset_ns":0,"request":[],"response":[{"delta_ns":3,"event":{"kind":"trailers","fields":[{"name":"x-secret","value":"RAW"},{"name":"x-dup","value":"one"},{"name":"x-dup","value":"two"}]}},{"delta_ns":9,"event":{"kind":"end"}}]}]}"#;
+        let once = scrub_stream_trailer_values(payload).unwrap();
+        let events: eggreplay_core::StreamEvents = serde_json::from_slice(&once).unwrap();
+        let fields = match &events.flows[0].response[0].event {
+            eggreplay_core::StreamEventKind::Trailers { fields } => fields,
+            other => panic!("expected trailers, got {other:?}"),
+        };
+        assert_eq!(fields.len(), 3);
+        assert_eq!(fields[0].name, "x-secret");
+        assert!(fields.iter().all(|field| field.value == "<redacted>"));
+        assert_eq!(events.flows[0].response[0].delta_ns, 3);
+        let twice = scrub_stream_trailer_values(&once).unwrap();
+        assert_eq!(
+            twice, once,
+            "scrub must be a byte-stable no-op the second time"
+        );
+
+        assert!(scrub_stream_trailer_values(b"not json").is_err());
+        // Data after trailers violates the stream schema and must fail closed.
+        let invalid = br#"{"schema_version":1,"flows":[{"flow_id":"f","start_offset_ns":0,"request":[],"response":[{"delta_ns":0,"event":{"kind":"trailers","fields":[]}},{"delta_ns":1,"event":{"kind":"data","offset":0,"length":1}}]}]}"#;
+        assert!(scrub_stream_trailer_values(invalid).is_err());
     }
 }

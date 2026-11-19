@@ -18,6 +18,13 @@ use std::time::Duration;
 const MAX_EXTENSIONS: usize = 64;
 const MAX_EXTENSION_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_TOTAL_EXTENSION_BYTES: u64 = 32 * 1024 * 1024;
+/// Maximum accepted `manifest.json` size (16 MiB).
+///
+/// The manifest is untrusted input. The bound is checked against file
+/// metadata first and then again against a bounded read, so the JSON parser
+/// never receives a larger document even if the file grows after the
+/// metadata check.
+const MAX_MANIFEST_BYTES: u64 = 16 * 1024 * 1024;
 use thiserror::Error;
 
 /// Default validation bounds for untrusted fixtures.
@@ -249,10 +256,19 @@ impl Drop for BodyWriter {
 }
 
 /// Writer for a not-yet-published `.eggr` session.
+///
+/// A writer that is dropped without [`SessionWriter::finish`] removes its own
+/// `.incomplete-*` staging directory best-effort, so a failed operation does
+/// not leave residue. A process crash or `SIGKILL` cannot run that cleanup;
+/// stale staging directories remain a documented residual and are never swept
+/// automatically on startup.
 pub struct SessionWriter {
     destination: PathBuf,
     staging: PathBuf,
-    flows: File,
+    // `Option` so `finish`/`discard` can close the flow log before removing
+    // or renaming the staging directory (Windows denies both while a handle
+    // is open).
+    flows: Option<File>,
     metadata: SessionMetadata,
     limits: StoreLimits,
     flow_count: usize,
@@ -263,6 +279,21 @@ pub struct SessionWriter {
     stream_event_records: usize,
     stream_event_object_bytes: usize,
     websocket: WebSocketAccumulation,
+    // Set once the staged directory has been renamed into place (published) or
+    // explicitly discarded. Drop is a no-op afterwards.
+    disarmed: bool,
+}
+
+impl Drop for SessionWriter {
+    fn drop(&mut self) {
+        // Close the flow log first: Windows refuses to remove a directory that
+        // still has an open file, and the log lives inside the staging dir.
+        drop(self.flows.take());
+        if self.disarmed {
+            return;
+        }
+        let _ = fs::remove_dir_all(&self.staging);
+    }
 }
 
 #[derive(Debug, Default)]
@@ -399,7 +430,7 @@ impl SessionWriter {
         Ok(Self {
             destination,
             staging,
-            flows,
+            flows: Some(flows),
             metadata,
             limits,
             flow_count: 0,
@@ -410,6 +441,7 @@ impl SessionWriter {
             stream_event_records: 0,
             stream_event_object_bytes: 0,
             websocket: WebSocketAccumulation::default(),
+            disarmed: false,
         })
     }
 
@@ -541,8 +573,12 @@ impl SessionWriter {
                 "total body length exceeds configured limit".into(),
             ));
         }
-        self.flows.write_all(&encoded)?;
-        self.flows.write_all(b"\n")?;
+        let flows = self
+            .flows
+            .as_mut()
+            .ok_or_else(|| StoreError::Invalid("session is already finalizing".into()))?;
+        flows.write_all(&encoded)?;
+        flows.write_all(b"\n")?;
         self.flow_count += 1;
         self.total_bytes = next_total;
         Ok(())
@@ -563,8 +599,15 @@ impl SessionWriter {
     /// flow-log and manifest handles are flushed, synced, and closed
     /// before the staging directory is renamed. Unix behavior is unchanged.
     pub fn finish(mut self) -> Result<Session, StoreError> {
-        self.flows.flush()?;
-        self.flows.sync_all()?;
+        let mut flows = self
+            .flows
+            .take()
+            .ok_or_else(|| StoreError::Invalid("session is already finalizing".into()))?;
+        flows.flush()?;
+        flows.sync_all()?;
+        // Close the flow log before the staging rename. No further flow append
+        // can succeed once `self.flows` is `None`.
+        drop(flows);
         if !self.stream_events.flows.is_empty() {
             self.stream_events.validate().map_err(StoreError::Invalid)?;
             let bytes = serde_json::to_vec(&self.stream_events)?;
@@ -617,24 +660,21 @@ impl SessionWriter {
             manifest_file.write_all(b"\n")?;
             manifest_file.sync_all()?;
         }
-        let Self {
-            destination,
-            staging,
-            flows,
-            metadata: _,
-            limits,
-            flow_count: _,
-            total_bytes: _,
-            extensions: _,
-            stream_events: _,
-            stream_event_ids: _,
-            stream_event_records: _,
-            stream_event_object_bytes: _,
-            websocket: _,
-        } = self;
-        drop(flows);
-        fs::rename(&staging, &destination)?;
-        Session::open(&destination, limits)
+        fs::rename(&self.staging, &self.destination)?;
+        // The staged tree is published; Drop must never remove it now, even
+        // when the post-publication re-open below reports a problem.
+        self.disarmed = true;
+        Session::open(&self.destination, self.limits)
+    }
+
+    /// Abandon the staging directory without publishing a fixture.
+    ///
+    /// Removal is best-effort, matching the error-path cleanup contract. The
+    /// writer is consumed, so a later failure cannot publish partial state.
+    pub fn discard(mut self) {
+        self.disarmed = true;
+        drop(self.flows.take());
+        let _ = fs::remove_dir_all(&self.staging);
     }
 }
 
@@ -1512,8 +1552,9 @@ impl Session {
     /// Open a complete session and validate its manifest, flow records, and blobs.
     pub fn open(root: impl AsRef<Path>, limits: StoreLimits) -> Result<Self, StoreError> {
         let root = root.as_ref().to_path_buf();
-        let manifest: Manifest =
-            serde_json::from_reader(BufReader::new(File::open(root.join("manifest.json"))?))?;
+        let manifest_path = root.join("manifest.json");
+        let manifest_bytes = read_bounded_bytes(&manifest_path, MAX_MANIFEST_BYTES)?;
+        let manifest: Manifest = serde_json::from_slice(&manifest_bytes)?;
         if !(eggreplay_core::SESSION_SCHEMA_V1..=eggreplay_core::SESSION_SCHEMA_VERSION)
             .contains(&manifest.metadata.schema_version)
         {
@@ -1621,6 +1662,31 @@ impl Session {
         destination: impl AsRef<Path>,
         target_schema: u16,
     ) -> Result<Session, StoreError> {
+        self.copy_to_with_extensions(destination, target_schema, |_, bytes| Ok(bytes))
+    }
+
+    /// Copy a validated session, transforming extension payloads in flight.
+    ///
+    /// `transform` receives each [`ExtensionDescriptor`] and its validated
+    /// payload bytes, and returns the bytes to publish. The callback runs
+    /// inside the same transaction as the copy: the destination is staged,
+    /// revalidated, and atomically renamed, so a transform error publishes
+    /// nothing and the source is never mutated. [`Session::copy_to`] is the
+    /// identity transform.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same failures as [`Session::copy_to`], plus any
+    /// [`StoreError`] returned by `transform`.
+    pub fn copy_to_with_extensions<F>(
+        &self,
+        destination: impl AsRef<Path>,
+        target_schema: u16,
+        mut transform: F,
+    ) -> Result<Session, StoreError>
+    where
+        F: FnMut(&ExtensionDescriptor, Vec<u8>) -> Result<Vec<u8>, StoreError>,
+    {
         if !(eggreplay_core::SESSION_SCHEMA_V1..=eggreplay_core::SESSION_SCHEMA_VERSION)
             .contains(&target_schema)
         {
@@ -1673,6 +1739,7 @@ impl Session {
             let bytes = self
                 .read_extension(&extension.name)?
                 .ok_or_else(|| StoreError::Invalid("extension disappeared during copy".into()))?;
+            let bytes = transform(extension, bytes)?;
             writer.write_extension(
                 &extension.name,
                 extension.schema_version,
@@ -1804,6 +1871,7 @@ impl Session {
             reader: BufReader::new(File::open(self.root.join("flows.jsonl"))?),
             limits: self.limits,
             seen: 0,
+            finished: false,
         })
     }
 
@@ -1849,6 +1917,12 @@ impl Session {
     /// If blobs are replaced between [`Session::open`] and streaming, the
     /// open-time length check or the incremental hash check fails instead of
     /// silently serving replaced bytes. Unselected blobs are never opened.
+    ///
+    /// The symlink check and the open are separate calls: a portable
+    /// no-follow open would require a new platform dependency, so a local
+    /// writer that races a symlink into an open fixture directory is an
+    /// accepted residual. The hash/length check still fails closed and never
+    /// returns replaced bytes as valid; see `docs/eggr-schema.md`.
     pub fn open_blob(&self, blob: &BlobRef) -> Result<BlobHandle, StoreError> {
         validate_digest(&blob.sha256)?;
         if blob.length > self.limits.max_blob_bytes {
@@ -1908,38 +1982,127 @@ fn copy_blob_namespace(writer: &mut SessionWriter, source: &Session) -> Result<(
     Ok(())
 }
 
+/// Read a complete file with a hard byte bound.
+///
+/// The metadata check refuses the common oversized case without allocating.
+/// The `take(limit + 1)` read then closes the metadata race: a file that grew
+/// after the check is still rejected before more than `limit + 1` bytes are
+/// retained. The diagnostic names the path and limit and never echoes
+/// untrusted contents.
+fn read_bounded_bytes(path: &Path, limit: u64) -> Result<Vec<u8>, StoreError> {
+    let file = File::open(path)?;
+    if file.metadata()?.len() > limit {
+        return Err(oversized_input(path, limit));
+    }
+    let mut bytes = Vec::new();
+    file.take(limit.saturating_add(1)).read_to_end(&mut bytes)?;
+    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > limit {
+        return Err(oversized_input(path, limit));
+    }
+    Ok(bytes)
+}
+
+fn oversized_input(path: &Path, limit: u64) -> StoreError {
+    StoreError::Invalid(format!(
+        "{} exceeds configured limit of {limit} bytes",
+        path.display()
+    ))
+}
+
+/// Outcome of one bounded JSONL line read.
+enum BoundedLine {
+    /// A complete line was read, including its trailing newline when present.
+    Line,
+    /// No further bytes remain.
+    Eof,
+    /// The line exceeded the configured bound and was not retained.
+    TooLong,
+}
+
+/// Read one line without buffering more than `max_line_bytes` bytes.
+///
+/// The historical check counted the trailing newline, so a line is accepted
+/// only when its full encoded length (delimiter included) fits the bound.
+/// Once a chunk would push the line past the bound, the read stops and
+/// returns [`BoundedLine::TooLong`] without consuming or retaining the rest
+/// of the line. Callers that must keep reading can reopen or skip the
+/// remainder themselves; [`FlowIter`] terminates after reporting the error.
+fn read_bounded_line<R: BufRead>(
+    reader: &mut R,
+    max_line_bytes: u64,
+    line: &mut Vec<u8>,
+) -> io::Result<BoundedLine> {
+    let max = usize::try_from(max_line_bytes).unwrap_or(usize::MAX);
+    line.clear();
+    loop {
+        let buffer = reader.fill_buf()?;
+        if buffer.is_empty() {
+            return Ok(if line.is_empty() {
+                BoundedLine::Eof
+            } else {
+                BoundedLine::Line
+            });
+        }
+        let newline = buffer.iter().position(|byte| *byte == b'\n');
+        let take = newline.map_or(buffer.len(), |position| position + 1);
+        if line.len().saturating_add(take) > max {
+            return Ok(BoundedLine::TooLong);
+        }
+        line.extend_from_slice(&buffer[..take]);
+        reader.consume(take);
+        if newline.is_some() {
+            return Ok(BoundedLine::Line);
+        }
+    }
+}
+
 /// Bounded flow iterator.
+///
+/// An oversized line or an I/O error is reported exactly once; the iterator
+/// then terminates instead of re-reading the remainder of a rejected line.
 pub struct FlowIter {
     reader: BufReader<File>,
     limits: StoreLimits,
     seen: usize,
+    finished: bool,
 }
 
 impl Iterator for FlowIter {
     type Item = Result<Flow, StoreError>;
 
     fn next(&mut self) -> Option<Self::Item> {
+        if self.finished {
+            return None;
+        }
         let mut line = Vec::new();
-        match self.reader.read_until(b'\n', &mut line) {
-            Ok(0) => None,
-            Ok(_) => {
+        match read_bounded_line(&mut self.reader, self.limits.max_line_bytes, &mut line) {
+            Ok(BoundedLine::Eof) => {
+                self.finished = true;
+                None
+            }
+            Ok(BoundedLine::Line) => {
                 if self.seen >= self.limits.max_flows {
+                    self.finished = true;
                     return Some(Err(StoreError::Invalid(
                         "flow count exceeds configured limit".into(),
                     )));
                 }
                 self.seen += 1;
-                if line.len() as u64 > self.limits.max_line_bytes {
-                    return Some(Err(StoreError::Invalid(
-                        "flow JSONL line exceeds configured limit".into(),
-                    )));
-                }
                 Some(match serde_json::from_slice::<Flow>(&line) {
                     Ok(flow) => flow.validate().map(|()| flow).map_err(StoreError::from),
                     Err(error) => Err(StoreError::Json(error)),
                 })
             }
-            Err(error) => Some(Err(StoreError::Io(error))),
+            Ok(BoundedLine::TooLong) => {
+                self.finished = true;
+                Some(Err(StoreError::Invalid(
+                    "flow JSONL line exceeds configured limit".into(),
+                )))
+            }
+            Err(error) => {
+                self.finished = true;
+                Some(Err(StoreError::Io(error)))
+            }
         }
     }
 }
@@ -2186,22 +2349,19 @@ fn validate_websocket_fixture(
     max_line_bytes: u64,
     max_blob_bytes: u64,
 ) -> Result<(), StoreError> {
-    use std::io::BufRead;
-
     let mut websocket_101 = std::collections::HashSet::new();
     let file = File::open(root.join("flows.jsonl"))?;
     let mut reader = BufReader::new(file);
     let mut line = Vec::new();
     loop {
-        line.clear();
-        let read = reader.read_until(b'\n', &mut line)?;
-        if read == 0 {
-            break;
-        }
-        if read as u64 > max_line_bytes {
-            return Err(StoreError::Invalid(
-                "flow JSONL line exceeds configured limit".into(),
-            ));
+        match read_bounded_line(&mut reader, max_line_bytes, &mut line)? {
+            BoundedLine::Eof => break,
+            BoundedLine::TooLong => {
+                return Err(StoreError::Invalid(
+                    "flow JSONL line exceeds configured limit".into(),
+                ));
+            }
+            BoundedLine::Line => {}
         }
         let flow: eggreplay_core::Flow = serde_json::from_slice(&line)?;
         let websocket_upgrade = flow.request.headers.iter().any(|header| {
@@ -2411,6 +2571,203 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ))
+    }
+
+    #[test]
+    fn bounded_reader_accepts_exactly_the_limit() {
+        let file = path("bounded-manifest-ok");
+        fs::write(&file, vec![b'{'; 64]).unwrap();
+        let bytes = read_bounded_bytes(&file, 64).unwrap();
+        assert_eq!(bytes.len(), 64);
+        fs::remove_file(file).unwrap();
+    }
+
+    #[test]
+    fn bounded_reader_rejects_oversized_input_without_contents() {
+        let file = path("bounded-manifest-over");
+        fs::write(&file, vec![b'{'; 65]).unwrap();
+        let error = read_bounded_bytes(&file, 64).unwrap_err();
+        let message = error.to_string();
+        assert!(
+            message.contains(&file.display().to_string()),
+            "diagnostic must name the path: {message}"
+        );
+        assert!(
+            message.contains("64"),
+            "diagnostic must name the limit: {message}"
+        );
+        assert!(
+            !message.contains("{{{{"),
+            "diagnostic must never echo manifest contents: {message}"
+        );
+        fs::remove_file(file).unwrap();
+    }
+
+    #[test]
+    fn bounded_line_accepts_exactly_the_limit() {
+        // 16 bytes including the newline: the historical check counted the
+        // delimiter, so this must still be accepted.
+        let data = b"0123456789abcde\n";
+        assert_eq!(data.len(), 16);
+        let mut reader = BufReader::new(&data[..]);
+        let mut line = Vec::new();
+        assert!(matches!(
+            read_bounded_line(&mut reader, 16, &mut line).unwrap(),
+            BoundedLine::Line
+        ));
+        assert_eq!(line, data);
+    }
+
+    #[test]
+    fn bounded_line_rejects_one_byte_over_and_retains_nothing() {
+        let data = b"0123456789abcdef\n";
+        assert_eq!(data.len(), 17);
+        let mut reader = BufReader::new(&data[..]);
+        let mut line = vec![0xFF; 4];
+        assert!(matches!(
+            read_bounded_line(&mut reader, 16, &mut line).unwrap(),
+            BoundedLine::TooLong
+        ));
+        assert!(line.is_empty(), "rejected bytes must not be retained");
+    }
+
+    #[test]
+    fn flow_iter_reports_oversized_line_once_then_terminates() {
+        let dir = path("flow-iter-oversized");
+        fs::create_dir_all(&dir).unwrap();
+        let flows = dir.join("flows.jsonl");
+        // Two lines: the first exceeds the bound, the second would parse.
+        fs::write(&flows, b"0123456789abcdef\n{}\n").unwrap();
+        let mut iter = FlowIter {
+            reader: BufReader::new(File::open(&flows).unwrap()),
+            limits: StoreLimits {
+                max_line_bytes: 16,
+                ..StoreLimits::default()
+            },
+            seen: 0,
+            finished: false,
+        };
+        match iter.next() {
+            Some(Err(StoreError::Invalid(message))) => {
+                assert_eq!(message, "flow JSONL line exceeds configured limit");
+            }
+            other => panic!("expected the bounded-line error, got {other:?}"),
+        }
+        assert!(
+            iter.next().is_none(),
+            "the iterator must terminate rather than loop over the rest of the line"
+        );
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn published_fixture_uses_private_unix_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let destination = path("private-permissions");
+        let writer = SessionWriter::create(
+            &destination,
+            SessionMetadata::default(),
+            StoreLimits::default(),
+        )
+        .unwrap();
+        let session = writer.finish().unwrap();
+        let mode = |path: &Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&destination), 0o700, "fixture root must be 0700");
+        assert_eq!(
+            mode(&destination.join("blobs")),
+            0o700,
+            "blob directory must be 0700"
+        );
+        assert_eq!(
+            mode(&destination.join("flows.jsonl")),
+            0o600,
+            "flow log must be 0600"
+        );
+        assert_eq!(
+            mode(&destination.join("manifest.json")),
+            0o600,
+            "manifest must be 0600"
+        );
+        drop(session);
+        fs::remove_dir_all(destination).unwrap();
+    }
+
+    #[test]
+    #[cfg(not(unix))]
+    fn private_permissions_are_a_documented_no_op_off_unix() {
+        // Unix mode bits are a Unix contract. On Windows, secrecy depends on
+        // the containing directory ACLs; `set_private_permissions` must stay
+        // a successful no-op rather than claiming an equivalent guarantee.
+        let file = path("private-permissions-noop");
+        fs::write(&file, b"x").unwrap();
+        set_private_permissions(&file).expect("non-Unix permission setting is a no-op");
+        fs::remove_file(file).unwrap();
+    }
+
+    #[test]
+    fn dropped_writer_removes_its_incomplete_staging_directory() {
+        let destination = path("writer-drop");
+        let writer = SessionWriter::create(
+            &destination,
+            SessionMetadata::default(),
+            StoreLimits::default(),
+        )
+        .unwrap();
+        let staging = writer.staging.clone();
+        assert!(
+            staging.exists(),
+            "staging must exist while the writer lives"
+        );
+        drop(writer);
+        assert!(
+            !staging.exists(),
+            "dropping an unfinished writer must remove its staging directory"
+        );
+        assert!(!destination.exists());
+    }
+
+    #[test]
+    fn discarded_writer_removes_staging_and_never_publishes() {
+        let destination = path("writer-discard");
+        let mut writer = SessionWriter::create(
+            &destination,
+            SessionMetadata::default(),
+            StoreLimits::default(),
+        )
+        .unwrap();
+        let staging = writer.staging.clone();
+        writer.append_flow(&sample()).unwrap();
+        writer.discard();
+        assert!(!staging.exists(), "discard must remove the staging tree");
+        assert!(!destination.exists(), "discard must never publish");
+    }
+
+    #[test]
+    fn finished_writer_disarms_drop_cleanup() {
+        let destination = path("writer-finished");
+        let mut writer = SessionWriter::create(
+            &destination,
+            SessionMetadata::default(),
+            StoreLimits::default(),
+        )
+        .unwrap();
+        writer.append_flow(&sample()).unwrap();
+        drop(writer.finish().unwrap());
+        assert!(destination.exists(), "a finished fixture must remain");
+        let parent = destination.parent().unwrap();
+        let prefix = format!(
+            ".{}.incomplete-",
+            destination.file_name().unwrap().to_string_lossy()
+        );
+        let residue = std::fs::read_dir(parent)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with(&prefix))
+            .count();
+        assert_eq!(residue, 0, "finish must leave no staging directory");
+        fs::remove_dir_all(destination).unwrap();
     }
 
     #[test]

@@ -103,10 +103,11 @@ pub struct ProxyRecordArgs {
     /// Listener address (loopback by default).
     #[arg(long, default_value = "127.0.0.1:0")]
     pub listen: SocketAddr,
-    /// Destination fixture directory.
+    /// Destination fixture directory; may be absent, empty, or a valid fixture.
     #[arg(long)]
     pub fixture: PathBuf,
-    /// Replace an existing fixture directory.
+    /// Replace an existing fixture or empty directory. Any other existing path
+    /// is refused; a failed recording leaves the old fixture untouched.
     #[arg(long, default_value_t = false)]
     pub overwrite: bool,
     /// Outbound route: `direct` or a pproxy URI. Never falls back to direct.
@@ -332,24 +333,29 @@ pub struct CaRotateArgs {
 /// Validate a proxy listener bind: loopback always passes, anything else
 /// requires the explicit remote opt-in.
 ///
+/// The predicate is the shared CLI listener gate in the parent module, not a
+/// second copy: `serve`, `record`, and the proxy must never disagree about
+/// which addresses are allowed. Only the consequence text is proxy-specific,
+/// because a public forward proxy is an open relay rather than one exposed
+/// fixture. The parent gate lives outside this `intercept`-gated module
+/// precisely so a default build cannot lose it.
+///
 /// Returns the failure-class/message pair on denial.
 #[cfg(any(test, feature = "intercept"))]
 pub fn check_listener_bind(
     bind: SocketAddr,
     allow_non_loopback: bool,
 ) -> Result<(), (String, String)> {
-    if bind.ip().is_loopback() || allow_non_loopback {
-        Ok(())
-    } else {
-        Err((
-            "configuration".to_owned(),
+    super::check_listener_bind(bind, allow_non_loopback).map_err(|(class, _)| {
+        (
+            class,
             format!(
                 "refusing non-loopback proxy bind on {bind}: remote listeners require \
                  --allow-non-loopback and an operator-managed ingress allow policy; \
                  remote exposure without proxy authentication creates an open forward proxy"
             ),
-        ))
-    }
+        )
+    })
 }
 
 /// Dispatch `eggreplay proxy ...`.
@@ -511,23 +517,8 @@ async fn proxy_record(args: ProxyRecordArgs) -> Result<(), (String, String)> {
     };
 
     check_listener_bind(args.listen, args.allow_non_loopback)?;
-    if args.fixture.exists() && !args.overwrite {
-        super::emit(
-            "proxy-record",
-            args.output.output,
-            false,
-            Some("configuration"),
-            serde_json::json!({"fixture": args.fixture}),
-        );
-        return Err((
-            "configuration".into(),
-            "fixture exists; pass --overwrite to replace it".to_owned(),
-        ));
-    }
-    if args.fixture.exists() {
-        std::fs::remove_dir_all(&args.fixture)
-            .map_err(|error| ("runtime".into(), error.to_string()))?;
-    }
+    // Policy, route, CA, and limit validation all happen before the
+    // replacement target is inspected or any directory is touched.
     let (file_policy, target_policy) = load_record_policy(&args)?;
     let default_action = file_policy.default_connect_action();
     let (redaction, profile_id) = super::redaction_policy(
@@ -622,8 +613,25 @@ async fn proxy_record(args: ProxyRecordArgs) -> Result<(), (String, String)> {
         None
     };
 
-    let session = eggreplay_store::RecordingSession::create(
+    if let Err(error) = super::check_replacement_target(&args.fixture, args.overwrite, "fixture") {
+        super::emit(
+            "proxy-record",
+            args.output.output,
+            false,
+            Some("configuration"),
+            serde_json::json!({"fixture": args.fixture}),
+        );
+        return Err(error);
+    }
+    // Record into a sibling staging destination; the target is swapped only
+    // after finalization and validation, and every early return removes the
+    // staging tree.
+    let mut staging = super::StagingGuard::new(super::sibling_transaction_path(
         &args.fixture,
+        "proxy-record",
+    ));
+    let session = eggreplay_store::RecordingSession::create(
+        staging.path(),
         eggreplay_core::SessionMetadata {
             capture_mode: "explicit-proxy".into(),
             target: Some(redacted_route.clone()),
@@ -669,6 +677,11 @@ async fn proxy_record(args: ProxyRecordArgs) -> Result<(), (String, String)> {
     let recorded = eggreplay_http::recording::finish_recording_session(session)
         .await
         .map_err(|error| ("fixture".into(), error.to_string()))?;
+    let recorded_flows = recorded.manifest().flow_count;
+    drop(recorded);
+    super::replace_fixture_transactionally(staging.path(), &args.fixture)
+        .map_err(|error| ("runtime".into(), error))?;
+    staging.disarm();
     let snapshot = stats.snapshot();
     let payload = serde_json::json!({
         "bind": bind.to_string(),
@@ -682,7 +695,7 @@ async fn proxy_record(args: ProxyRecordArgs) -> Result<(), (String, String)> {
         "rejected": snapshot.rejected,
         "tunneled": snapshot.tunneled,
         "intercepted": snapshot.intercepted,
-        "recorded_flows": recorded.manifest().flow_count,
+        "recorded_flows": recorded_flows,
         "failures": snapshot.failures,
         "route": redacted_route,
         "fixture": args.fixture,

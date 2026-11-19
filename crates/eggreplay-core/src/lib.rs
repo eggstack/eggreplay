@@ -11,6 +11,7 @@ pub mod report;
 pub mod scenario;
 pub mod security;
 pub mod stream;
+pub mod text;
 pub mod websocket;
 
 pub use config::{
@@ -46,6 +47,7 @@ pub use stream::{
     FlowStreamEvents, SseEvent, SseParseResult, StreamDirection, StreamEvent, StreamEventKind,
     StreamEvents, StreamTimingMode, compare_sse, parse_sse, timeline_order_offsets,
 };
+pub use text::truncate_utf8_boundary;
 pub use websocket::{
     WEBSOCKET_SCHEMA_VERSION, WebSocketConversation, WebSocketDirection, WebSocketLimits,
     WebSocketMessage, WebSocketMessageKind, WebSocketRedaction, WebSocketTerminal,

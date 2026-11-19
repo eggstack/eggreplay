@@ -105,10 +105,15 @@ impl ErrorPhase {
 
 impl FlowError {
     /// Construct a bounded semantic error.
+    ///
+    /// The message is truncated to 512 bytes on a UTF-8 character boundary,
+    /// so a multi-byte character straddling the limit can never panic.
     pub fn new(category: ErrorCategory, phase: ErrorPhase, message: impl Into<String>) -> Self {
+        const MAX_MESSAGE_BYTES: usize = 512;
         let mut message = message.into();
-        if message.len() > 512 {
-            message.truncate(512);
+        if message.len() > MAX_MESSAGE_BYTES {
+            let boundary = crate::truncate_utf8_boundary(&message, MAX_MESSAGE_BYTES).len();
+            message.truncate(boundary);
         }
         Self {
             category,
@@ -172,5 +177,26 @@ mod tests {
         assert!(ErrorCategory::ConnectionRefused.as_str().len() <= 64);
         assert!(ErrorCategory::Unreachable.as_str().len() <= 64);
         assert!(ErrorPhase::Headers.as_str().len() <= 64);
+    }
+
+    /// Byte 512 falls inside the 171st `€` of a 900-byte message. The old
+    /// `String::truncate(512)` panicked; the bounded constructor must return
+    /// a typed, valid-UTF-8 error instead.
+    #[test]
+    fn multibyte_message_truncates_on_a_character_boundary() {
+        let original = "€".repeat(300);
+        let error = FlowError::new(ErrorCategory::Protocol, ErrorPhase::Body, original.clone());
+        assert_eq!(error.message.len(), 510);
+        assert!(original.starts_with(&error.message));
+        assert_eq!(error.message, "€".repeat(170));
+        // No ellipsis is appended: bounded `FlowError` output keeps its
+        // byte-for-byte prefix contract.
+        assert!(!error.message.ends_with('…'));
+    }
+
+    #[test]
+    fn short_message_is_unchanged() {
+        let error = FlowError::new(ErrorCategory::Policy, ErrorPhase::Policy, "short é");
+        assert_eq!(error.message, "short é");
     }
 }

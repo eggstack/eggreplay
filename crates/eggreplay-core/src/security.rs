@@ -4,6 +4,26 @@ use crate::{Flow, HeaderEntry, RedactionMarker};
 use serde_json::Value;
 use std::collections::BTreeSet;
 
+/// Header names redacted by [`RedactionConfig::default_secure`].
+///
+/// The curated set is deliberately limited to credential-bearing headers.
+/// `location` and `referer` are excluded because they are functional replay
+/// data (a response `Location` drives redirects), and `x-csrf-token` is
+/// excluded because replaying a CSRF-protected request may require the
+/// recorded token. Operators add either explicitly with `--redact-header`.
+pub const DEFAULT_SENSITIVE_HEADERS: &[&str] = &[
+    "authorization",
+    "proxy-authorization",
+    "cookie",
+    "set-cookie",
+    "x-api-key",
+    "api-key",
+    "x-auth-token",
+    "x-access-token",
+    "x-amz-security-token",
+    "x-goog-api-key",
+];
+
 /// Explicit redaction selectors applied before fixture publication.
 #[derive(Debug, Clone, Default)]
 pub struct RedactionConfig {
@@ -19,15 +39,10 @@ impl RedactionConfig {
     /// Construct the secure default profile.
     pub fn default_secure() -> Self {
         Self {
-            headers: [
-                "authorization",
-                "proxy-authorization",
-                "cookie",
-                "set-cookie",
-            ]
-            .into_iter()
-            .map(str::to_owned)
-            .collect(),
+            headers: DEFAULT_SENSITIVE_HEADERS
+                .iter()
+                .map(|name| (*name).to_owned())
+                .collect(),
             query_keys: BTreeSet::new(),
             json_paths: BTreeSet::new(),
         }
@@ -350,5 +365,96 @@ mod tests {
         let (redacted_form, matched) = apply_form_redaction(form, &keys).unwrap();
         assert!(matched);
         assert!(!redacted_form.windows(8).any(|window| window == b"SENTINEL"));
+    }
+
+    #[test]
+    fn default_secure_covers_curated_credential_headers_and_no_query_keys() {
+        let config = RedactionConfig::default_secure();
+        let expected: BTreeSet<String> = [
+            "authorization",
+            "proxy-authorization",
+            "cookie",
+            "set-cookie",
+            "x-api-key",
+            "api-key",
+            "x-auth-token",
+            "x-access-token",
+            "x-amz-security-token",
+            "x-goog-api-key",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+        assert_eq!(config.headers, expected);
+        assert!(config.query_keys.is_empty());
+        assert!(config.json_paths.is_empty());
+        // Deliberate exclusions: functional replay data, not credentials, and
+        // an operator-visible residual rather than a silent default.
+        for excluded in ["location", "referer", "x-csrf-token"] {
+            assert!(!config.headers.contains(excluded));
+        }
+    }
+
+    #[test]
+    fn default_redacted_api_key_is_a_matcher_wildcard() {
+        use crate::{
+            BodyRef, ConsumptionMode, FLOW_SCHEMA_VERSION, Flow, FlowOutcome, HttpResponse,
+            MatchCandidate, MatchResult, Matcher, MatcherSession, Provenance,
+        };
+        let mut flow = Flow {
+            schema_version: FLOW_SCHEMA_VERSION,
+            id: "flow-api-key".into(),
+            started_at_ms: 1,
+            completed_at_ms: Some(2),
+            request: crate::HttpRequest {
+                method: "GET".into(),
+                scheme: "http".into(),
+                authority: "example.test".into(),
+                path: "/keyed".into(),
+                query: vec![],
+                headers: vec![HeaderEntry {
+                    name: "X-Api-Key".into(),
+                    value: "SENTINEL-API-KEY".into(),
+                }],
+                body: BodyRef::Empty,
+                trailers: vec![],
+            },
+            outcome: FlowOutcome::Response(HttpResponse {
+                status: 200,
+                headers: vec![],
+                body: BodyRef::Empty,
+                trailers: vec![],
+            }),
+            physical_route: None,
+            provenance: Provenance {
+                mode: "test".into(),
+                observer: "test".into(),
+            },
+            annotations: vec![],
+            redactions: vec![],
+        };
+        redact_flow(&mut flow, &RedactionConfig::default_secure(), "default-v1");
+        assert_eq!(flow.request.headers[0].value, "<redacted>");
+        assert!(
+            flow.redactions
+                .iter()
+                .any(|marker| marker.field == "request.headers.X-Api-Key"),
+            "redaction must be marked so the matcher can wildcard it"
+        );
+        let candidate = MatchCandidate::from_flow(flow);
+        let mut actual = candidate.flow.request.clone();
+        actual.headers[0].value = "a completely different key".into();
+        let mut session = MatcherSession::new();
+        assert_eq!(
+            Matcher::strict(4).select(
+                &actual,
+                b"",
+                std::slice::from_ref(&candidate),
+                ConsumptionMode::Once,
+                &mut session
+            ),
+            MatchResult::Matched(0),
+            "a credential header redacted by the default set must match as a wildcard"
+        );
     }
 }

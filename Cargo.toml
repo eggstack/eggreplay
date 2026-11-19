@@ -77,7 +77,7 @@ eggnet-tls = { version = "=0.2.0" }
 # false` keeps the H1/direct graph clean; `http2`/`tls` are turned on only by
 # the `h2-inbound`/`h2-inbound-tls` features of `eggreplay-http`.
 eggserve-core = { version = "=0.4.0", default-features = false }
-rustls = { version = "=0.23.45", default-features = false, features = ["ring", "std", "tls12"] }
+rustls = { version = "=0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
 tokio-rustls = { version = "=0.26.2", default-features = false, features = ["ring", "tls12"] }
 rcgen = { version = "=0.13.2", default-features = false, features = ["ring", "pem", "x509-parser"] }
 

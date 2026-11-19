@@ -1,8 +1,22 @@
 name: CI
 
+# Third-party actions are pinned to immutable commit SHAs; the trailing comment
+# names the release the SHA was resolved from. `dtolnay/rust-toolchain`
+# publishes no releases, so its SHA is the reviewed tip of the `stable` branch
+# and the toolchain itself is selected by the `toolchain` input (the action
+# defaults to `stable` when the input is omitted).
 on:
   push:
   pull_request:
+  schedule:
+    # Weekly advisory refresh (M021E): a new RUSTSEC entry fails the
+    # `dependency-policy` job even when the tree has not changed.
+    - cron: '17 5 * * 1'
+
+# Least privilege: every job reads the repository and nothing else. No job
+# needs a write scope, an Actions secret, or an OIDC token.
+permissions:
+  contents: read
 
 jobs:
   verify:
@@ -18,8 +32,8 @@ jobs:
             toolchain: "1.89.0"
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
         with:
           toolchain: ${{ matrix.toolchain }}
           components: rustfmt, clippy
@@ -48,14 +62,14 @@ jobs:
             toolchain: stable
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
         with:
           toolchain: ${{ matrix.toolchain }}
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: ${{ matrix.python }}
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
         with:
           version: '0.8.22'
       - run: uv run --directory crates/eggreplay-python --with maturin==1.14.1 --with pytest==8.4.2 --with pytest-asyncio==1.2.0 --with pytest-xdist==3.8.0 maturin develop
@@ -105,17 +119,17 @@ jobs:
   python-abi3-cross-version:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: '3.11'
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
         with:
           version: '0.8.22'
       - name: Build abi3 wheel under CPython 3.11
         run: uv run --directory crates/eggreplay-python --python 3.11 --with maturin==1.14.1 maturin build --locked --out $GITHUB_WORKSPACE/target/python-wheels
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: '3.14'
       - name: Install the same wheel under CPython 3.14
@@ -126,8 +140,8 @@ jobs:
   dependency-boundary:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
         with:
           toolchain: stable
       # Core/store must not pull transport runtimes.
@@ -162,8 +176,8 @@ jobs:
     # pipe/`&&`/`||` chains portable across runners.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
         with:
           toolchain: stable
       - name: Ordinary profiles exclude the EggServe Core multiprotocol closure
@@ -366,6 +380,31 @@ jobs:
           fi
           echo "inbound H2 and the gRPC view are both opt-in"
 
+  dependency-policy:
+    # M021E supply-chain gate: advisories and yanked crates, licenses,
+    # duplicate crates (reported, not banned), and crate sources. Deliberately
+    # separate from `dependency-boundary`/`protocol-boundary`, which assert
+    # transport and capability boundaries rather than dependency policy. The
+    # weekly `schedule` trigger makes a new advisory fail an unchanged tree;
+    # the known exceptions are reasoned entries in `deny.toml`.
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+        with:
+          toolchain: stable
+      - name: Install pinned cargo-deny
+        # A tool update must be a reviewed change: no floating install and no
+        # `@latest` action. 0.20.2 is the version the policy in `deny.toml`
+        # was validated against.
+        run: cargo install cargo-deny --locked --version 0.20.2
+      - name: Dependency policy (advisories, bans, licenses, sources)
+        # `deny.toml` sets `all-features = true`, so this covers the widest
+        # workspace graph without repeating the flag here.
+        run: cargo deny check advisories bans licenses sources
+
   interception:
     # M013F qualification lane: deterministic local CA/CONNECT/MITM coverage
     # that the ordinary all-features matrix also runs, pinned here so the
@@ -377,8 +416,8 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
         with:
           components: rustfmt, clippy
       # Minimum-feature graphs: default builds stay interception-free (tree

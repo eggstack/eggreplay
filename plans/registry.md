@@ -82,6 +82,7 @@ boundary, and ADR 0008 owns interception security/transport ownership.
 | M017 | `implementation/corrective/m017-unterminated-bidi-grpc.md` | closed | M016 closure, M015D closure | un-terminated bidirectional gRPC: classified body errors, pinned replay contract |
 | M018 | `implementation/corrective/m018-candidate-error-attribution-and-h2-body-diagnostics.md` | closed | M017 closure | shared error table; 413 for a declared oversized body; retired the mis-measured H2 header-list limitation |
 | M019 | `implementation/corrective/m019-comparison-authority.md` | closed | M018 (closed) | comparison authority: `date` normalization with a visible suppression, `TimingAssertion` wired to CLI and Python, request-direction stream comparison resolved by removal, gRPC decision, `curl_interop` record |
+| M020 | `implementation/corrective/m020-dependency-advisory-remediation.md` | implemented | M019 (closed) | patched advisory dependencies; full locked local gate passed; optional SSH advisories remain dispositioned pending upstream fix |
 
 ### Current execution gate
 
@@ -284,6 +285,40 @@ reproducible rather than deleted. Local gate: 495 passed, 2 failed (both the
 known machine-specific `curl_interop` pair). See
 `closure/m019-comparison-authority.md`.
 
+M020 is implemented locally: rustls is at 0.23.46, the targeted lockfile
+patches are applied, the full locked workspace gate passed, and the default,
+interception, and Python boundary checks remain free of `eggserve-core` and
+`eggserve-static`. `cargo audit` still reports three vulnerabilities confined
+to the inactive optional russh/rsa SSH graph, plus the unmaintained `chrono`
+warning. Hosted CI qualification is pending, so M020 remains open. See
+`implementation/corrective/m020-dependency-advisory-remediation.md`.
+
+M021 is the security audit remediation program opened after the 2026-11-17
+read-only audit. All five subplans are implemented on the local worktree: the
+full locked workspace gate passes (591 tests, 0 failures), `cargo deny check
+advisories bans licenses sources` passes with four reasoned exceptions, and the
+two High findings were reproduced against the post-fix binary. Hosted
+qualification is pending and no closure records exist yet; M021A–M021E remain
+`implemented`, not `closed`. M021E's advisory exceptions still depend on
+M020's hosted qualification and the planned Eggress transport change.
+See `implementation/corrective/m021-security-audit-remediation.md`.
+
+## Security audit remediation workstream
+
+Opened from the 2026-11-17 read-only audit. M021 is the tracking umbrella;
+M021A–M021E are independently executable and locally implemented. Closure for
+each requires the committed revision's hosted lanes, and M021E's advisory
+exceptions remain until M020 qualifies and Eggress adopts patched
+`russh`/`rsa`; the `chrono` migration is a separate, scheduled plan.
+
+| ID | Plan | Status | Depends on | Primary result |
+|---|---|---|---|---|
+| M021 | `implementation/corrective/m021-security-audit-remediation.md` | implemented | — | tracking umbrella; closes when M021A–M021E close |
+| M021A | `implementation/corrective/m021a-redaction-completeness.md` | implemented | — | stream-event trailer values never persisted; curated secret-header defaults; WebSocket fail-safe; warnings and HAR-output hardening |
+| M021B | `implementation/corrective/m021b-destructive-path-safety.md` | implemented | — | fixture-aware replacement target; validate-before-delete; failed operations preserve the old fixture |
+| M021C | `implementation/corrective/m021c-untrusted-input-hardening.md` | implemented | — | bounded manifest/JSONL/HAR reads; UTF-8-safe truncation; parser fuzz harnesses |
+| M021D | `implementation/corrective/m021d-listener-and-request-boundaries.md` | implemented | — | non-loopback opt-in for `serve`/`record`/Python; regression header filtering; route redaction |
+| M021E | `implementation/corrective/m021e-supply-chain-and-security-governance.md` | implemented | M020 (implemented; advisory baseline) | least-privilege pinned workflows; deny/audit/license gate; reporting governance |
 ## Canonical planning documents
 
 | Document | Purpose |

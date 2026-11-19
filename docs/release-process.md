@@ -13,12 +13,39 @@ cargo fmt --all -- --check \
 ```
 
 Then the hosted `verify`, `dependency-boundary`, `protocol-boundary`,
-`python-bindings`, `python-abi3-cross-version`, and `interception` lanes must be
-green. The boundary lanes matter as much as the test lane: a release that
-carries a protocol or codec into a default profile is a boundary break even
-when every test passes.
+`dependency-policy`, `python-bindings`, `python-abi3-cross-version`, and
+`interception` lanes must be green. The boundary lanes matter as much as the
+test lane: a release that carries a protocol or codec into a default profile is
+a boundary break even when every test passes.
 
-Run a dependency/advisory review (`cargo audit`) before publication.
+Run a dependency/advisory review before publication. The hosted
+`dependency-policy` job runs `cargo deny check advisories bans licenses sources`
+against the resolved graph (policy and exceptions: [`deny.toml`](../deny.toml));
+`cargo audit` remains a useful second opinion because it scans the whole
+lockfile, including optional dependencies no feature graph activates.
+
+## Repository security settings (operator actions)
+
+These are GitHub repository/organization settings, not files in the tree, so a
+review of the checkout cannot assert them. The repository owner must confirm
+them for the qualifying revision:
+
+- **Private vulnerability reporting** enabled, so the private disclosure route
+  described by `SECURITY.md` actually exists.
+- **Secret scanning and push protection** enabled for the repository.
+- **Dependabot alerts and Dependabot security updates** enabled.
+  `.github/dependabot.yml` schedules version updates only; it never auto-merges,
+  and no workflow in this repository does.
+- **Branch protection / ruleset for `main`** requiring a pull request and the
+  `verify`, `dependency-boundary`, `protocol-boundary`, `dependency-policy`,
+  `python-bindings`, `python-abi3-cross-version`, and `interception` checks, and
+  blocking force pushes and branch deletion.
+- **Organization access review** for Actions secrets and environments. The
+  workflows here declare `contents: read` and use no secrets; confirm that is
+  still true before granting one.
+
+The closure record states which of these were verified for the qualifying
+revision and which remain operator actions.
 
 ## Declared dependency revisions
 

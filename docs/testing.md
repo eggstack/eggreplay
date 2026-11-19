@@ -68,3 +68,39 @@ and incomplete manifests.
 Golden fixtures are in `crates/eggreplay-store/tests/fixtures/` and HAR corpus
 files are in `crates/eggreplay-har/tests/corpus/`. Both directories are excluded
 from the published package.
+
+## Parser fuzzing (M021C, nightly, local)
+
+`fuzz/` is a standalone `cargo-fuzz` workspace with an empty `[workspace]`
+table. It is deliberately **not** a member of the product workspace, so the
+locked gate never requires nightly and no fuzz crate enters a shipped graph.
+Every target writes only below a per-iteration temporary directory, uses small
+`StoreLimits`, and never touches the network or a non-temp path.
+
+Targets:
+
+| Target | Surface |
+|---|---|
+| `har_import` | arbitrary bytes into `eggreplay_har::import_har_to_writer` |
+| `session_open` | `manifest.json`, `flows.jsonl`, `stream-events.json`, `websockets.jsonl` under `Session::open` |
+| `websocket_transcript` | transcript bytes and text-payload UTF-8 through `Session::open`/`SessionWriter::finish` |
+
+Local acceptance is a 60-second run per target:
+
+```sh
+cargo install cargo-fuzz            # once, if `cargo fuzz` is absent
+cd fuzz
+cargo +nightly fuzz build
+cargo +nightly fuzz run har_import -- -max_total_time=60 -max_len=4096
+cargo +nightly fuzz run session_open -- -max_total_time=60 -max_len=4096
+cargo +nightly fuzz run websocket_transcript -- -max_total_time=60 -max_len=4096
+```
+
+A ten-second run per target is enough to prove execution during development.
+`cargo +nightly fuzz build` is the compile check. Any crash writes an artifact
+under `fuzz/artifacts/<target>/`; replay it with
+`cargo +nightly fuzz run <target> fuzz/artifacts/<target>/<artifact>`. The
+`.github/workflows/fuzz.yml` lane runs each target for 60 seconds weekly and on
+manual dispatch, uploads the corpus and any crash artifact, and is deliberately
+not a required pull-request gate. A bounded smoke does not prove the absence of
+bugs.

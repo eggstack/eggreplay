@@ -30,9 +30,12 @@ curl http://127.0.0.1:8080/api.json
 ```
 
 Press `Ctrl-C` in terminal 1 to finalize the fixture. Recording publishes a
-fixture only after a clean shutdown. An interrupted recording leaves an
-`.incomplete-*` staging directory instead of a completed fixture. Existing
-fixtures are never replaced unless you pass `--overwrite`.
+fixture only after a clean shutdown, and a failed recording or shutdown removes
+its staging tree. Only a crash or `SIGKILL` can leave a hidden `.incomplete-*`
+directory; it is never reused or swept automatically. An existing path is never
+replaced unless you pass `--overwrite`, and then only when it is a valid
+fixture or an empty directory. Any other existing path is refused and left
+untouched.
 
 A `.eggr` fixture is a directory containing a manifest, flow records,
 content-addressed body blobs, and any required extensions.
@@ -67,6 +70,12 @@ curl http://127.0.0.1:9100/api.json
 
 The response comes from the fixture. Press `Ctrl-C` in terminal 1 to stop the
 server.
+
+`record` and `serve` accept a routable `--listen` address only with the explicit
+`--allow-non-loopback` opt-in. There is no authentication on either listener:
+anyone who can reach it can consume the fixture or drive the upstream through
+the recorder, and TLS is not authentication. Keep the loopback default unless
+you have your own ingress controls.
 
 A gateway recording stores the upstream authority it reached, so replay must
 use `127.0.0.1:9100` here, not the recorder's `8080` address. A request with a

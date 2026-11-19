@@ -11,7 +11,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use eggreplay_core::SessionMetadata;
+use eggreplay_core::{RedactionConfig, SessionMetadata};
 use eggreplay_intercept::{
     CaAuthority, CaOptions, ConnectAction, ExplicitProxyConfig, ExplicitProxyHandle, HostMatch,
     LeafIssuer, LeafOptions, MitmConfig, PortMatch, ProxyListenerConfig, ProxyRoute, RequestKind,
@@ -360,6 +360,21 @@ async fn start_mitm(
     route: ProxyRoute,
     origin_trust_pem: Option<&[u8]>,
 ) -> MitmFixture {
+    start_mitm_with_redaction(
+        policy,
+        route,
+        origin_trust_pem,
+        RedactionConfig::default_secure(),
+    )
+    .await
+}
+
+async fn start_mitm_with_redaction(
+    policy: TargetPolicy,
+    route: ProxyRoute,
+    origin_trust_pem: Option<&[u8]>,
+    redaction: RedactionConfig,
+) -> MitmFixture {
     let dir = tempfile::TempDir::new().unwrap();
     let session = RecordingSession::create(
         dir.path().join("fixture"),
@@ -372,6 +387,7 @@ async fn start_mitm(
     let ca_der = ca.cert_der().to_vec();
     let issuer = Arc::new(LeafIssuer::new(ca, &LeafOptions::default()).unwrap());
     let mut mitm = MitmConfig::new(issuer);
+    mitm.redaction = redaction.clone();
     if let Some(pem) = origin_trust_pem {
         mitm.upstream_tls = Some(
             eggfetch_core::TlsConfig::builder()
@@ -381,6 +397,7 @@ async fn start_mitm(
         );
     }
     let mut config = ExplicitProxyConfig::new(session.clone(), policy, route);
+    config.redaction = redaction;
     config.mitm = Some(mitm);
     let listener = ProxyListenerConfig::loopback("127.0.0.1:0".parse().unwrap()).unwrap();
     let handle = start_explicit_proxy(listener, config).await.unwrap();
@@ -1878,6 +1895,132 @@ async fn mitm_session_finalizes_after_tls_and_protocol_failures() {
     assert!(
         flows.contains("/ok"),
         "only the healthy flow persists: {flows}"
+    );
+    origin_task.abort();
+}
+
+/// The privileged MITM path must obey the same stream-event trailer policy as
+/// the direct gateway: names/order/duplicates survive, values never persist.
+// One end-to-end MITM scenario: request/response trailers, publication, and
+// stream-event assertions all describe the same recorded conversation.
+#[allow(clippy::too_many_lines)]
+#[tokio::test]
+async fn mitm_never_persists_stream_event_trailer_values() {
+    const REQUEST_SENTINEL: &str = "M021A-MITM-REQUEST-TRAILER-3fa9";
+    const RESPONSE_SENTINEL: &str = "M021A-MITM-RESPONSE-TRAILER-c14e";
+
+    let origin_cert = make_origin_cert(&["localhost", "127.0.0.1"]);
+    let origin_pem = origin_cert.cert_pem.clone();
+    let (origin_port, captured, origin_task) = start_tls_origin(origin_cert, |request| {
+        assert!(
+            request
+                .trailers
+                .iter()
+                .any(|(name, value)| name == "x-mitm-req" && value == REQUEST_SENTINEL),
+            "the request trailer must reach the origin verbatim: {:?}",
+            request.trailers
+        );
+        chunked_origin_response(
+            &[b"hello"],
+            &[
+                ("x-mitm-resp", RESPONSE_SENTINEL),
+                ("x-dup", "one"),
+                ("x-dup", "two"),
+            ],
+        )
+    })
+    .await;
+    let mut redaction = RedactionConfig::default_secure();
+    redaction.headers.insert("x-mitm-req".into());
+    redaction.headers.insert("x-mitm-resp".into());
+    let proxy = start_mitm_with_redaction(
+        intercept_local_policy(),
+        ProxyRoute::direct(),
+        Some(origin_pem.as_bytes()),
+        redaction,
+    )
+    .await;
+    let authority = format!("127.0.0.1:{origin_port}");
+    let request = format!(
+        "POST /mitm-trailers HTTP/1.1\r\nHost: {authority}\r\nTransfer-Encoding: chunked\r\nTE: trailers\r\nTrailer: x-mitm-req\r\nConnection: close\r\n\r\n5\r\nhello\r\n0\r\nX-Mitm-Req: {REQUEST_SENTINEL}\r\n\r\n"
+    );
+    let (head, body) = https_exchange(
+        proxy.handle.local_addr(),
+        &proxy.ca_der,
+        &authority,
+        &ip_options(Some("127.0.0.1")),
+        request.as_bytes(),
+    )
+    .await;
+    assert!(
+        status_line(&head).starts_with("HTTP/1.1 200"),
+        "intercepted POST must succeed; got: {}",
+        status_line(&head)
+    );
+    assert_eq!(decode_chunked(&body), b"hello");
+    assert_eq!(captured.lock().await.len(), 1);
+
+    let dir = proxy.dir.path().to_owned();
+    proxy.handle.shutdown();
+    proxy.handle.wait().await;
+    proxy.session.shutdown();
+    let published = proxy.session.finish().unwrap();
+    for sentinel in [REQUEST_SENTINEL, RESPONSE_SENTINEL] {
+        assert!(
+            !dir_contains(&dir, sentinel),
+            "MITM fixture must not contain {sentinel}"
+        );
+    }
+    let extension = published
+        .read_extension("stream-events")
+        .unwrap()
+        .expect("stream events extension");
+    let text = String::from_utf8_lossy(&extension).into_owned();
+    for sentinel in [REQUEST_SENTINEL, RESPONSE_SENTINEL] {
+        assert!(!text.contains(sentinel), "stream-events leaks {sentinel}");
+    }
+    let events: eggreplay_core::StreamEvents = serde_json::from_slice(&extension).unwrap();
+    let flow = published.iter_flows().unwrap().next().unwrap().unwrap();
+    let flow_events = events
+        .flows
+        .iter()
+        .find(|events| events.flow_id == flow.id)
+        .expect("MITM flow stream events");
+    for direction in [&flow_events.request, &flow_events.response] {
+        let fields = direction
+            .iter()
+            .find_map(|event| match &event.event {
+                eggreplay_core::StreamEventKind::Trailers { fields } => Some(fields),
+                _ => None,
+            })
+            .expect("trailer event");
+        assert!(
+            fields.iter().all(|field| field.value == "<redacted>"),
+            "every stream-event trailer value must be suppressed: {fields:?}"
+        );
+    }
+    let response = match &flow.outcome {
+        eggreplay_core::FlowOutcome::Response(response) => response,
+        other @ eggreplay_core::FlowOutcome::Error(_) => {
+            panic!("expected a response, got {other:?}")
+        }
+    };
+    assert!(
+        response
+            .trailers
+            .iter()
+            .filter(|field| field.name == "x-dup")
+            .count()
+            == 2,
+        "duplicate trailers survive: {:?}",
+        response.trailers
+    );
+    assert!(
+        flow.annotations
+            .iter()
+            .any(|(key, value)| key == "redaction" && value == "stream-trailers-values-suppressed"),
+        "MITM flow must carry the suppression annotation: {:?}",
+        flow.annotations
     );
     origin_task.abort();
 }

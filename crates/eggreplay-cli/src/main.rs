@@ -14,7 +14,7 @@ use serde::Serialize;
 use serde_json::json;
 use std::fmt::Write as _;
 use std::io::Read as _;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 mod intercept;
@@ -166,10 +166,18 @@ struct RecordArgs {
     timeout: TimeoutArgs,
     #[arg(long)]
     listen: std::net::SocketAddr,
+    /// Bind the recording gateway beyond loopback. The listener is
+    /// unauthenticated: any client that can reach it can drive this upstream
+    /// through the recorder, and TLS does not add authentication.
+    #[arg(long, default_value_t = false)]
+    allow_non_loopback: bool,
     #[arg(long)]
     upstream: String,
+    /// Fixture directory; may be absent, empty, or a valid fixture.
     #[arg(long)]
     fixture: PathBuf,
+    /// Replace an existing fixture or empty directory. Any other existing path
+    /// is refused; a failed recording leaves the old fixture untouched.
     #[arg(long, default_value_t = false)]
     overwrite: bool,
     /// Additional sensitive header names (added to secure defaults unless replaced).
@@ -212,11 +220,19 @@ struct ServeArgs {
     outbound_version: OutboundVersionArgs,
     #[command(flatten)]
     timeout: TimeoutArgs,
+    /// Fixture directory. `re-record` replaces an existing fixture or empty
+    /// directory and refuses any other existing path.
     #[arg(long)]
     fixture: PathBuf,
     #[arg(long, default_value = "127.0.0.1:0")]
     listen: std::net::SocketAddr,
-    /// Record behavior; defaults to sealed offline replay.
+    /// Bind the replay server beyond loopback. The listener is
+    /// unauthenticated: any client that can reach it can consume this
+    /// fixture, and TLS does not add authentication.
+    #[arg(long, default_value_t = false)]
+    allow_non_loopback: bool,
+    /// Record behavior; defaults to sealed offline replay. `re-record` stages
+    /// a replacement and swaps it only after the new fixture validates.
     #[arg(long, value_enum, default_value_t = ServeRecordMode::Sealed)]
     record_mode: ServeRecordMode,
     /// Required for network-capable record modes.
@@ -612,8 +628,11 @@ enum HarAction {
 struct HarImportArgs {
     #[arg(long)]
     har: PathBuf,
+    /// Fixture directory; may be absent, empty, or a valid fixture.
     #[arg(long)]
     fixture: PathBuf,
+    /// Replace an existing fixture or empty directory. Any other existing path
+    /// is refused; a malformed HAR leaves the old fixture untouched.
     #[arg(long, default_value_t = false)]
     overwrite: bool,
     #[arg(long = "loss-report")]
@@ -651,19 +670,27 @@ struct HarExportArgs {
 struct MigrateArgs {
     #[arg(long)]
     fixture: PathBuf,
-    /// Destination fixture directory. Mutually exclusive with `--in-place`.
-    /// Named `--to` (not `--output`) because `--output` selects the result
-    /// envelope format (`human|json|junit`) on every command.
+    /// Destination fixture directory; may be absent, empty, or a valid
+    /// fixture. Mutually exclusive with `--in-place`. Named `--to` (not
+    /// `--output`) because `--output` selects the result envelope format
+    /// (`human|json|junit`) on every command.
     #[arg(long)]
     to: Option<PathBuf>,
     #[arg(long, default_value_t = false)]
     in_place: bool,
+    /// Replace an existing fixture or empty destination directory. Any other
+    /// existing path is refused; a failed migration leaves it untouched.
     #[arg(long, default_value_t = false)]
     overwrite: bool,
     /// Target session schema (defaults to current). Schema 1 fixtures upgrade
     /// to current; current-to-current migration must be idempotent.
     #[arg(long)]
     target_schema: Option<u16>,
+    /// Rewrite every `stream-events` trailer value to `<redacted>` inside the
+    /// transactional migration. Opt-in remediation for fixtures recorded
+    /// before stream-event values were suppressed.
+    #[arg(long = "scrub-stream-trailers", default_value_t = false)]
+    scrub_stream_trailers: bool,
     #[command(flatten)]
     output: OutputArgs,
 }
@@ -807,16 +834,100 @@ fn build_client_with_version(
     }
 }
 
+/// Refuse to bind an unauthenticated listener beyond loopback.
+///
+/// This is the single exposure gate for every listener the CLI starts:
+/// `serve`, `record`, and — through the thin proxy wrapper in `intercept` —
+/// the explicit proxy. Binding a replay server or a recording gateway to a
+/// routable address publishes a fixture or an upstream to every client that
+/// can reach it, and neither command has any notion of a caller identity.
+/// TLS is not authentication: it protects bytes in transit, it does not tell
+/// the listener *who* connected, so `--inbound-tls` never makes a public bind
+/// safe.
+///
+/// Loopback always passes. Every other address requires the explicit
+/// `--allow-non-loopback` opt-in and is otherwise a `configuration` refusal
+/// (exit `2`).
+///
+/// This lives here, in an always-compiled module, and not in the
+/// `intercept`-gated operator surface: `intercept` is an opt-in Cargo feature,
+/// so a gate that lived behind that `cfg` would silently disappear from every
+/// default build — the build that actually ships `serve` and `record`.
+fn check_listener_bind(
+    bind: std::net::SocketAddr,
+    allow_non_loopback: bool,
+) -> Result<(), (String, String)> {
+    if bind.ip().is_loopback() || allow_non_loopback {
+        return Ok(());
+    }
+    Err((
+        "configuration".to_owned(),
+        format!(
+            "refusing non-loopback listener bind on {bind}: the listener is \
+             unauthenticated and TLS does not add authentication; pass \
+             --allow-non-loopback to bind beyond loopback"
+        ),
+    ))
+}
+
+/// Apply [`check_listener_bind`] to one command invocation.
+///
+/// A refusal is reported the same way for every listener: a `configuration`
+/// envelope on the machine output channel carries the class and the bind, and
+/// the returned error becomes the `configuration: ...` stderr diagnostic. The
+/// gate itself runs before any caller-side filesystem work, so emitting here
+/// cannot report a fixture that was never touched.
+fn enforce_listener_gate(
+    command: &str,
+    output: OutputChoice,
+    bind: std::net::SocketAddr,
+    allow_non_loopback: bool,
+) -> Result<(), (String, String)> {
+    match check_listener_bind(bind, allow_non_loopback) {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            emit(
+                command,
+                output,
+                false,
+                Some("configuration"),
+                json!({"listen": bind}),
+            );
+            Err(error)
+        }
+    }
+}
+
+// Deliberately one linear script: configuration resolution, then the exposure
+// gate, then staging, then the listener, then finalization. That ordering is
+// the contract (a bad config or a refused bind must never touch a fixture), so
+// splitting the body for a line-count lint would obscure it.
+#[allow(clippy::too_many_lines)]
 async fn record(args: RecordArgs) -> Result<(), (String, String)> {
-    // Same ordering rule as `serve`: a configuration mistake is reported
-    // before any filesystem precondition is evaluated.
+    // Same ordering rule as `serve`: every configuration input is resolved
+    // before any filesystem precondition is evaluated, and nothing is deleted,
+    // so a bad route or upstream can never damage an existing fixture.
     let inbound = args
         .inbound
         .resolve()
         .map_err(|error| ("configuration".into(), error))?;
+    // Exposure gate: upstream parsing, target classification, staging, and bind
+    // all come after it.
+    enforce_listener_gate(
+        "record",
+        args.output.output,
+        args.listen,
+        args.allow_non_loopback,
+    )?;
     let timeout = args.timeout.resolve();
-    if args.fixture.exists() && !args.overwrite {
-        let message = "fixture exists; pass --overwrite to replace it".to_string();
+    let upstream = args
+        .upstream
+        .parse()
+        .map_err(|error: http::uri::InvalidUri| ("configuration".into(), error.to_string()))?;
+    let (redaction, profile_id) = effective_redaction_policy(&args);
+    let warning_redaction = redaction.clone();
+    let (client, physical_route) = args.outbound_version.client(&args.route, timeout)?;
+    if let Err(error) = check_replacement_target(&args.fixture, args.overwrite, "fixture") {
         emit(
             "record",
             args.output.output,
@@ -824,16 +935,14 @@ async fn record(args: RecordArgs) -> Result<(), (String, String)> {
             Some("configuration"),
             json!({"fixture": args.fixture}),
         );
-        return Err(("configuration".into(), message));
+        return Err(error);
     }
-    if args.fixture.exists() {
-        std::fs::remove_dir_all(&args.fixture)
-            .map_err(|error| ("runtime".into(), error.to_string()))?;
-    }
-    let (redaction, profile_id) = effective_redaction_policy(&args);
-    let (client, physical_route) = args.outbound_version.client(&args.route, timeout)?;
+    // Record into a sibling staging destination. The target is only touched
+    // after the staged fixture has been finalized and re-opened, and a failed
+    // recording removes the staging tree without touching the target.
+    let mut staging = StagingGuard::new(sibling_transaction_path(&args.fixture, "record"));
     let session = RecordingSession::create(
-        &args.fixture,
+        staging.path(),
         SessionMetadata {
             capture_mode: "gateway".into(),
             target: Some(redact_url(&args.upstream)),
@@ -843,10 +952,6 @@ async fn record(args: RecordArgs) -> Result<(), (String, String)> {
         StoreLimits::default(),
     )
     .map_err(|error| ("fixture".into(), error.to_string()))?;
-    let upstream = args
-        .upstream
-        .parse()
-        .map_err(|error: http::uri::InvalidUri| ("configuration".into(), error.to_string()))?;
     let server = eggreplay_http::recording::start_recording_gateway_with_protocol(
         args.listen,
         upstream,
@@ -888,15 +993,27 @@ async fn record(args: RecordArgs) -> Result<(), (String, String)> {
     session.shutdown();
     eggreplay_http::recording::drain_active_blobs(&session).await;
     let websocket_count = session.websocket_conversation_count().unwrap_or(0);
-    eggreplay_http::recording::finish_recording_session(session)
+    let recorded = eggreplay_http::recording::finish_recording_session(session)
         .await
         .map_err(|error| ("fixture".into(), error.to_string()))?;
-    emit(
+    let warnings = session_redaction_warnings(
+        &recorded,
+        &warning_redaction,
+        args.websockets,
+        args.redact_websocket_text,
+        args.redact_websocket_binary,
+    );
+    drop(recorded);
+    replace_fixture_transactionally(staging.path(), &args.fixture)
+        .map_err(|error| ("runtime".into(), error))?;
+    staging.disarm();
+    emit_with_warnings(
         "record",
         args.output.output,
         true,
         None,
         json!({"fixture": args.fixture, "status": "finalized", "serving": serving, "websocket_acquisition_enabled": args.websockets, "websocket_conversations": websocket_count, "outbound_timeout": args.timeout.describe()}),
+        warnings,
     );
     Ok(())
 }
@@ -909,6 +1026,17 @@ async fn serve(args: ServeArgs) -> Result<(), (String, String)> {
         .inbound
         .resolve()
         .map_err(|error| ("configuration".into(), error))?;
+    // Exposure gate, before fixture recovery and before the record mode is
+    // resolved. It applies to every mode — sealed, `once`, `append-new`, and
+    // `re-record` — because the bind is chosen by the operator, not by the
+    // mode, and no inbound protocol policy can make an unauthenticated
+    // listener safe.
+    enforce_listener_gate(
+        "serve",
+        args.output.output,
+        args.listen,
+        args.allow_non_loopback,
+    )?;
     recover_fixture_transactionally(&args.fixture).map_err(|error| ("fixture".into(), error))?;
     let policy = eggreplay_core::RecordMode::from(args.record_mode)
         .resolve(args.fixture.exists(), args.upstream.is_some())
@@ -1026,6 +1154,7 @@ async fn record_once_from_serve(args: ServeArgs) -> Result<(), (String, String)>
     let upstream = required_upstream(&args)?;
     let (client, physical_route) = args.outbound_version.client(&args.route, timeout)?;
     let (redaction, profile_id) = effective_serve_redaction_policy(&args);
+    let warning_redaction = redaction.clone();
     let session = RecordingSession::create(
         &args.fixture,
         SessionMetadata {
@@ -1081,15 +1210,24 @@ async fn record_once_from_serve(args: ServeArgs) -> Result<(), (String, String)>
     session.shutdown();
     eggreplay_http::recording::drain_active_blobs(&session).await;
     let websocket_count = session.websocket_conversation_count().unwrap_or(0);
-    eggreplay_http::recording::finish_recording_session(session)
+    let recorded = eggreplay_http::recording::finish_recording_session(session)
         .await
         .map_err(|error| ("fixture".into(), error.to_string()))?;
-    emit(
+    let warnings = session_redaction_warnings(
+        &recorded,
+        &warning_redaction,
+        args.websockets,
+        args.redact_websocket_text,
+        args.redact_websocket_binary,
+    );
+    drop(recorded);
+    emit_with_warnings(
         "serve",
         args.output.output,
         true,
         None,
         json!({"fixture": args.fixture, "record_mode": "once", "upstream_enabled": true, "serving": serving, "websocket_acquisition_enabled": args.websockets, "websocket_conversations": websocket_count, "matcher_profile": args.matcher_profile.as_str(), "redaction_profile": args.redaction_profile, "outbound_timeout": args.timeout.describe(), "status": "finalized"}),
+        warnings,
     );
     Ok(())
 }
@@ -1109,6 +1247,7 @@ async fn serve_append_new(args: ServeArgs) -> Result<(), (String, String)> {
         .map_err(|error| ("fixture".into(), error.to_string()))?;
     let (client, physical_route) = args.outbound_version.client(&args.route, timeout)?;
     let (redaction, profile_id) = effective_serve_redaction_policy(&args);
+    let warning_redaction = redaction.clone();
     if profile_id != source.manifest().metadata.redaction_profile {
         return Err((
             "configuration".into(),
@@ -1182,6 +1321,7 @@ async fn serve_append_new(args: ServeArgs) -> Result<(), (String, String)> {
         .await
         .map_err(|error| ("fixture".into(), error.to_string()))?;
     let added_flows = additional.manifest().flow_count;
+    let warnings = session_redaction_warnings(&additional, &warning_redaction, false, false, false);
     let merged = source
         .merge_to(
             &additional,
@@ -1193,12 +1333,13 @@ async fn serve_append_new(args: ServeArgs) -> Result<(), (String, String)> {
     replace_fixture_transactionally(&combined, &args.fixture)
         .map_err(|error| ("runtime".into(), error))?;
     let _ = std::fs::remove_dir_all(&temporary);
-    emit(
+    emit_with_warnings(
         "serve",
         args.output.output,
         true,
         None,
         json!({"fixture": args.fixture, "record_mode": "append-new", "upstream_enabled": true, "serving": serving, "websocket_acquisition_enabled": false, "websocket_conversations": 0, "matcher_profile": args.matcher_profile.as_str(), "redaction_profile": profile_id, "new_flows": added_flows, "status": "finalized"}),
+        warnings,
     );
     Ok(())
 }
@@ -1214,9 +1355,18 @@ async fn serve_re_record(args: ServeArgs) -> Result<(), (String, String)> {
     let upstream = required_upstream(&args)?;
     let (client, physical_route) = args.outbound_version.client(&args.route, timeout)?;
     let (redaction, profile_id) = effective_serve_redaction_policy(&args);
-    let temporary = sibling_transaction_path(&args.fixture, "rerecord");
+    let warning_redaction = redaction.clone();
+    let inbound = args
+        .inbound
+        .resolve()
+        .map_err(|error| ("configuration".into(), error))?;
+    // Re-record implicitly replaces its own fixture. Refuse a path that is not
+    // a valid fixture, an empty directory, or absent *before* binding the
+    // listener, so a typo never starts a recording that could delete data.
+    check_replacement_target(&args.fixture, true, "fixture")?;
+    let mut staging = StagingGuard::new(sibling_transaction_path(&args.fixture, "rerecord"));
     let session = RecordingSession::create(
-        &temporary,
+        staging.path(),
         SessionMetadata {
             capture_mode: "re-record".into(),
             target: Some(redact_url(&args.upstream.clone().unwrap_or_default())),
@@ -1226,10 +1376,6 @@ async fn serve_re_record(args: ServeArgs) -> Result<(), (String, String)> {
         StoreLimits::default(),
     )
     .map_err(|error| ("fixture".into(), error.to_string()))?;
-    let inbound = args
-        .inbound
-        .resolve()
-        .map_err(|error| ("configuration".into(), error))?;
     let server = eggreplay_http::recording::start_recording_gateway_with_protocol(
         args.listen,
         upstream,
@@ -1272,36 +1418,224 @@ async fn serve_re_record(args: ServeArgs) -> Result<(), (String, String)> {
         .await
         .map_err(|error| ("fixture".into(), error.to_string()))?;
     let recorded_flows = recorded.manifest().flow_count;
+    let warnings = session_redaction_warnings(
+        &recorded,
+        &warning_redaction,
+        args.websockets,
+        args.redact_websocket_text,
+        args.redact_websocket_binary,
+    );
     drop(recorded);
-    replace_fixture_transactionally(&temporary, &args.fixture)
+    // A failed recording never reaches this point: `finish` fails closed and
+    // the staging guard removes the partial tree.
+    replace_fixture_transactionally(staging.path(), &args.fixture)
         .map_err(|error| ("runtime".into(), error))?;
-    emit(
+    staging.disarm();
+    emit_with_warnings(
         "serve",
         args.output.output,
         true,
         None,
         json!({"fixture": args.fixture, "record_mode": "re-record", "upstream_enabled": true, "serving": serving, "websocket_acquisition_enabled": args.websockets, "websocket_conversations": websocket_count, "matcher_profile": args.matcher_profile.as_str(), "redaction_profile": args.redaction_profile, "new_flows": recorded_flows, "outbound_timeout": args.timeout.describe(), "status": "finalized"}),
+        warnings,
     );
     Ok(())
 }
 
+/// What an existing (or absent) replacement target actually is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ReplacementTarget {
+    /// Nothing exists at the path; it is safe to create.
+    Absent,
+    /// An empty directory; replacing it discards nothing.
+    EmptyDir,
+    /// A directory that opens as a valid fixture (`Session::open` succeeds).
+    ValidFixture,
+}
+
+impl ReplacementTarget {
+    const fn exists(self) -> bool {
+        !matches!(self, Self::Absent)
+    }
+}
+
+/// The single authority for "may this path be replaced?".
+///
+/// Every destructive command routes through this classifier, and
+/// [`replace_fixture_transactionally`] re-checks it as defense in depth. It
+/// never follows a symlink, never treats an arbitrary non-empty directory as
+/// disposable, and rejects `.`/`..`/filesystem roots lexically before any
+/// filesystem call. An existing directory is disposable only when it is empty
+/// or when `Session::open` with the default limits accepts it; a future
+/// schema, an incomplete manifest, or malformed flows are refusals, not
+/// permission to delete.
+fn classify_replacement_target(path: &Path) -> Result<ReplacementTarget, String> {
+    use std::path::Component;
+
+    if path.file_name().is_none() {
+        return Err(
+            "the path has no final component (it is a filesystem root, `.`, or `..`)".into(),
+        );
+    }
+    // `./fixture.eggr` is an ordinary spelling and resolves to the same
+    // directory; a `..` component can escape the operator's intended parent,
+    // so it is refused lexically before any filesystem call.
+    if path
+        .components()
+        .any(|component| matches!(component, Component::ParentDir))
+    {
+        return Err("the path contains a `..` component".into());
+    }
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(ReplacementTarget::Absent);
+        }
+        Err(error) => return Err(format!("cannot inspect the path: {error}")),
+    };
+    if metadata.file_type().is_symlink() {
+        return Err("the path is a symbolic link; symlinks are never followed".into());
+    }
+    if !metadata.is_dir() {
+        return Err("the path exists and is not a directory".into());
+    }
+    let mut entries =
+        std::fs::read_dir(path).map_err(|error| format!("cannot read the directory: {error}"))?;
+    if entries.next().is_none() {
+        return Ok(ReplacementTarget::EmptyDir);
+    }
+    Session::open(path, StoreLimits::default()).map_err(|error| {
+        format!(
+            "the directory is not empty and does not open as a valid EggReplay fixture: {error}"
+        )
+    })?;
+    Ok(ReplacementTarget::ValidFixture)
+}
+
+/// Enforce `--overwrite` and the replacement-target rules in one place.
+///
+/// `noun` is the operator-facing name for the target (`fixture` or
+/// `destination`) and is used only in the missing-flag diagnostic.
+fn check_replacement_target(
+    path: &Path,
+    overwrite: bool,
+    noun: &str,
+) -> Result<ReplacementTarget, (String, String)> {
+    let target = classify_replacement_target(path).map_err(|reason| {
+        (
+            "configuration".to_owned(),
+            format!("cannot replace {}: {reason}", path.display()),
+        )
+    })?;
+    if target.exists() && !overwrite {
+        return Err((
+            "configuration".to_owned(),
+            format!(
+                "{noun} exists; pass --overwrite to replace an existing fixture or empty directory"
+            ),
+        ));
+    }
+    Ok(target)
+}
+
+/// Best-effort cleanup for a sibling staging destination.
+///
+/// Armed while a staged operation is in flight. `Drop` removes the staging
+/// destination plus any `.incomplete-*` directory the store writer created
+/// under that name, so every early return cleans up without repeating the code
+/// at each `?`. The success path calls [`StagingGuard::disarm`] after the
+/// staged fixture is published.
+pub(crate) struct StagingGuard {
+    destination: PathBuf,
+    armed: bool,
+}
+
+impl StagingGuard {
+    pub(crate) fn new(destination: PathBuf) -> Self {
+        Self {
+            destination,
+            armed: true,
+        }
+    }
+
+    pub(crate) fn path(&self) -> &Path {
+        &self.destination
+    }
+
+    /// Keep the staging result; used only after a successful publish.
+    pub(crate) fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for StagingGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            remove_staged_fixture(&self.destination);
+        }
+    }
+}
+
+/// Remove a staging destination and any hidden `.incomplete-*` directory a
+/// store writer created for it. Failures are ignored: cleanup must never mask
+/// the original error.
+fn remove_staged_fixture(destination: &Path) {
+    let _ = std::fs::remove_dir_all(destination);
+    let Some(parent) = destination.parent() else {
+        return;
+    };
+    let parent = if parent.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        parent
+    };
+    let Some(name) = destination.file_name().and_then(|name| name.to_str()) else {
+        return;
+    };
+    let prefix = format!(".{name}.incomplete-");
+    let Ok(entries) = std::fs::read_dir(parent) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if entry.file_name().to_string_lossy().starts_with(&prefix) {
+            let _ = std::fs::remove_dir_all(entry.path());
+        }
+    }
+}
+
 fn sibling_transaction_path(fixture: &std::path::Path, label: &str) -> PathBuf {
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
+    static NONCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let name = fixture
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("fixture.eggr");
-    fixture.with_file_name(format!(".{name}.{label}-{}-{nonce}", std::process::id()))
+    loop {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let sequence = NONCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let candidate = fixture.with_file_name(format!(
+            ".{name}.{label}-{}-{nanos}-{sequence}",
+            std::process::id()
+        ));
+        // Never rename over a path that already exists, even if it is stale
+        // residue from a crashed run: take another name instead.
+        if std::fs::symlink_metadata(&candidate).is_err() {
+            return candidate;
+        }
+    }
 }
 
 fn replace_fixture_transactionally(
     staged: &std::path::Path,
     target: &std::path::Path,
 ) -> Result<(), String> {
-    if !target.exists() {
+    // Defense in depth: callers validate first, but a future caller must not
+    // be able to bypass the replacement-target authority here.
+    let existing = classify_replacement_target(target)
+        .map_err(|reason| format!("cannot replace {}: {reason}", target.display()))?;
+    if existing == ReplacementTarget::Absent {
         return std::fs::rename(staged, target).map_err(|error| error.to_string());
     }
     let backup = sibling_transaction_path(target, "backup");
@@ -2402,15 +2736,158 @@ fn redaction_policy(
     }
 }
 
+/// Query keys that commonly carry credentials but are not default-redacted.
+const CREDENTIAL_QUERY_KEYS: &[&str] = &[
+    "token",
+    "access_token",
+    "api_key",
+    "apikey",
+    "password",
+    "secret",
+    "sig",
+    "signature",
+];
+
+/// Whether a request header name looks credential-bearing.
+///
+/// Covers the curated default set, the deliberately-not-default
+/// `x-csrf-token`, and the common suffix families. Matching is on the
+/// lowercased name.
+fn is_credential_header_name(name: &str) -> bool {
+    eggreplay_core::security::DEFAULT_SENSITIVE_HEADERS.contains(&name)
+        || name == "x-csrf-token"
+        || name.ends_with("-api-key")
+        || name.ends_with("-auth-token")
+        || name.ends_with("-access-token")
+}
+
+/// Value-free, advisory redaction-completeness warnings for one recording.
+///
+/// Names a header or query key only, never its value or a body. Warnings are
+/// deduplicated per command and never change success, exit codes, or the
+/// payload schema.
+fn redaction_warnings(
+    flows: &[eggreplay_core::Flow],
+    redaction: &eggreplay_core::RedactionConfig,
+    websockets_enabled: bool,
+    redact_websocket_text: bool,
+    redact_websocket_binary: bool,
+) -> Vec<String> {
+    use std::collections::BTreeSet;
+    let mut warnings = Vec::new();
+    let mut seen_headers = BTreeSet::new();
+    let mut seen_queries = BTreeSet::new();
+    for flow in flows {
+        for header in &flow.request.headers {
+            let name = header.name.to_ascii_lowercase();
+            if is_credential_header_name(&name)
+                && !redaction.headers.contains(&name)
+                && seen_headers.insert(name.clone())
+            {
+                warnings.push(format!(
+                    "request header {name} may carry a credential and is not redacted; pass --redact-header {name} to redact it"
+                ));
+            }
+        }
+        for pair in &flow.request.query {
+            let key = pair.key.to_ascii_lowercase();
+            if CREDENTIAL_QUERY_KEYS.contains(&key.as_str())
+                && !redaction.query_keys.contains(&pair.key)
+                && seen_queries.insert(key.clone())
+            {
+                warnings.push(format!(
+                    "request query key {key} may carry a credential and is not redacted; pass --redact-query {key} to redact it"
+                ));
+            }
+        }
+    }
+    if websockets_enabled
+        && !redact_websocket_text
+        && !redact_websocket_binary
+        && redaction.json_paths.is_empty()
+    {
+        warnings.push(
+            "WebSocket acquisition is enabled without payload redaction; pass --redact-websocket-text, --redact-websocket-binary, or --redact-json-path"
+                .into(),
+        );
+    }
+    warnings
+}
+
+/// Run [`redaction_warnings`] over a finalized session.
+///
+/// Scanning is advisory: an unreadable flow iterator yields no warnings rather
+/// than failing a command whose recording already succeeded.
+fn session_redaction_warnings(
+    session: &Session,
+    redaction: &eggreplay_core::RedactionConfig,
+    websockets_enabled: bool,
+    redact_websocket_text: bool,
+    redact_websocket_binary: bool,
+) -> Vec<String> {
+    let flows = session
+        .iter_flows()
+        .ok()
+        .map(|iter| iter.collect::<Result<Vec<_>, _>>().unwrap_or_default())
+        .unwrap_or_default();
+    redaction_warnings(
+        &flows,
+        redaction,
+        websockets_enabled,
+        redact_websocket_text,
+        redact_websocket_binary,
+    )
+}
+
+/// Warn about pre-fix stream-event trailer values without naming any value.
+///
+/// Stream-event trailer values are non-authoritative and are always written as
+/// `<redacted>` by current recorders. A value other than `<redacted>` means the
+/// fixture predates that guarantee and needs the opt-in scrub migration.
+fn stream_trailer_warnings(session: &Session) -> Vec<String> {
+    let Some(bytes) = session.read_extension("stream-events").ok().flatten() else {
+        return Vec::new();
+    };
+    let Ok(events) = serde_json::from_slice::<eggreplay_core::StreamEvents>(&bytes) else {
+        return Vec::new();
+    };
+    let mut warnings = Vec::new();
+    for flow in events.flows {
+        let count = flow
+            .request
+            .iter()
+            .chain(flow.response.iter())
+            .filter_map(|event| match &event.event {
+                eggreplay_core::StreamEventKind::Trailers { fields } => Some(
+                    fields
+                        .iter()
+                        .filter(|field| field.value != "<redacted>")
+                        .count(),
+                ),
+                _ => None,
+            })
+            .sum::<usize>();
+        if count > 0 {
+            warnings.push(format!(
+                "flow {} has {count} stream-event trailer field value(s) that are not <redacted>; run `eggreplay migrate --in-place --scrub-stream-trailers` to remediate",
+                flow.flow_id
+            ));
+        }
+    }
+    warnings
+}
+
 fn validate(args: &ValidateArgs) -> Result<(), (String, String)> {
     let session = Session::open(&args.fixture, StoreLimits::default())
         .map_err(|error| ("fixture".into(), error.to_string()))?;
-    emit(
+    let warnings = stream_trailer_warnings(&session);
+    emit_with_warnings(
         "validate",
         args.output.output,
         true,
         None,
         json!({"fixture": args.fixture, "flow_count": session.manifest().flow_count, "schema_version": session.manifest().metadata.schema_version}),
+        warnings,
     );
     Ok(())
 }
@@ -2425,8 +2902,85 @@ fn har_redaction_policy(args: &HarImportArgs) -> (eggreplay_core::RedactionConfi
     )
 }
 
+/// Write an output that contains recorded material.
+///
+/// On Unix the file is created with mode `0600` *before* any bytes are written,
+/// so it is never world-readable even for an instant. Replacing an existing
+/// file also tightens a stale permissive mode before the write. Non-Unix keeps
+/// the platform default; secrecy there depends on the destination directory
+/// ACLs, matching the documented fixture caveat.
+fn write_sensitive_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::io::Write as _;
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)?;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        file.write_all(bytes)?;
+        file.flush()?;
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::write(path, bytes)
+    }
+}
+
+/// Result of a bounded read of an untrusted input document.
+enum BoundedInput {
+    /// The document fits the configured limit.
+    Read(Vec<u8>),
+    /// The document exceeds the configured limit.
+    TooLarge,
+}
+
+/// Read an untrusted document with a hard byte bound.
+///
+/// `File::metadata` gives an allocation-free early refusal. The
+/// `take(limit + 1)` read then closes the race where a file grows between
+/// the metadata check and the read, so no more than `limit + 1` bytes are
+/// ever retained. The caller owns the failure diagnostic, which keeps the
+/// CLI's existing `configuration` class and message for HAR import.
+fn read_bounded_input(path: &Path, limit: usize) -> std::io::Result<BoundedInput> {
+    let file = std::fs::File::open(path)?;
+    if file.metadata()?.len() > limit as u64 {
+        return Ok(BoundedInput::TooLarge);
+    }
+    let mut bytes = Vec::new();
+    file.take(limit as u64 + 1).read_to_end(&mut bytes)?;
+    if bytes.len() > limit {
+        return Ok(BoundedInput::TooLarge);
+    }
+    Ok(BoundedInput::Read(bytes))
+}
+
 fn har_import(args: &HarImportArgs) -> Result<(), (String, String)> {
-    if args.fixture.exists() && !args.overwrite {
+    // Inputs first: read and parse the HAR into a staged writer before the
+    // target is replaced, so a malformed document cannot destroy the old
+    // fixture. The read is bounded before parsing: `std::fs::read` would
+    // allocate the whole file before the library's 32 MiB check.
+    let har_bytes = match read_bounded_input(&args.har, eggreplay_har::MAX_HAR_FILE_BYTES) {
+        Ok(BoundedInput::Read(bytes)) => bytes,
+        Ok(BoundedInput::TooLarge) => {
+            return Err((
+                "configuration".into(),
+                "HAR document exceeds size limit".into(),
+            ));
+        }
+        Err(error) => {
+            return Err((
+                "configuration".into(),
+                format!("cannot read HAR file: {error}"),
+            ));
+        }
+    };
+    let (redaction, profile_id) = har_redaction_policy(args);
+    if let Err(error) = check_replacement_target(&args.fixture, args.overwrite, "fixture") {
         emit(
             "har-import",
             args.output.output,
@@ -2434,24 +2988,11 @@ fn har_import(args: &HarImportArgs) -> Result<(), (String, String)> {
             Some("configuration"),
             json!({"fixture": args.fixture, "har": args.har}),
         );
-        return Err((
-            "configuration".into(),
-            "fixture exists; pass --overwrite to replace it".into(),
-        ));
+        return Err(error);
     }
-    let har_bytes = std::fs::read(&args.har).map_err(|error| {
-        (
-            "configuration".into(),
-            format!("cannot read HAR file: {error}"),
-        )
-    })?;
-    let (redaction, profile_id) = har_redaction_policy(args);
-    if args.fixture.exists() {
-        std::fs::remove_dir_all(&args.fixture)
-            .map_err(|error| ("runtime".into(), error.to_string()))?;
-    }
+    let mut staging = StagingGuard::new(sibling_transaction_path(&args.fixture, "har-import"));
     let mut writer = eggreplay_store::SessionWriter::create(
-        &args.fixture,
+        staging.path(),
         SessionMetadata {
             capture_mode: "har-import".into(),
             redaction_profile: profile_id.clone(),
@@ -2480,6 +3021,11 @@ fn har_import(args: &HarImportArgs) -> Result<(), (String, String)> {
     let session = writer
         .finish()
         .map_err(|error| ("fixture".into(), error.to_string()))?;
+    let flow_count = session.manifest().flow_count;
+    let warnings = session_redaction_warnings(&session, &redaction, false, false, false);
+    drop(session);
+    // The loss report is an output of the completed staged fixture. Writing it
+    // before the swap keeps a write failure from replacing the target.
     if let Some(loss_path) = &args.loss_report {
         let loss_document = json!({
             "command": "har-import",
@@ -2489,14 +3035,17 @@ fn har_import(args: &HarImportArgs) -> Result<(), (String, String)> {
             "flows": report.flows,
             "losses": report.losses,
         });
-        std::fs::write(
+        write_sensitive_file(
             loss_path,
-            serde_json::to_vec_pretty(&loss_document)
+            &serde_json::to_vec_pretty(&loss_document)
                 .map_err(|error| ("runtime".into(), error.to_string()))?,
         )
         .map_err(|error| ("runtime".into(), error.to_string()))?;
     }
-    emit(
+    replace_fixture_transactionally(staging.path(), &args.fixture)
+        .map_err(|error| ("runtime".into(), error))?;
+    staging.disarm();
+    emit_with_warnings(
         "har-import",
         args.output.output,
         true,
@@ -2504,11 +3053,12 @@ fn har_import(args: &HarImportArgs) -> Result<(), (String, String)> {
         json!({
             "fixture": args.fixture,
             "har": args.har,
-            "flow_count": session.manifest().flow_count,
+            "flow_count": flow_count,
             "entries": report.entries,
             "loss_count": report.losses.len(),
             "loss_report": args.loss_report,
         }),
+        warnings,
     );
     Ok(())
 }
@@ -2531,9 +3081,9 @@ fn har_export(args: &HarExportArgs) -> Result<(), (String, String)> {
     {
         std::fs::create_dir_all(parent).map_err(|error| ("runtime".into(), error.to_string()))?;
     }
-    std::fs::write(
+    write_sensitive_file(
         &args.har,
-        serde_json::to_vec_pretty(&har).map_err(|error| ("runtime".into(), error.to_string()))?,
+        &serde_json::to_vec_pretty(&har).map_err(|error| ("runtime".into(), error.to_string()))?,
     )
     .map_err(|error| ("runtime".into(), error.to_string()))?;
     if let Some(loss_path) = &args.loss_report {
@@ -2544,9 +3094,9 @@ fn har_export(args: &HarExportArgs) -> Result<(), (String, String)> {
             "entries": report.entries,
             "losses": report.losses,
         });
-        std::fs::write(
+        write_sensitive_file(
             loss_path,
-            serde_json::to_vec_pretty(&loss_document)
+            &serde_json::to_vec_pretty(&loss_document)
                 .map_err(|error| ("runtime".into(), error.to_string()))?,
         )
         .map_err(|error| ("runtime".into(), error.to_string()))?;
@@ -2592,29 +3142,41 @@ fn migrate(args: &MigrateArgs) -> Result<(), (String, String)> {
             format!("unsupported target session schema {target_schema}"),
         ));
     }
+    // Validate the destination before the source is even read. A non-fixture
+    // destination is refused here, so the transactional replace can never
+    // interpret `--overwrite` as permission to delete an arbitrary path.
+    let destination = match args.to.as_ref() {
+        Some(destination) => {
+            check_replacement_target(destination, args.overwrite, "destination")?;
+            Some(destination)
+        }
+        None => None,
+    };
     let source = Session::open(&args.fixture, StoreLimits::default())
         .map_err(|error| ("fixture".into(), error.to_string()))?;
     if args.in_place {
         // Transactional in-place: stage to a sibling, validate (migration
         // opens the staged copy), then atomically replace the source. The
         // source is never mutated before the new fixture validates.
-        let staged = sibling_transaction_path(&args.fixture, "migrate");
-        let migrated =
-            eggreplay_har::migrate_session(&source, &staged, target_schema).map_err(|error| {
-                match error {
-                    eggreplay_har::MigrationError::Blocked(message) => ("fixture".into(), message),
-                    eggreplay_har::MigrationError::Store(inner) => {
-                        ("fixture".into(), inner.to_string())
-                    }
-                    eggreplay_har::MigrationError::Runtime(message) => ("runtime".into(), message),
-                }
-            })?;
+        let mut staging = StagingGuard::new(sibling_transaction_path(&args.fixture, "migrate"));
+        let migrated = eggreplay_har::migrate_session(
+            &source,
+            staging.path(),
+            target_schema,
+            args.scrub_stream_trailers,
+        )
+        .map_err(|error| match error {
+            eggreplay_har::MigrationError::Blocked(message) => ("fixture".into(), message),
+            eggreplay_har::MigrationError::Store(inner) => ("fixture".into(), inner.to_string()),
+            eggreplay_har::MigrationError::Runtime(message) => ("runtime".into(), message),
+        })?;
         let flow_count = migrated.manifest().flow_count;
         let schema_version = migrated.manifest().metadata.schema_version;
         drop(migrated);
         drop(source);
-        replace_fixture_transactionally(&staged, &args.fixture)
+        replace_fixture_transactionally(staging.path(), &args.fixture)
             .map_err(|error| ("runtime".into(), error))?;
+        staging.disarm();
         emit(
             "migrate",
             args.output.output,
@@ -2624,32 +3186,27 @@ fn migrate(args: &MigrateArgs) -> Result<(), (String, String)> {
         );
         Ok(())
     } else {
-        let destination = args.to.as_ref().expect("destination checked above");
-        if destination.exists() && !args.overwrite {
-            return Err((
-                "configuration".into(),
-                "destination exists; pass --overwrite to replace it".into(),
-            ));
-        }
+        let destination = destination.expect("destination checked above");
         // Transactional --to: migrate into a sibling staging directory, then
         // publish to the destination (replacing transactionally when it
         // exists). The source is never mutated.
-        let staged = sibling_transaction_path(destination, "migrate");
-        let migrated =
-            eggreplay_har::migrate_session(&source, &staged, target_schema).map_err(|error| {
-                match error {
-                    eggreplay_har::MigrationError::Blocked(message) => ("fixture".into(), message),
-                    eggreplay_har::MigrationError::Store(inner) => {
-                        ("fixture".into(), inner.to_string())
-                    }
-                    eggreplay_har::MigrationError::Runtime(message) => ("runtime".into(), message),
-                }
-            })?;
+        let mut staging = StagingGuard::new(sibling_transaction_path(destination, "migrate"));
+        let migrated = eggreplay_har::migrate_session(
+            &source,
+            staging.path(),
+            target_schema,
+            args.scrub_stream_trailers,
+        )
+        .map_err(|error| match error {
+            eggreplay_har::MigrationError::Blocked(message) => ("fixture".into(), message),
+            eggreplay_har::MigrationError::Store(inner) => ("fixture".into(), inner.to_string()),
+            eggreplay_har::MigrationError::Runtime(message) => ("runtime".into(), message),
+        })?;
         let flow_count = migrated.manifest().flow_count;
         let schema_version = migrated.manifest().metadata.schema_version;
         drop(migrated);
         if destination.exists() {
-            replace_fixture_transactionally(&staged, destination)
+            replace_fixture_transactionally(staging.path(), destination)
                 .map_err(|error| ("runtime".into(), error))?;
         } else {
             if let Some(parent) = destination
@@ -2659,9 +3216,10 @@ fn migrate(args: &MigrateArgs) -> Result<(), (String, String)> {
                 std::fs::create_dir_all(parent)
                     .map_err(|error| ("runtime".into(), error.to_string()))?;
             }
-            std::fs::rename(&staged, destination)
+            std::fs::rename(staging.path(), destination)
                 .map_err(|error| ("runtime".into(), error.to_string()))?;
         }
+        staging.disarm();
         emit(
             "migrate",
             args.output.output,
@@ -2857,6 +3415,12 @@ fn emit_with_warnings(
             }
         }
         OutputChoice::Human => {
+            // Warnings are operational diagnostics: stderr in human mode, the
+            // envelope's `warnings` array in JSON mode. They never affect
+            // success or the exit code.
+            for warning in &warnings {
+                eprintln!("warning: {warning}");
+            }
             // Human rendering is terminal text, never machine JSON.
             if success {
                 println!("{command}: ok");
@@ -2867,9 +3431,70 @@ fn emit_with_warnings(
     }
 }
 
+/// Listener exposure gate (M021D).
+///
+/// These are unit tests for [`check_listener_bind`], which is the *only*
+/// place the loopback policy is decided. They are compiled in every build —
+/// including one without the `intercept` feature — because the gate itself
+/// must be present in every build.
+#[cfg(test)]
+mod listener_gate_tests {
+    use super::check_listener_bind;
+
+    fn bind(address: &str) -> std::net::SocketAddr {
+        address.parse().expect("socket address literal")
+    }
+
+    #[test]
+    fn loopback_binds_always_pass_without_the_opt_in() {
+        for address in ["127.0.0.1:0", "127.0.0.1:8080", "[::1]:0", "[::1]:8080"] {
+            assert!(
+                check_listener_bind(bind(address), false).is_ok(),
+                "loopback {address} must never need the opt-in"
+            );
+        }
+    }
+
+    #[test]
+    fn wildcard_and_lan_binds_require_the_opt_in() {
+        // `0.0.0.0` and `::` are the two "every interface" addresses; the LAN
+        // address is the ordinary case of a routable bind. All three are
+        // unauthenticated listeners once reachable.
+        for address in ["0.0.0.0:0", "[::]:0", "192.168.1.20:8080"] {
+            let (class, message) =
+                check_listener_bind(bind(address), false).expect_err("must refuse");
+            assert_eq!(
+                class, "configuration",
+                "the refusal class is the exit-code key"
+            );
+            assert!(
+                message.contains(&bind(address).to_string()),
+                "the refusal must name the bind: {message}"
+            );
+            assert!(
+                message.contains("unauthenticated"),
+                "the refusal must state the listener is unauthenticated: {message}"
+            );
+            assert!(
+                message.contains("TLS does not add authentication"),
+                "the refusal must state that TLS is not authentication: {message}"
+            );
+            assert!(
+                message.contains("--allow-non-loopback"),
+                "the refusal must name the opt-in flag: {message}"
+            );
+            assert!(
+                check_listener_bind(bind(address), true).is_ok(),
+                "the explicit opt-in must permit {address}"
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod transaction_tests {
     use super::*;
+    use eggreplay_core::{BodyRef, Flow, FlowOutcome, HttpRequest, HttpResponse, Provenance};
 
     fn temp_path(label: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
@@ -2883,44 +3508,369 @@ mod transaction_tests {
     }
 
     #[test]
+    fn bounded_input_reads_exactly_the_limit_and_rejects_one_byte_over() {
+        let file = temp_path("bounded-input");
+        std::fs::write(&file, b"12345678").unwrap();
+        match read_bounded_input(&file, 8).unwrap() {
+            BoundedInput::Read(bytes) => assert_eq!(bytes, b"12345678"),
+            BoundedInput::TooLarge => panic!("exactly the limit must be accepted"),
+        }
+        std::fs::write(&file, b"123456789").unwrap();
+        assert!(
+            matches!(
+                read_bounded_input(&file, 8).unwrap(),
+                BoundedInput::TooLarge
+            ),
+            "one byte over the limit must be refused"
+        );
+        std::fs::remove_file(&file).unwrap();
+    }
+
+    fn minimal_flow(index: usize) -> Flow {
+        Flow {
+            schema_version: eggreplay_core::SCHEMA_VERSION,
+            id: format!("flow-{index}"),
+            started_at_ms: 1,
+            completed_at_ms: Some(2),
+            request: HttpRequest {
+                method: "GET".into(),
+                scheme: "http".into(),
+                authority: "example.test".into(),
+                path: format!("/item-{index}"),
+                query: vec![],
+                headers: vec![],
+                body: BodyRef::Empty,
+                trailers: vec![],
+            },
+            outcome: FlowOutcome::Response(HttpResponse {
+                status: 200,
+                headers: vec![],
+                body: BodyRef::Empty,
+                trailers: vec![],
+            }),
+            physical_route: None,
+            provenance: Provenance {
+                mode: "test".into(),
+                observer: "test".into(),
+            },
+            annotations: vec![],
+            redactions: vec![],
+        }
+    }
+
+    /// Publish a valid fixture at `path`, which must not exist yet.
+    fn publish_fixture(path: &Path, schema_version: u16, flows: usize) {
+        let metadata = SessionMetadata {
+            schema_version,
+            ..SessionMetadata::default()
+        };
+        let mut writer =
+            eggreplay_store::SessionWriter::create(path, metadata, StoreLimits::default()).unwrap();
+        for index in 0..flows {
+            writer.append_flow(&minimal_flow(index)).unwrap();
+        }
+        drop(writer.finish().unwrap());
+    }
+
+    fn open_flow_count(path: &Path) -> usize {
+        Session::open(path, StoreLimits::default())
+            .unwrap()
+            .manifest()
+            .flow_count
+    }
+
+    #[test]
     fn replacement_publishes_complete_stage_and_rolls_back_failed_publish() {
         let target = temp_path("target");
         let staged = temp_path("staged");
-        std::fs::create_dir_all(&target).unwrap();
-        std::fs::create_dir_all(&staged).unwrap();
-        std::fs::write(target.join("value"), "old").unwrap();
-        std::fs::write(staged.join("value"), "new").unwrap();
+        publish_fixture(&target, 2, 0);
+        publish_fixture(&staged, 2, 2);
         replace_fixture_transactionally(&staged, &target).unwrap();
-        assert_eq!(
-            std::fs::read_to_string(target.join("value")).unwrap(),
-            "new"
-        );
+        assert_eq!(open_flow_count(&target), 2);
         assert!(!staged.exists());
 
         let missing_stage = temp_path("missing-stage");
         let result = replace_fixture_transactionally(&missing_stage, &target);
         assert!(result.is_err());
         assert_eq!(
-            std::fs::read_to_string(target.join("value")).unwrap(),
-            "new"
+            open_flow_count(&target),
+            2,
+            "failed publish must preserve the published fixture"
         );
         std::fs::remove_dir_all(target).unwrap();
+    }
+
+    #[test]
+    fn replacement_refuses_a_non_fixture_target() {
+        let target = temp_path("refuse-target");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(target.join("keep.txt"), "keep").unwrap();
+        let staged = temp_path("refuse-staged");
+        publish_fixture(&staged, 2, 1);
+        let error = replace_fixture_transactionally(&staged, &target).unwrap_err();
+        assert!(
+            error.contains("cannot replace"),
+            "unexpected error: {error}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(target.join("keep.txt")).unwrap(),
+            "keep"
+        );
+        assert!(staged.exists(), "refusal must not consume the staged tree");
+        std::fs::remove_dir_all(target).unwrap();
+        std::fs::remove_dir_all(staged).unwrap();
     }
 
     #[test]
     fn interrupted_replacement_restores_the_last_valid_backup() {
         let target = temp_path("recover-target");
         let staging = temp_path("recover-stage");
-        let writer =
-            RecordingSession::create(&staging, SessionMetadata::default(), StoreLimits::default())
-                .unwrap();
-        writer.shutdown();
-        writer.finish().unwrap();
+        publish_fixture(&staging, 2, 0);
         let backup = sibling_transaction_path(&target, "backup");
         std::fs::rename(&staging, &backup).unwrap();
         recover_fixture_transactionally(&target).unwrap();
         Session::open(&target, StoreLimits::default()).unwrap();
         assert!(!backup.exists());
         std::fs::remove_dir_all(target).unwrap();
+    }
+
+    // -- replacement-target authority -------------------------------------
+
+    fn classify(path: &Path) -> Result<ReplacementTarget, String> {
+        classify_replacement_target(path)
+    }
+
+    #[test]
+    fn absent_path_is_safe_to_create() {
+        let dir = tempfile::tempdir().unwrap();
+        let absent = dir.path().join("new.eggr");
+        assert_eq!(classify(&absent).unwrap(), ReplacementTarget::Absent);
+        assert!(!absent.exists(), "classification must not create anything");
+    }
+
+    #[test]
+    fn empty_directory_is_replaceable() {
+        let dir = tempfile::tempdir().unwrap();
+        let empty = dir.path().join("empty.eggr");
+        std::fs::create_dir(&empty).unwrap();
+        assert_eq!(classify(&empty).unwrap(), ReplacementTarget::EmptyDir);
+    }
+
+    #[test]
+    fn valid_schema_one_and_two_fixtures_are_replaceable() {
+        let dir = tempfile::tempdir().unwrap();
+        for schema in [1, 2] {
+            let fixture = dir.path().join(format!("schema-{schema}.eggr"));
+            publish_fixture(&fixture, schema, 1);
+            assert_eq!(
+                classify(&fixture).unwrap(),
+                ReplacementTarget::ValidFixture,
+                "schema {schema} fixture must be replaceable"
+            );
+        }
+    }
+
+    #[test]
+    fn fixture_with_an_extra_unrelated_file_is_still_accepted() {
+        let dir = tempfile::tempdir().unwrap();
+        let fixture = dir.path().join("extended.eggr");
+        publish_fixture(&fixture, 2, 1);
+        std::fs::write(fixture.join("notes.txt"), "extension file").unwrap();
+        assert_eq!(classify(&fixture).unwrap(), ReplacementTarget::ValidFixture);
+    }
+
+    #[test]
+    fn non_empty_unrelated_directory_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let unrelated = dir.path().join("unrelated");
+        std::fs::create_dir(&unrelated).unwrap();
+        std::fs::write(unrelated.join("keep.txt"), "keep").unwrap();
+        let error = classify(&unrelated).unwrap_err();
+        assert!(
+            error.contains("valid EggReplay fixture"),
+            "unexpected error: {error}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(unrelated.join("keep.txt")).unwrap(),
+            "keep"
+        );
+    }
+
+    #[test]
+    fn regular_file_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("fixture.eggr");
+        std::fs::write(&file, "not a directory").unwrap();
+        let error = classify(&file).unwrap_err();
+        assert!(error.contains("not a directory"), "unexpected: {error}");
+    }
+
+    #[test]
+    fn incomplete_fixture_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let incomplete = dir.path().join("incomplete.eggr");
+        std::fs::create_dir(&incomplete).unwrap();
+        std::fs::write(incomplete.join("flows.jsonl"), b"").unwrap();
+        let error = classify(&incomplete).unwrap_err();
+        assert!(
+            error.contains("valid EggReplay fixture"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn future_schema_fixture_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let fixture = dir.path().join("future.eggr");
+        publish_fixture(&fixture, 2, 0);
+        let manifest_path = fixture.join("manifest.json");
+        let mut manifest: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
+        manifest["schema_version"] = serde_json::json!(99);
+        std::fs::write(
+            &manifest_path,
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+        let error = classify(&fixture).unwrap_err();
+        assert!(
+            error.contains("unsupported fixture schema 99"),
+            "unexpected error: {error}"
+        );
+        assert!(fixture.exists(), "refusal must not delete the fixture");
+    }
+
+    #[test]
+    fn lexical_dot_and_root_paths_are_refused() {
+        for path in [".", "..", "fixture.eggr/..", "parent/../fixture.eggr"] {
+            let error = classify(Path::new(path)).unwrap_err();
+            assert!(
+                error.contains("final component") || error.contains("contains a"),
+                "path {path:?} must be refused lexically, got {error}"
+            );
+        }
+        #[cfg(unix)]
+        assert!(classify(Path::new("/")).is_err());
+        #[cfg(windows)]
+        assert!(classify(Path::new(r"C:\")).is_err());
+    }
+
+    #[test]
+    fn current_dir_prefix_is_an_ordinary_spelling() {
+        // `./name` resolves to the same directory; only `..` can escape the
+        // operator's intended parent.
+        assert_eq!(
+            classify(Path::new("./eggreplay-m021b-absent.eggr")).unwrap(),
+            ReplacementTarget::Absent
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_target_is_refused_without_following_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real.eggr");
+        publish_fixture(&real, 2, 0);
+        let link = dir.path().join("link.eggr");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let error = classify(&link).unwrap_err();
+        assert!(error.contains("symbolic link"), "unexpected error: {error}");
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "the link must not be replaced or removed"
+        );
+        Session::open(&real, StoreLimits::default()).unwrap();
+    }
+
+    #[test]
+    fn missing_overwrite_flag_is_a_configuration_refusal() {
+        let dir = tempfile::tempdir().unwrap();
+        let fixture = dir.path().join("existing.eggr");
+        publish_fixture(&fixture, 2, 0);
+        let (class, message) = check_replacement_target(&fixture, false, "fixture").unwrap_err();
+        assert_eq!(class, "configuration");
+        assert!(message.contains("--overwrite"), "unexpected: {message}");
+        assert_eq!(
+            check_replacement_target(&fixture, true, "fixture").unwrap(),
+            ReplacementTarget::ValidFixture
+        );
+    }
+
+    #[test]
+    fn warning_scanner_is_value_free_and_deduplicates() {
+        let mut first = minimal_flow(0);
+        first.request.headers.push(eggreplay_core::HeaderEntry {
+            name: "X-Api-Key".into(),
+            value: "WARNING-SENTINEL-1".into(),
+        });
+        first.request.headers.push(eggreplay_core::HeaderEntry {
+            name: "X-Csrf-Token".into(),
+            value: "WARNING-SENTINEL-2".into(),
+        });
+        first.request.query.push(eggreplay_core::QueryPair {
+            key: "access_token".into(),
+            value: "WARNING-SENTINEL-3".into(),
+        });
+        // A second flow repeats the same header; warnings deduplicate.
+        let mut second = minimal_flow(1);
+        second.request.headers.push(eggreplay_core::HeaderEntry {
+            name: "x-api-key".into(),
+            value: "WARNING-SENTINEL-4".into(),
+        });
+        let warnings = redaction_warnings(
+            &[first, second],
+            &eggreplay_core::RedactionConfig::default(),
+            false,
+            false,
+            false,
+        );
+        assert_eq!(
+            warnings.len(),
+            3,
+            "one warning per distinct field: {warnings:?}"
+        );
+        let joined = warnings.join("\n");
+        for name in ["x-api-key", "x-csrf-token", "access_token"] {
+            assert!(joined.contains(name), "{joined}");
+        }
+        for sentinel in [
+            "WARNING-SENTINEL-1",
+            "WARNING-SENTINEL-2",
+            "WARNING-SENTINEL-3",
+        ] {
+            assert!(
+                !joined.contains(sentinel),
+                "warnings must be value-free: {joined}"
+            );
+        }
+    }
+
+    #[test]
+    fn websocket_acquisition_without_payload_redaction_warns_once() {
+        let config = eggreplay_core::RedactionConfig::default_secure();
+        let warnings = redaction_warnings(&[], &config, true, false, false);
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("WebSocket"), "{warnings:?}");
+        assert!(
+            redaction_warnings(&[], &config, true, true, false).is_empty(),
+            "text redaction is sufficient"
+        );
+        assert!(
+            redaction_warnings(&[], &config, true, false, true).is_empty(),
+            "binary redaction is sufficient"
+        );
+        let mut with_json = config.clone();
+        with_json.json_paths.insert("/secret".into());
+        assert!(
+            redaction_warnings(&[], &with_json, true, false, false).is_empty(),
+            "a configured JSON pointer is sufficient"
+        );
+        assert!(
+            redaction_warnings(&[], &config, false, false, false).is_empty(),
+            "no warning when acquisition is disabled"
+        );
     }
 }
