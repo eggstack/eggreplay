@@ -79,7 +79,7 @@ eggnet-tls = { version = "=0.2.0" }
 eggserve-core = { version = "=0.4.0", default-features = false }
 rustls = { version = "=0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
 tokio-rustls = { version = "=0.26.2", default-features = false, features = ["ring", "tls12"] }
-rcgen = { version = "=0.13.2", default-features = false, features = ["ring", "pem", "x509-parser"] }
+rcgen = { version = "=0.14.10", default-features = false, features = ["ring", "pem", "x509-parser"] }
 
 # Test-only gRPC oracle (M015D). These are declared here as *version sources*
 # for `crates/eggreplay-http`'s `[dev-dependencies]` and are referenced by no
